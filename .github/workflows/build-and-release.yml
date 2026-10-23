@@ -1,0 +1,142 @@
+name: Compilación y Release APK Android
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Etiqueta de la versión (ej: v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+      release_title:
+        description: 'Título del Release'
+        required: false
+        default: 'Muro Familiar LAN - Nueva Versión'
+      release_notes:
+        description: 'Notas o cambios de la versión'
+        required: false
+        default: 'Versión compilada automáticamente lista para instalar (sideload) en dispositivos familiares.'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Compilar APK Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Descargar código fuente
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. Configurar Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: false
+
+      - name: 4. Preparar Keystore de Firma
+        run: |
+          echo "Preparando claves de firma para la APK..."
+          if [ -f "debug.keystore.base64" ]; then
+            echo "Decodificando debug.keystore.base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f "debug.keystore" ]; then
+            echo "Generando debug.keystore..."
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # Crear archivo .env si no existe para Secrets Gradle Plugin
+          if [ ! -f ".env" ]; then
+            cp .env.example .env 2>/dev/null || touch .env
+          fi
+
+      - name: 5. Compilar APK (assembleDebug)
+        run: |
+          echo "Compilando la aplicación con Gradle..."
+          gradle assembleDebug --no-daemon --stacktrace
+
+      - name: 6. Localizar y Preparar Archivo APK
+        id: prepare_apk
+        run: |
+          # Determinar la versión
+          VERSION="${{ github.ref_name }}"
+          if [[ "${VERSION}" != v* ]]; then
+            VERSION="${{ github.event.inputs.tag_name || 'v1.0.0' }}"
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+          # Buscar el APK generado
+          APK_PATH=$(find app/build/outputs/apk/debug/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No se encontró el archivo APK generado."
+            exit 1
+          fi
+
+          echo "APK encontrado en: $APK_PATH"
+          mkdir -p release-artifacts
+          
+          # Copiar con nombre descriptivo
+          OUTPUT_APK="release-artifacts/Muro-Familiar-LAN-${VERSION}.apk"
+          LATEST_APK="release-artifacts/Muro-Familiar-LAN-latest.apk"
+          
+          cp "$APK_PATH" "$OUTPUT_APK"
+          cp "$APK_PATH" "$LATEST_APK"
+
+          # Generar checksum SHA256
+          cd release-artifacts
+          sha256sum "Muro-Familiar-LAN-${VERSION}.apk" > "Muro-Familiar-LAN-${VERSION}.apk.sha256"
+          cd ..
+
+          echo "apk_path=$OUTPUT_APK" >> $GITHUB_OUTPUT
+          echo "apk_name=Muro-Familiar-LAN-${VERSION}.apk" >> $GITHUB_OUTPUT
+
+      - name: 7. Subir APK como Artefacto de la Acción
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muro-Familiar-LAN-APK
+          path: release-artifacts/*
+          retention-days: 30
+
+      - name: 8. Crear Release en GitHub (Tags o Manual)
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ github.event.inputs.release_title || format('Muro Familiar LAN {0}', env.VERSION) }}
+          body: |
+            ### 📱 Muro Familiar LAN - Instalador APK
+            
+            ${{ github.event.inputs.release_notes || 'Compilación automática lista para instalar en dispositivos Android de la familia (sideload).' }}
+            
+            #### 🛠️ Características de esta versión:
+            - **Red:** Exclusivo red local (LAN/Wi-Fi casera), 100% privado sin Internet.
+            - **Almacenamiento:** Conectado directamente a Synology NAS (**Web Station + MariaDB 10**).
+            - **Multimedia:** Soporte para subida real de fotos y vídeos familiares con Android Photo Picker.
+            - **Caché:** Persistencia local sin conexión con Room (SQLite).
+            
+            #### 📦 Archivos descargables:
+            - `Muro-Familiar-LAN-${{ env.VERSION }}.apk` (APK instalable directamente en el móvil o tablet)
+            - `Muro-Familiar-LAN-${{ env.VERSION }}.apk.sha256` (Verificación de integridad)
+            
+            > **Instrucciones de instalación:** Descarga el archivo `.apk` directamente en tu teléfono o tablet Android y ábrelo para instalar. Si Android lo solicita, activa "Permitir instalar aplicaciones de orígenes desconocidos".
+          draft: false
+          prerelease: false
+          files: |
+            release-artifacts/*.apk
+            release-artifacts/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

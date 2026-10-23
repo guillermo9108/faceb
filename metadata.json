@@ -1,0 +1,6 @@
+{
+  "name": "Muro Familiar LAN",
+  "description": "Red social familiar para red local y Synology NAS con Web Station y MariaDB 10",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
