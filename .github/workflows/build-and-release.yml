@@ -72,10 +72,13 @@ jobs:
       - name: 6. Localizar y Preparar Archivo APK
         id: prepare_apk
         run: |
-          # Determinar la versión
-          VERSION="${{ github.ref_name }}"
-          if [[ "${VERSION}" != v* ]]; then
-            VERSION="${{ github.event.inputs.tag_name || 'v1.0.0' }}"
+          # Determinar la versión dinámicamente (si es tag, input manual o commit en rama)
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+          elif [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            VERSION="${{ github.event.inputs.tag_name }}"
+          else
+            VERSION="v1.0.${{ github.run_number }}"
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
@@ -89,7 +92,7 @@ jobs:
           echo "APK encontrado en: $APK_PATH"
           mkdir -p release-artifacts
           
-          # Copiar con nombre descriptivo
+          # Copiar con nombres descriptivos
           OUTPUT_APK="release-artifacts/Muro-Familiar-LAN-${VERSION}.apk"
           LATEST_APK="release-artifacts/Muro-Familiar-LAN-latest.apk"
           
@@ -111,18 +114,21 @@ jobs:
           path: release-artifacts/*
           retention-days: 30
 
-      - name: 8. Crear Release en GitHub (Tags o Manual)
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+      - name: 8. Crear o Actualizar Release en GitHub para Descarga
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
           name: ${{ github.event.inputs.release_title || format('Muro Familiar LAN {0}', env.VERSION) }}
+          target_commitish: ${{ github.sha }}
           body: |
             ### 📱 Muro Familiar LAN - Instalador APK
             
-            ${{ github.event.inputs.release_notes || 'Compilación automática lista para instalar en dispositivos Android de la familia (sideload).' }}
+            ${{ github.event.inputs.release_notes || 'Compilación automática lista para descargar e instalar en dispositivos Android de la familia (sideload).' }}
             
-            #### 🛠️ Características de esta versión:
+            #### 🛠️ Información de la versión:
+            - **Versión:** `${{ env.VERSION }}`
+            - **Compilación:** Ejecución #${{ github.run_number }} (`${{ github.sha }}`)
             - **Red:** Exclusivo red local (LAN/Wi-Fi casera), 100% privado sin Internet.
             - **Almacenamiento:** Conectado directamente a Synology NAS (**Web Station + MariaDB 10**).
             - **Multimedia:** Soporte para subida real de fotos y vídeos familiares con Android Photo Picker.
@@ -130,13 +136,16 @@ jobs:
             
             #### 📦 Archivos descargables:
             - `Muro-Familiar-LAN-${{ env.VERSION }}.apk` (APK instalable directamente en el móvil o tablet)
+            - `Muro-Familiar-LAN-latest.apk` (Enlace directo a la versión más reciente)
             - `Muro-Familiar-LAN-${{ env.VERSION }}.apk.sha256` (Verificación de integridad)
             
             > **Instrucciones de instalación:** Descarga el archivo `.apk` directamente en tu teléfono o tablet Android y ábrelo para instalar. Si Android lo solicita, activa "Permitir instalar aplicaciones de orígenes desconocidos".
           draft: false
           prerelease: false
+          make_latest: true
           files: |
             release-artifacts/*.apk
             release-artifacts/*.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
