@@ -87,18 +87,24 @@ object SynologyScripts {
 
     private const val D = "$"
 
-    val configPhp: String = """
+    fun generateConfigPhp(
+        dbHost: String = "127.0.0.1",
+        dbPort: Int = 3307,
+        dbName: String = "family_feed",
+        dbUser: String = "root",
+        dbPass: String = "TuClaveSynology123"
+    ): String = """
         <?php
         /**
          * config.php
          * Guardar en: /volume1/web/family_api/config.php
-         * Compatible con MariaDB 10 en Synology DSM 7 / 6
+         * Compatible con MariaDB / MySQL en Synology DSM 7 / 6 / Docker
          */
-        define('DB_HOST', '127.0.0.1');
-        define('DB_PORT', '3307'); // Puerto estándar de MariaDB 10 en DSM
-        define('DB_NAME', 'family_feed');
-        define('DB_USER', 'root'); // O crea un usuario 'family_user' en phpMyAdmin
-        define('DB_PASS', 'TuClaveSynology123');
+        define('DB_HOST', '$dbHost');
+        define('DB_PORT', '$dbPort'); // Puerto configurado para MariaDB / MySQL
+        define('DB_NAME', '$dbName');
+        define('DB_USER', '$dbUser'); // O crea un usuario 'family_user' en phpMyAdmin
+        define('DB_PASS', '$dbPass');
 
         function getDB(): PDO {
             static ${D}pdo = null;
@@ -114,6 +120,8 @@ object SynologyScripts {
             return ${D}pdo;
         }
     """.trimIndent()
+
+    val configPhp: String get() = generateConfigPhp()
 
     val indexPhp: String = """
         <?php

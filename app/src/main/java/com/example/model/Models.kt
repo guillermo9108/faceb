@@ -69,10 +69,13 @@ data class NasConfig(
     val ip: String = "192.168.1.100",
     val port: Int = 8085,
     val path: String = "/family_api",
+    val dbPort: Int = 3307,
+    val dbHost: String = "127.0.0.1",
+    val dbName: String = "family_feed",
     val isConnected: Boolean = false,
     val lastPingMs: Long = -1L,
     val lastError: String? = null,
     val serverTech: String = "Synology Web Station (Nginx + PHP 8.2)",
-    val databaseTech: String = "MariaDB 10 (Puerto 3307)",
+    val databaseTech: String = "MariaDB 10",
     val uploadMaxLimit: String = "1024 MB"
 )

@@ -75,8 +75,8 @@ class FamilyRepository(
         _currentMember.value = member
     }
 
-    fun updateNasConfig(ip: String, port: Int, path: String) {
-        _nasConfig.update { it.copy(ip = ip, port = port, path = path) }
+    fun updateNasConfig(ip: String, port: Int, path: String, dbPort: Int = 3307) {
+        _nasConfig.update { it.copy(ip = ip, port = port, path = path, dbPort = dbPort) }
         scope.launch {
             pingNas()
             refreshFeed()

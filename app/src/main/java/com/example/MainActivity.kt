@@ -178,7 +178,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                 FeedTab.NAS_SETTINGS -> {
                     NasConfigScreen(
                         nasConfig = nasConfig,
-                        onSaveConfig = { ip, port, path -> viewModel.updateNasSettings(ip, port, path) },
+                        onSaveConfig = { ip, port, path, dbPort -> viewModel.updateNasSettings(ip, port, path, dbPort) },
                         onTestConnection = { viewModel.testNasConnection() }
                     )
                 }

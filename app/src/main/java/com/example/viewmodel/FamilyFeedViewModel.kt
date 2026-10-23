@@ -215,9 +215,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         repository.togglePinPost(postId)
     }
 
-    fun updateNasSettings(ip: String, port: Int, path: String) {
-        repository.updateNasConfig(ip, port, path)
-        showStatus("Configuración de Synology actualizada")
+    fun updateNasSettings(ip: String, port: Int, path: String, dbPort: Int = 3307) {
+        repository.updateNasConfig(ip, port, path, dbPort)
+        showStatus("Configuración de Synology actualizada (Web: $port, BD: $dbPort)")
     }
 
     fun testNasConnection() {
