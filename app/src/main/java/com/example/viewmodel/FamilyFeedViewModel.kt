@@ -215,9 +215,14 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         repository.togglePinPost(postId)
     }
 
+    fun updateNasSettings(config: NasConfig) {
+        repository.updateNasConfig(config)
+        showStatus("Configuración de Synology guardada permanentemente")
+    }
+
     fun updateNasSettings(ip: String, port: Int, path: String, dbPort: Int = 3307) {
         repository.updateNasConfig(ip, port, path, dbPort)
-        showStatus("Configuración de Synology actualizada (Web: $port, BD: $dbPort)")
+        showStatus("Configuración de Synology guardada permanentemente")
     }
 
     fun testNasConnection() {

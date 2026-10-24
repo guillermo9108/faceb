@@ -26,11 +26,13 @@ object SynologyZipExporter {
             // 1. Script SQL para MariaDB / MySQL
             addEntry("schema.sql", SynologyScripts.schemaSql)
 
-            // 2. Archivo config.php con el puerto y host de base de datos configurados por el usuario
+            // 2. Archivo config.php con el puerto, host, usuario y clave de base de datos configurados por el usuario
             val customConfigPhp = SynologyScripts.generateConfigPhp(
                 dbHost = nasConfig.dbHost,
                 dbPort = nasConfig.dbPort,
-                dbName = nasConfig.dbName
+                dbName = nasConfig.dbName,
+                dbUser = nasConfig.dbUser,
+                dbPass = nasConfig.dbPass
             )
             addEntry("config.php", customConfigPhp)
 
@@ -52,6 +54,7 @@ object SynologyZipExporter {
             )
 
             // 5. docker-compose.yml opcional para Container Manager en Synology o PC
+            val dockerPass = nasConfig.dbPass.ifEmpty { "TuClaveSynology123" }
             addEntry(
                 "docker-compose.yml",
                 """
@@ -64,8 +67,10 @@ object SynologyZipExporter {
                     container_name: family_mariadb
                     restart: always
                     environment:
-                      MYSQL_ROOT_PASSWORD: TuClaveSynology123
+                      MYSQL_ROOT_PASSWORD: $dockerPass
                       MYSQL_DATABASE: ${nasConfig.dbName}
+                      MYSQL_USER: ${if (nasConfig.dbUser != "root") nasConfig.dbUser else "family_user"}
+                      MYSQL_PASSWORD: $dockerPass
                     ports:
                       - "${nasConfig.dbPort}:3306"
                     volumes:
@@ -99,6 +104,8 @@ object SynologyZipExporter {
                 - Puerto Base de Datos (MariaDB/MySQL): ${nasConfig.dbPort}
                 - Host Base de Datos: ${nasConfig.dbHost}
                 - Nombre Base de Datos: ${nasConfig.dbName}
+                - Usuario Base de Datos: ${nasConfig.dbUser}
+                - Contraseña Base de Datos: ${if (nasConfig.dbPass.isNotEmpty()) "(Configurada en config.php)" else "(Sin contraseña / Vacía)"}
 
                 ----------------------------------------------------------------------
                 PASO 1: INSTALAR PAQUETES EN SYNOLOGY DSM

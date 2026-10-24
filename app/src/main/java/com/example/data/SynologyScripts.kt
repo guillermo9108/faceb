@@ -92,7 +92,7 @@ object SynologyScripts {
         dbPort: Int = 3307,
         dbName: String = "family_feed",
         dbUser: String = "root",
-        dbPass: String = "TuClaveSynology123"
+        dbPass: String = ""
     ): String = """
         <?php
         /**
@@ -103,8 +103,8 @@ object SynologyScripts {
         define('DB_HOST', '$dbHost');
         define('DB_PORT', '$dbPort'); // Puerto configurado para MariaDB / MySQL
         define('DB_NAME', '$dbName');
-        define('DB_USER', '$dbUser'); // O crea un usuario 'family_user' en phpMyAdmin
-        define('DB_PASS', '$dbPass');
+        define('DB_USER', '$dbUser'); // Usuario MariaDB
+        define('DB_PASS', '$dbPass'); // Contraseña MariaDB
 
         function getDB(): PDO {
             static ${D}pdo = null;
@@ -114,6 +114,7 @@ object SynologyScripts {
                     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES   => false,
+                    PDO::ATTR_TIMEOUT            => 5,
                 ];
                 ${D}pdo = new PDO(${D}dsn, DB_USER, DB_PASS, ${D}options);
             }
@@ -130,10 +131,20 @@ object SynologyScripts {
          * Guardar en: /volume1/web/family_api/index.php
          * Servir vía Web Station en puerto dedicado (ej: 8085)
          */
+        // Prevenir que errores o avisos de PHP impriman HTML (<br />) y rompan el JSON
+        ini_set('display_errors', '0');
+        error_reporting(E_ALL);
+
         header("Access-Control-Allow-Origin: *");
         header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
         header("Access-Control-Allow-Headers: Content-Type, Authorization");
         header("Content-Type: application/json; charset=UTF-8");
+
+        set_exception_handler(function (${D}e) {
+            http_response_code(500);
+            echo json_encode(["status" => "ERROR", "error" => ${D}e->getMessage()]);
+            exit;
+        });
 
         if (${D}_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
             http_response_code(200);

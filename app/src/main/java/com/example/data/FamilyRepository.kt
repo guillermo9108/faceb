@@ -43,7 +43,37 @@ class FamilyRepository(
     private val _currentMember = MutableStateFlow(defaultFamilyMembers[0])
     val currentMember: StateFlow<FamilyMember> = _currentMember.asStateFlow()
 
-    private val _nasConfig = MutableStateFlow(NasConfig(isConnected = false, lastPingMs = -1L))
+    private val prefs = context.getSharedPreferences("nas_config_prefs", Context.MODE_PRIVATE)
+
+    private fun loadSavedNasConfig(): NasConfig {
+        return NasConfig(
+            ip = prefs.getString("nas_ip", "192.168.1.100") ?: "192.168.1.100",
+            port = prefs.getInt("nas_port", 8085),
+            path = prefs.getString("nas_path", "/family_api") ?: "/family_api",
+            dbPort = prefs.getInt("nas_db_port", 3307),
+            dbHost = prefs.getString("nas_db_host", "127.0.0.1") ?: "127.0.0.1",
+            dbName = prefs.getString("nas_db_name", "family_feed") ?: "family_feed",
+            dbUser = prefs.getString("nas_db_user", "root") ?: "root",
+            dbPass = prefs.getString("nas_db_pass", "") ?: "",
+            isConnected = false,
+            lastPingMs = -1L
+        )
+    }
+
+    private fun persistNasConfig(config: NasConfig) {
+        prefs.edit()
+            .putString("nas_ip", config.ip)
+            .putInt("nas_port", config.port)
+            .putString("nas_path", config.path)
+            .putInt("nas_db_port", config.dbPort)
+            .putString("nas_db_host", config.dbHost)
+            .putString("nas_db_name", config.dbName)
+            .putString("nas_db_user", config.dbUser)
+            .putString("nas_db_pass", config.dbPass)
+            .apply()
+    }
+
+    private val _nasConfig = MutableStateFlow(loadSavedNasConfig())
     val nasConfig: StateFlow<NasConfig> = _nasConfig.asStateFlow()
 
     private val _posts = MutableStateFlow<List<Post>>(emptyList())
@@ -75,8 +105,37 @@ class FamilyRepository(
         _currentMember.value = member
     }
 
-    fun updateNasConfig(ip: String, port: Int, path: String, dbPort: Int = 3307) {
-        _nasConfig.update { it.copy(ip = ip, port = port, path = path, dbPort = dbPort) }
+    fun updateNasConfig(
+        ip: String,
+        port: Int,
+        path: String,
+        dbPort: Int = 3307,
+        dbHost: String = "127.0.0.1",
+        dbName: String = "family_feed",
+        dbUser: String = "root",
+        dbPass: String = ""
+    ) {
+        val updated = _nasConfig.value.copy(
+            ip = ip,
+            port = port,
+            path = path,
+            dbPort = dbPort,
+            dbHost = dbHost,
+            dbName = dbName,
+            dbUser = dbUser,
+            dbPass = dbPass
+        )
+        _nasConfig.value = updated
+        persistNasConfig(updated)
+        scope.launch {
+            pingNas()
+            refreshFeed()
+        }
+    }
+
+    fun updateNasConfig(config: NasConfig) {
+        _nasConfig.value = config
+        persistNasConfig(config)
         scope.launch {
             pingNas()
             refreshFeed()

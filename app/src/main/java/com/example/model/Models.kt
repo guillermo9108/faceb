@@ -72,6 +72,8 @@ data class NasConfig(
     val dbPort: Int = 3307,
     val dbHost: String = "127.0.0.1",
     val dbName: String = "family_feed",
+    val dbUser: String = "root",
+    val dbPass: String = "",
     val isConnected: Boolean = false,
     val lastPingMs: Long = -1L,
     val lastError: String? = null,

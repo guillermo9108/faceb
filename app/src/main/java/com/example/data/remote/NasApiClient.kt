@@ -14,7 +14,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -62,12 +62,13 @@ class NasApiClient(
             val request = Request.Builder().url(url).get().build()
             val response = client.newCall(request).execute()
 
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
-            val body = response.body?.string() ?: "[]"
-            val jsonArray = JSONArray(body)
+            val jsonArray = parseJsonArraySafely(body)
             val users = mutableListOf<FamilyMember>()
 
             for (i in 0 until jsonArray.length()) {
@@ -100,12 +101,13 @@ class NasApiClient(
             val request = Request.Builder().url(url).get().build()
             val response = client.newCall(request).execute()
 
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
-            val body = response.body?.string() ?: "{}"
-            val jsonObject = JSONObject(body)
+            val jsonObject = parseJsonObjectSafely(body)
             val postsArray = jsonObject.optJSONArray("posts") ?: JSONArray()
             val postsList = mutableListOf<Post>()
 
@@ -134,7 +136,7 @@ class NasApiClient(
                             type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
                             url = fullMediaUrl,
                             thumbnailUrl = fullThumbUrl,
-                            durationLabel = p.optString("duration_label", null)
+                            durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() }
                         )
                     )
                 }
@@ -200,10 +202,7 @@ class NasApiClient(
                     }
                 }
 
-                val mediaRequestBody = RequestBody.create(
-                    mimeType.toMediaTypeOrNull(),
-                    tempFile
-                )
+                val mediaRequestBody = tempFile.asRequestBody(mimeType.toMediaTypeOrNull())
                 multipartBuilder.addFormDataPart(
                     "photo",
                     tempFile.name,
@@ -217,12 +216,13 @@ class NasApiClient(
                 .build()
 
             val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
-            val body = response.body?.string() ?: "{}"
-            val json = JSONObject(body)
+            val json = parseJsonObjectSafely(body)
             val newPostId = json.optInt("post_id", (1..99999).random())
             Result.success(newPostId)
         } catch (e: Exception) {
@@ -255,8 +255,10 @@ class NasApiClient(
                 .build()
 
             val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -289,12 +291,13 @@ class NasApiClient(
                 .build()
 
             val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
-            val body = response.body?.string() ?: "{}"
-            val commentId = JSONObject(body).optInt("comment_id", 0)
+            val commentId = parseJsonObjectSafely(body).optInt("comment_id", 0)
             Result.success(commentId)
         } catch (e: Exception) {
             Result.failure(e)
@@ -313,12 +316,90 @@ class NasApiClient(
                 .build()
 
             val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}"))
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private fun parseJsonObjectSafely(rawBody: String?): JSONObject {
+        val body = rawBody?.trim() ?: "{}"
+        if (body.isEmpty()) return JSONObject()
+        if (body.startsWith("<")) {
+            throw Exception(extractHtmlOrPhpError(body))
+        }
+        return try {
+            val json = JSONObject(body)
+            if (json.has("error")) {
+                throw Exception(json.optString("error"))
+            }
+            if (json.optString("status").equals("ERROR", ignoreCase = true)) {
+                throw Exception(json.optString("message", "Error del servidor Synology"))
+            }
+            json
+        } catch (e: Exception) {
+            if (e.message?.startsWith("Acceso") == true || e.message?.startsWith("Conexión") == true ||
+                e.message?.startsWith("Error") == true || e.message?.startsWith("La base") == true ||
+                e.message?.startsWith("Faltan") == true
+            ) {
+                throw e
+            }
+            throw Exception(extractHtmlOrPhpError(body))
+        }
+    }
+
+    private fun parseJsonArraySafely(rawBody: String?): JSONArray {
+        val body = rawBody?.trim() ?: "[]"
+        if (body.isEmpty()) return JSONArray()
+        if (body.startsWith("<")) {
+            throw Exception(extractHtmlOrPhpError(body))
+        }
+        return try {
+            JSONArray(body)
+        } catch (e: Exception) {
+            try {
+                val json = JSONObject(body)
+                if (json.has("error")) throw Exception(json.optString("error"))
+                if (json.has("message")) throw Exception(json.optString("message"))
+            } catch (ex: Exception) {
+                if (ex.message?.startsWith("Acceso") == true || ex.message?.startsWith("Conexión") == true) {
+                    throw ex
+                }
+            }
+            throw Exception(extractHtmlOrPhpError(body))
+        }
+    }
+
+    private fun extractHtmlOrPhpError(raw: String): String {
+        if (raw.contains("Access denied for user", ignoreCase = true) || raw.contains("1045", ignoreCase = true)) {
+            return "Acceso denegado a MariaDB. Verifica el usuario y la contraseña de la base de datos en los ajustes."
+        }
+        if (raw.contains("Connection refused", ignoreCase = true) || raw.contains("2002", ignoreCase = true)) {
+            return "Conexión rechazada por MariaDB. Verifica el puerto de la base de datos (ej. 3307 o 3306) y que esté activo en DSM."
+        }
+        if (raw.contains("Unknown database", ignoreCase = true) || raw.contains("1049", ignoreCase = true)) {
+            return "La base de datos 'family_feed' no existe en MariaDB. Ejecuta el archivo 'schema.sql' en phpMyAdmin."
+        }
+        if (raw.contains("Table", ignoreCase = true) && raw.contains("doesn't exist", ignoreCase = true)) {
+            return "Faltan tablas en MariaDB. Ejecuta el archivo 'schema.sql' en phpMyAdmin."
+        }
+
+        val cleaned = raw.replace(Regex("<[^>]*>"), " ")
+            .replace("&nbsp;", " ")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return if (cleaned.isNotBlank()) {
+            "Error en Synology: ${cleaned.take(160)}"
+        } else {
+            "El servidor Synology devolvió una respuesta con formato inválido (HTML en vez de JSON)."
         }
     }
 

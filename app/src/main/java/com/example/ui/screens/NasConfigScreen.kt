@@ -61,6 +61,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import com.example.data.SynologyScripts
 import com.example.model.NasConfig
 import com.example.ui.theme.FacebookBlue
@@ -71,7 +79,7 @@ import com.example.util.SynologyZipExporter
 @Composable
 fun NasConfigScreen(
     nasConfig: NasConfig,
-    onSaveConfig: (ip: String, port: Int, path: String, dbPort: Int) -> Unit,
+    onSaveConfig: (NasConfig) -> Unit,
     onTestConnection: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -80,7 +88,12 @@ fun NasConfigScreen(
     var ipInput by remember(nasConfig.ip) { mutableStateOf(nasConfig.ip) }
     var portInput by remember(nasConfig.port) { mutableStateOf(nasConfig.port.toString()) }
     var pathInput by remember(nasConfig.path) { mutableStateOf(nasConfig.path) }
+    var dbHostInput by remember(nasConfig.dbHost) { mutableStateOf(nasConfig.dbHost) }
     var dbPortInput by remember(nasConfig.dbPort) { mutableStateOf(nasConfig.dbPort.toString()) }
+    var dbNameInput by remember(nasConfig.dbName) { mutableStateOf(nasConfig.dbName) }
+    var dbUserInput by remember(nasConfig.dbUser) { mutableStateOf(nasConfig.dbUser) }
+    var dbPassInput by remember(nasConfig.dbPass) { mutableStateOf(nasConfig.dbPass) }
+    var isPasswordVisible by remember { mutableStateOf(false) }
 
     var downloadStatusMsg by remember { mutableStateOf<String?>(null) }
     var selectedScriptTab by remember { mutableIntStateOf(0) }
@@ -91,12 +104,16 @@ fun NasConfigScreen(
         "Guía DSM 7/6"
     )
 
-    val currentConfig = remember(ipInput, portInput, pathInput, dbPortInput, nasConfig) {
+    val currentConfig = remember(ipInput, portInput, pathInput, dbHostInput, dbPortInput, dbNameInput, dbUserInput, dbPassInput, nasConfig) {
         nasConfig.copy(
             ip = ipInput.trim().ifEmpty { "192.168.1.100" },
             port = portInput.toIntOrNull() ?: 8085,
             path = pathInput.trim().ifEmpty { "/family_api" },
-            dbPort = dbPortInput.toIntOrNull() ?: 3307
+            dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
+            dbPort = dbPortInput.toIntOrNull() ?: 3307,
+            dbName = dbNameInput.trim().ifEmpty { "family_feed" },
+            dbUser = dbUserInput.trim().ifEmpty { "root" },
+            dbPass = dbPassInput
         )
     }
 
@@ -187,6 +204,31 @@ fun NasConfigScreen(
                     }
                 }
 
+                // Error Diagnostic Banner si hay un error reportado
+                if (!nasConfig.isConnected && !nasConfig.lastError.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        color = Color(0xFFFFEBEE),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = nasConfig.lastError ?: "",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = Color(0xFFC62828),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(14.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                 Spacer(modifier = Modifier.height(12.dp))
@@ -198,11 +240,11 @@ fun NasConfigScreen(
                 ) {
                     Column {
                         Text("Servidor Web:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Web Station (Puerto ${currentConfig.port})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        Text("Web Station (${currentConfig.ip}:${currentConfig.port})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                     Column {
                         Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("MariaDB/MySQL (Puerto ${currentConfig.dbPort})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        Text("MariaDB (${currentConfig.dbUser}@:${currentConfig.dbPort})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                 }
 
@@ -213,12 +255,12 @@ fun NasConfigScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text("Ruta en NAS:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("/volume1/web/family_api/", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        Text("Ruta API en NAS:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${currentConfig.path}/", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                     Column {
-                        Text("Modo de Red:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("100% LAN Local (Sin Internet)", style = MaterialTheme.typography.bodySmall.copy(color = FacebookBlue, fontWeight = FontWeight.Bold))
+                        Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(currentConfig.dbName, style = MaterialTheme.typography.bodySmall.copy(color = FacebookBlue, fontWeight = FontWeight.Bold))
                     }
                 }
             }
@@ -239,12 +281,12 @@ fun NasConfigScreen(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
                 Text(
-                    text = "Configura la IP del NAS, el puerto de Web Station y el puerto de MariaDB/MySQL",
+                    text = "Configura la IP, puertos y credenciales de acceso a MariaDB/MySQL. Se guardan automáticamente en tu dispositivo.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Fila 1: IP del NAS y Puerto Web Station
                 Row(
@@ -272,11 +314,23 @@ fun NasConfigScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Fila 2: Puerto Base de Datos (MariaDB / MySQL) y Ruta API
+                // Fila 2: Host de BD y Puerto de BD
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    OutlinedTextField(
+                        value = dbHostInput,
+                        onValueChange = { dbHostInput = it },
+                        label = { Text("Host BD") },
+                        placeholder = { Text("127.0.0.1") },
+                        modifier = Modifier.weight(1.5f),
+                        singleLine = true,
+                        supportingText = {
+                            Text("127.0.0.1 o localhost en NAS", fontSize = 10.sp)
+                        }
+                    )
+
                     OutlinedTextField(
                         value = dbPortInput,
                         onValueChange = { dbPortInput = it },
@@ -288,24 +342,99 @@ fun NasConfigScreen(
                             Text("3307 MariaDB 10 / 3306 MySQL", fontSize = 10.sp)
                         }
                     )
+                }
 
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Fila 3: Usuario y Contraseña de Base de Datos
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = dbUserInput,
+                        onValueChange = { dbUserInput = it },
+                        label = { Text("Usuario BD") },
+                        placeholder = { Text("root") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        supportingText = {
+                            Text("Ej: root o family_user", fontSize = 10.sp)
+                        }
+                    )
+
+                    OutlinedTextField(
+                        value = dbPassInput,
+                        onValueChange = { dbPassInput = it },
+                        label = { Text("Contraseña BD") },
+                        placeholder = { Text("Contraseña MariaDB") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
+                                Icon(
+                                    if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (isPasswordVisible) "Ocultar" else "Mostrar"
+                                )
+                            }
+                        },
+                        visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier.weight(1.4f),
+                        singleLine = true,
+                        supportingText = {
+                            Text("Clave de MariaDB en DSM", fontSize = 10.sp)
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Fila 4: Ruta relativa API y Nombre BD
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedTextField(
                         value = pathInput,
                         onValueChange = { pathInput = it },
                         label = { Text("Ruta relativa API") },
                         placeholder = { Text("/family_api") },
-                        modifier = Modifier.weight(1.6f),
+                        modifier = Modifier.weight(1.5f),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = dbNameInput,
+                        onValueChange = { dbNameInput = it },
+                        label = { Text("Nombre BD") },
+                        placeholder = { Text("family_feed") },
+                        modifier = Modifier.weight(1.2f),
                         singleLine = true
                     )
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Button(
                     onClick = {
                         val parsedPort = portInput.toIntOrNull() ?: 8085
                         val parsedDbPort = dbPortInput.toIntOrNull() ?: 3307
-                        onSaveConfig(ipInput.trim(), parsedPort, pathInput.trim(), parsedDbPort)
+                        val updated = nasConfig.copy(
+                            ip = ipInput.trim().ifEmpty { "192.168.1.100" },
+                            port = parsedPort,
+                            path = pathInput.trim().ifEmpty { "/family_api" },
+                            dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
+                            dbPort = parsedDbPort,
+                            dbName = dbNameInput.trim().ifEmpty { "family_feed" },
+                            dbUser = dbUserInput.trim().ifEmpty { "root" },
+                            dbPass = dbPassInput
+                        )
+                        onSaveConfig(updated)
+                        Toast.makeText(context, "Configuración guardada permanentemente", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp),
@@ -313,7 +442,7 @@ fun NasConfigScreen(
                 ) {
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Guardar Parámetros de Red y BD", fontWeight = FontWeight.Bold)
+                    Text("Guardar Parámetros y Credenciales BD", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -486,24 +615,26 @@ fun NasConfigScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Contenido dinámico según el puerto de base de datos actual
+                // Contenido dinámico según los parámetros de red y base de datos actuales
                 val contentToShow = when (selectedScriptTab) {
                     0 -> SynologyScripts.schemaSql
                     1 -> SynologyScripts.generateConfigPhp(
                         dbHost = currentConfig.dbHost,
                         dbPort = currentConfig.dbPort,
-                        dbName = currentConfig.dbName
+                        dbName = currentConfig.dbName,
+                        dbUser = currentConfig.dbUser,
+                        dbPass = currentConfig.dbPass
                     )
                     2 -> SynologyScripts.indexPhp
                     else -> """
                         PASOS RÁPIDOS EN SYNOLOGY DSM:
                         
                         1. Instala 'Web Station', 'PHP 8.2' y 'MariaDB 10' desde el Centro de Paquetes.
-                        2. Abre 'phpMyAdmin' (o consola SSH a MariaDB en puerto ${currentConfig.dbPort}), crea la base de datos 'family_feed' y ejecuta el script 'schema.sql'.
-                        3. En File Station, dentro de la carpeta compartida 'web', crea la subcarpeta 'family_api'.
+                        2. Abre 'phpMyAdmin' (o consola SSH a MariaDB en puerto ${currentConfig.dbPort}), crea la base de datos '${currentConfig.dbName}' y ejecuta el script 'schema.sql'.
+                        3. En File Station, dentro de la carpeta compartida 'web', crea la subcarpeta '${currentConfig.path.trim('/')}'.
                         4. Guarda los archivos 'index.php', 'config.php' y '.htaccess' allí (o usa el botón 'Descargar ZIP' de arriba).
-                        5. Crea dentro de 'family_api' la carpeta 'uploads' y dale permisos de lectura/escritura (usuario 'http').
-                        6. En Web Station, crea un 'Portal de servicio web' basado en puertos (puerto ${currentConfig.port}) que apunte a /web/family_api usando PHP 8.2.
+                        5. Crea dentro de '${currentConfig.path.trim('/')}' la carpeta 'uploads' y dale permisos de lectura/escritura (usuario 'http').
+                        6. En Web Station, crea un 'Portal de servicio web' basado en puertos (puerto ${currentConfig.port}) que apunte a /web/${currentConfig.path.trim('/')} usando PHP 8.2.
                         7. ¡Listo! La app Android se conectará instantáneamente en tu Wi-Fi local.
                     """.trimIndent()
                 }
@@ -530,4 +661,19 @@ fun NasConfigScreen(
             }
         }
     }
+}
+
+@Composable
+fun NasConfigScreen(
+    nasConfig: NasConfig,
+    onSaveConfig: (ip: String, port: Int, path: String, dbPort: Int) -> Unit,
+    onTestConnection: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    NasConfigScreen(
+        nasConfig = nasConfig,
+        onSaveConfig = { cfg -> onSaveConfig(cfg.ip, cfg.port, cfg.path, cfg.dbPort) },
+        onTestConnection = onTestConnection,
+        modifier = modifier
+    )
 }
