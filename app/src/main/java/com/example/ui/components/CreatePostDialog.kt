@@ -70,17 +70,34 @@ import com.example.ui.theme.FacebookFeelingYellow
 import com.example.ui.theme.FacebookLiveRed
 import com.example.ui.theme.FacebookPhotoGreen
 
+import android.content.Context
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import com.example.util.VideoHelper
+import kotlinx.coroutines.launch
+import java.io.File
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreatePostDialog(
     currentMember: FamilyMember,
     onDismiss: () -> Unit,
-    onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?) -> Unit
+    onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?) -> Unit
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     var postText by remember { mutableStateOf("") }
     var selectedMediaUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFeeling by remember { mutableStateOf<String?>(null) }
     var selectedLocation by remember { mutableStateOf<String?>(null) }
+
+    var isVideoMedia by remember { mutableStateOf(false) }
+    var videoThumbnailFile by remember { mutableStateOf<File?>(null) }
+    var videoDurationLabel by remember { mutableStateOf<String?>(null) }
+    var isExtractingVideo by remember { mutableStateOf(false) }
 
     // Selector de Fotos/Vídeos Real de Android
     val mediaPickerLauncher = rememberLauncherForActivityResult(
@@ -88,6 +105,23 @@ fun CreatePostDialog(
     ) { uri: Uri? ->
         if (uri != null) {
             selectedMediaUri = uri
+            val mimeType = context.contentResolver.getType(uri) ?: ""
+            val isVid = mimeType.startsWith("video")
+            isVideoMedia = isVid
+
+            if (isVid) {
+                isExtractingVideo = true
+                coroutineScope.launch {
+                    val info = VideoHelper.extractVideoInfo(context, uri)
+                    videoDurationLabel = info.durationFormatted
+                    videoThumbnailFile = info.thumbnailFile
+                    isExtractingVideo = false
+                }
+            } else {
+                videoDurationLabel = null
+                videoThumbnailFile = null
+                isExtractingVideo = false
+            }
         }
     }
 
@@ -154,7 +188,14 @@ fun CreatePostDialog(
                     Button(
                         onClick = {
                             if (canPublish) {
-                                onSubmitPost(postText, selectedMediaUri, selectedFeeling, selectedLocation)
+                                onSubmitPost(
+                                    postText,
+                                    selectedMediaUri,
+                                    selectedFeeling,
+                                    selectedLocation,
+                                    videoThumbnailFile,
+                                    videoDurationLabel
+                                )
                             }
                         },
                         enabled = canPublish,
@@ -276,7 +317,7 @@ fun CreatePostDialog(
                             .clip(RoundedCornerShape(10.dp))
                     ) {
                         AsyncImage(
-                            model = selectedMediaUri,
+                            model = videoThumbnailFile ?: selectedMediaUri,
                             contentDescription = "Archivo adjunto",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()
@@ -284,7 +325,12 @@ fun CreatePostDialog(
 
                         // Close/Remove photo button
                         IconButton(
-                            onClick = { selectedMediaUri = null },
+                            onClick = {
+                                selectedMediaUri = null
+                                videoThumbnailFile = null
+                                videoDurationLabel = null
+                                isVideoMedia = false
+                            },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(8.dp)
@@ -295,6 +341,44 @@ fun CreatePostDialog(
                             Icon(Icons.Default.Close, contentDescription = "Quitar", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
 
+                        // Video Play Icon and Duration badge
+                        if (isVideoMedia) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.65f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isExtractingVideo) {
+                                    CircularProgressIndicator(
+                                        color = Color.White,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                } else {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                                }
+                            }
+
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.75f),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = if (isExtractingVideo) "Analizando vídeo..." else "Vídeo LAN · ${videoDurationLabel ?: "00:00"}",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
                         Surface(
                             color = Color.Black.copy(alpha = 0.7f),
                             shape = RoundedCornerShape(4.dp),
@@ -303,7 +387,7 @@ fun CreatePostDialog(
                                 .padding(8.dp)
                         ) {
                             Text(
-                                text = "Guardar en Synology /web/family_api/uploads",
+                                text = "Synology NAS /web/family_api/uploads",
                                 color = Color.White,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,

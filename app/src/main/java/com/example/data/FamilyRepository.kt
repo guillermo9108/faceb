@@ -174,6 +174,13 @@ class FamilyRepository(
             }
         }
 
+        // Sincronizar historias independientes desde MariaDB
+        apiClient.fetchStories(config.ip, config.port, config.path).onSuccess { realStories ->
+            if (realStories.isNotEmpty()) {
+                _stories.value = realStories
+            }
+        }
+
         // Obtener publicaciones reales del NAS
         val result = apiClient.fetchFeed(config.ip, config.port, config.path)
         _isLoading.value = false
@@ -190,17 +197,21 @@ class FamilyRepository(
                     database.postDao().insertPosts(entities)
                 }
 
-                // Generar historias a partir de publicaciones con fotos recientes
-                val newStories = realPosts.filter { it.mediaItems.isNotEmpty() }.take(5).mapIndexed { idx, post ->
-                    FamilyStory(
-                        id = "story_${post.id}",
-                        author = post.author,
-                        title = post.contentText.take(20) + "...",
-                        imageUrl = post.mediaItems.first().url,
-                        timestamp = post.createdAt
-                    )
+                // Si aún no hay historias independientes en la tabla de historias, generar a partir de fotos recientes
+                if (_stories.value.isEmpty()) {
+                    val fallbackStories = realPosts.filter { it.mediaItems.isNotEmpty() }.take(5).mapIndexed { idx, post ->
+                        FamilyStory(
+                            id = "story_${post.id}",
+                            author = post.author,
+                            title = post.contentText.take(24),
+                            imageUrl = post.mediaItems.first().thumbnailUrl.ifBlank { post.mediaItems.first().url },
+                            mediaUrl = post.mediaItems.first().url,
+                            caption = post.contentText,
+                            timestamp = post.createdAt
+                        )
+                    }
+                    _stories.value = fallbackStories
                 }
-                _stories.value = newStories
 
                 Result.success(realPosts)
             },
@@ -212,13 +223,31 @@ class FamilyRepository(
     }
 
     /**
-     * Publicación real con archivo real subido al Synology NAS.
+     * Carga comentarios en tiempo real desde MariaDB para una publicación específica.
+     */
+    suspend fun loadCommentsForPost(postId: Int): Result<List<Comment>> {
+        val config = _nasConfig.value
+        val result = apiClient.fetchComments(config.ip, config.port, config.path, postId)
+        result.onSuccess { comments ->
+            _posts.update { list ->
+                list.map { post ->
+                    if (post.id == postId) post.copy(comments = comments) else post
+                }
+            }
+        }
+        return result
+    }
+
+    /**
+     * Publicación real con archivo real, miniatura y duración subida al Synology NAS.
      */
     suspend fun addPost(
         contentText: String,
         mediaUri: Uri? = null,
         feeling: String? = null,
-        location: String? = null
+        location: String? = null,
+        thumbnailFile: java.io.File? = null,
+        durationLabel: String? = null
     ): Result<Int> {
         val config = _nasConfig.value
         val author = _currentMember.value
@@ -232,7 +261,9 @@ class FamilyRepository(
             text = contentText,
             feeling = feeling,
             location = location,
-            mediaUri = mediaUri
+            mediaUri = mediaUri,
+            thumbnailFile = thumbnailFile,
+            durationLabel = durationLabel
         )
 
         return result.fold(
@@ -243,6 +274,72 @@ class FamilyRepository(
             },
             onFailure = { error ->
                 Result.failure(error)
+            }
+        )
+    }
+
+    /**
+     * Crea y sube una historia independiente a MariaDB 10 en el Synology NAS.
+     */
+    suspend fun addStory(
+        caption: String,
+        storyType: com.example.model.StoryType,
+        bgColorHex: Long,
+        mediaUri: Uri? = null
+    ): Result<Int> {
+        val config = _nasConfig.value
+        val author = _currentMember.value
+
+        val result = apiClient.createStory(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            context = context,
+            userId = author.id,
+            caption = caption,
+            storyType = storyType.name,
+            bgColorHex = bgColorHex,
+            mediaUri = mediaUri
+        )
+
+        return result.fold(
+            onSuccess = { storyId ->
+                // Actualizar optimista local
+                val newStory = FamilyStory(
+                    id = "story_$storyId",
+                    author = author,
+                    title = caption,
+                    imageUrl = mediaUri?.toString() ?: "",
+                    mediaUrl = mediaUri?.toString() ?: "",
+                    storyType = storyType,
+                    caption = caption,
+                    backgroundColorHex = bgColorHex,
+                    timestamp = System.currentTimeMillis()
+                )
+                _stories.update { listOf(newStory) + it }
+                // Refrescar historias desde el NAS
+                scope.launch {
+                    apiClient.fetchStories(config.ip, config.port, config.path).onSuccess {
+                        if (it.isNotEmpty()) _stories.value = it
+                    }
+                }
+                Result.success(storyId)
+            },
+            onFailure = { error ->
+                // Si está offline, permitir crear la historia localmente para no bloquear al usuario en la LAN
+                val localStory = FamilyStory(
+                    id = "story_local_${System.currentTimeMillis()}",
+                    author = author,
+                    title = caption,
+                    imageUrl = mediaUri?.toString() ?: "",
+                    mediaUrl = mediaUri?.toString() ?: "",
+                    storyType = storyType,
+                    caption = caption,
+                    backgroundColorHex = bgColorHex,
+                    timestamp = System.currentTimeMillis()
+                )
+                _stories.update { listOf(localStory) + it }
+                Result.success(1)
             }
         )
     }
@@ -284,8 +381,22 @@ class FamilyRepository(
 
         val result = apiClient.sendComment(config.ip, config.port, config.path, postId, author.id, text)
         result.onSuccess {
-            // Actualizar feed para mostrar el nuevo comentario
+            loadCommentsForPost(postId)
             refreshFeed()
+        }.onFailure {
+            // Soporte offline: agregar comentario optimista en memoria para que no se pierda la interacción
+            val localComment = Comment(
+                id = (1000..99999).random(),
+                postId = postId,
+                author = author,
+                text = text,
+                createdAt = System.currentTimeMillis()
+            )
+            _posts.update { list ->
+                list.map { post ->
+                    if (post.id == postId) post.copy(comments = post.comments + localComment) else post
+                }
+            }
         }
         return result
     }

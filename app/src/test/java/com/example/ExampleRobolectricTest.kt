@@ -125,6 +125,22 @@ class ExampleRobolectricTest {
         val configPhp = entries["config.php"] ?: ""
         assertTrue("config.php must contain DB_USER", configPhp.contains("define('DB_USER', 'usuario_synology');"))
         assertTrue("config.php must contain DB_PASS", configPhp.contains("define('DB_PASS', 'MiClaveSecreta99');"))
+
+        val schemaSql = entries["schema.sql"] ?: ""
+        assertTrue("schema.sql must contain stories table", schemaSql.contains("CREATE TABLE IF NOT EXISTS stories"))
+
+        val indexPhp = entries["index.php"] ?: ""
+        assertTrue("index.php must contain comments endpoint", indexPhp.contains("/comments"))
+        assertTrue("index.php must contain stories endpoint", indexPhp.contains("/stories"))
+        assertTrue("index.php must contain thumbnail handling", indexPhp.contains("thumbnail"))
+    }
+
+    @Test
+    fun `video helper formats duration accurately`() {
+        assertEquals("00:00", com.example.util.VideoHelper.formatDuration(0L))
+        assertEquals("00:45", com.example.util.VideoHelper.formatDuration(45_000L))
+        assertEquals("01:24", com.example.util.VideoHelper.formatDuration(84_000L))
+        assertEquals("10:05", com.example.util.VideoHelper.formatDuration(605_000L))
     }
 }
 

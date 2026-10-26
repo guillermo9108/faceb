@@ -56,13 +56,29 @@ data class Post(
     val location: String? = null
 )
 
+enum class StoryType {
+    IMAGE,
+    TEXT,
+    VIDEO
+}
+
 data class FamilyStory(
     val id: String,
     val author: FamilyMember,
-    val title: String,
-    val imageUrl: String,
+    val title: String = "",
+    val imageUrl: String = "",
+    val mediaUrl: String = imageUrl,
+    val storyType: StoryType = if (imageUrl.isNotBlank()) StoryType.IMAGE else StoryType.TEXT,
+    val caption: String = title,
+    val backgroundColorHex: Long = 0xFF1E3A8A,
     val isViewed: Boolean = false,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+data class UserStoryGroup(
+    val author: FamilyMember,
+    val stories: List<FamilyStory>,
+    val hasUnseen: Boolean = true
 )
 
 data class NasConfig(

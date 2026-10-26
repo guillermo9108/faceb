@@ -74,6 +74,7 @@ fun PostCard(
     onCommentClick: () -> Unit,
     onTogglePin: () -> Unit,
     onDeletePost: () -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit = { _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -255,46 +256,53 @@ fun PostCard(
             if (post.mediaItems.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 val media = post.mediaItems.first()
+                val imageModel = remember(media.thumbnailUrl, media.url) {
+                    if (media.type == MediaType.VIDEO) media.thumbnailUrl.ifBlank { media.url } else media.url
+                }
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 10f)
                         .background(Color.Black.copy(alpha = 0.05f))
+                        .clickable(enabled = media.type == MediaType.VIDEO) {
+                            onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
+                        }
                 ) {
                     AsyncImage(
-                        model = media.url,
+                        model = imageModel,
                         contentDescription = media.caption.ifBlank { "Foto de publicación" },
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    // Video overlay
+                    // Video overlay with prominent play button
                     if (media.type == MediaType.VIDEO) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.3f)),
+                                .background(Color.Black.copy(alpha = 0.35f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(52.dp)
+                                    .size(56.dp)
                                     .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.65f)),
+                                    .background(Color.Black.copy(alpha = 0.7f))
+                                    .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Reproducir",
+                                    contentDescription = "Reproducir vídeo",
                                     tint = Color.White,
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(36.dp)
                                 )
                             }
                         }
 
                         Surface(
-                            color = Color.Black.copy(alpha = 0.75f),
+                            color = Color.Black.copy(alpha = 0.8f),
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)

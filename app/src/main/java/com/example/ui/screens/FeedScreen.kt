@@ -62,7 +62,7 @@ import com.example.ui.theme.LanOnlineGreen
 fun FeedScreen(
     currentMember: FamilyMember,
     familyMembers: List<FamilyMember>,
-    stories: List<FamilyStory>,
+    userStoryGroups: List<com.example.model.UserStoryGroup>,
     posts: List<Post>,
     nasConfig: NasConfig,
     isLoading: Boolean,
@@ -71,10 +71,13 @@ fun FeedScreen(
     onFilterMember: (FamilyMember?) -> Unit,
     onRefreshFeed: () -> Unit,
     onOpenCreatePost: () -> Unit,
+    onOpenCreateStory: () -> Unit,
+    onStoryClick: (com.example.model.UserStoryGroup) -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit,
     onOpenNasConfig: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -171,14 +174,13 @@ fun FeedScreen(
         }
 
         // 3. Stories Row (Directly below composer widget)
-        if (stories.isNotEmpty()) {
-            item {
-                StoriesSection(
-                    currentMember = currentMember,
-                    stories = stories,
-                    onCreateStoryClick = onOpenCreatePost
-                )
-            }
+        item {
+            StoriesSection(
+                currentMember = currentMember,
+                userStoryGroups = userStoryGroups,
+                onCreateStoryClick = onOpenCreateStory,
+                onStoryClick = onStoryClick
+            )
         }
 
         // 4. Family Member Filter Chips Row
@@ -324,7 +326,8 @@ fun FeedScreen(
                     onReactionClick = { reactionType -> onReactionClick(post.id, reactionType) },
                     onCommentClick = { onCommentClick(post) },
                     onTogglePin = { onTogglePin(post.id) },
-                    onDeletePost = { onDeletePost(post.id) }
+                    onDeletePost = { onDeletePost(post.id) },
+                    onPlayVideo = onPlayVideo
                 )
             }
         }

@@ -62,6 +62,7 @@ fun WatchScreen(
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
     onOpenCreatePost: () -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Filtrar publicaciones que contengan vídeos
@@ -193,7 +194,8 @@ fun WatchScreen(
                     onReactionClick = { reactionType -> onReactionClick(post.id, reactionType) },
                     onCommentClick = { onCommentClick(post) },
                     onTogglePin = { onTogglePin(post.id) },
-                    onDeletePost = { onDeletePost(post.id) }
+                    onDeletePost = { onDeletePost(post.id) },
+                    onPlayVideo = onPlayVideo
                 )
             }
         }

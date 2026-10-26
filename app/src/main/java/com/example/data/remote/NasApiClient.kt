@@ -144,6 +144,29 @@ class NasApiClient(
                 val likesCount = p.optInt("likes_count", 0)
                 val reactionsMap = if (likesCount > 0) mapOf(ReactionType.LIKE to likesCount) else emptyMap()
 
+                val commentsList = mutableListOf<Comment>()
+                val commentsArray = p.optJSONArray("comments")
+                if (commentsArray != null) {
+                    for (cIdx in 0 until commentsArray.length()) {
+                        val cObj = commentsArray.getJSONObject(cIdx)
+                        commentsList.add(
+                            Comment(
+                                id = cObj.getInt("id"),
+                                postId = postId,
+                                author = FamilyMember(
+                                    id = cObj.getInt("user_id"),
+                                    name = cObj.optString("display_name", "Familiar"),
+                                    role = cObj.optString("role", "Familiar"),
+                                    avatarEmoji = cObj.optString("avatar_emoji", "👤"),
+                                    avatarColorHex = cObj.optLong("avatar_color_hex", 0xFF1E40AF)
+                                ),
+                                text = cObj.optString("comment_text", ""),
+                                createdAt = parseTimestamp(cObj.optString("created_at"))
+                            )
+                        )
+                    }
+                }
+
                 postsList.add(
                     Post(
                         id = postId,
@@ -152,6 +175,7 @@ class NasApiClient(
                         createdAt = parseTimestamp(p.optString("created_at")),
                         mediaItems = mediaItems,
                         reactions = reactionsMap,
+                        comments = commentsList,
                         feeling = p.optString("feeling").takeIf { it.isNotBlank() },
                         location = p.optString("location").takeIf { it.isNotBlank() },
                         isPinned = p.optInt("is_pinned", 0) == 1
@@ -166,7 +190,110 @@ class NasApiClient(
     }
 
     /**
-     * Sube una publicación real con archivo multimedia real al Synology NAS.
+     * Obtiene los comentarios en tiempo real para una publicación específica de MariaDB 10.
+     */
+    suspend fun fetchComments(ip: String, port: Int, path: String, postId: Int): Result<List<Comment>> = withContext(Dispatchers.IO) {
+        try {
+            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/comments?post_id=$postId"
+            val request = Request.Builder().url(url).get().build()
+            val response = client.newCall(request).execute()
+
+            val body = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val commentsArray = jsonObject.optJSONArray("comments") ?: JSONArray()
+            val commentsList = mutableListOf<Comment>()
+
+            for (i in 0 until commentsArray.length()) {
+                val c = commentsArray.getJSONObject(i)
+                commentsList.add(
+                    Comment(
+                        id = c.getInt("id"),
+                        postId = postId,
+                        author = FamilyMember(
+                            id = c.getInt("user_id"),
+                            name = c.optString("display_name", "Familiar"),
+                            role = c.optString("role", "Familiar"),
+                            avatarEmoji = c.optString("avatar_emoji", "👤"),
+                            avatarColorHex = c.optLong("avatar_color_hex", 0xFF1E40AF)
+                        ),
+                        text = c.optString("comment_text", ""),
+                        createdAt = parseTimestamp(c.optString("created_at"))
+                    )
+                )
+            }
+            Result.success(commentsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Obtiene las historias familiares independientes desde MariaDB 10 en el NAS.
+     */
+    suspend fun fetchStories(ip: String, port: Int, path: String): Result<List<com.example.model.FamilyStory>> = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = buildBaseUrl(ip, port, path)
+            val url = "$baseUrl/index.php/api/stories"
+            val request = Request.Builder().url(url).get().build()
+            val response = client.newCall(request).execute()
+
+            val body = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val storiesArray = jsonObject.optJSONArray("stories") ?: JSONArray()
+            val storiesList = mutableListOf<com.example.model.FamilyStory>()
+
+            for (i in 0 until storiesArray.length()) {
+                val s = storiesArray.getJSONObject(i)
+                val author = FamilyMember(
+                    id = s.getInt("user_id"),
+                    name = s.optString("display_name", "Familiar"),
+                    role = s.optString("role", "Familiar"),
+                    avatarEmoji = s.optString("avatar_emoji", "👤"),
+                    avatarColorHex = s.optLong("avatar_color_hex", 0xFF1E40AF)
+                )
+
+                val filePath = s.optString("file_path", "")
+                val fullUrl = if (filePath.isNotBlank()) "$baseUrl/$filePath" else ""
+                val caption = s.optString("caption", "")
+                val storyTypeStr = s.optString("story_type", "IMAGE")
+                val storyType = when (storyTypeStr.uppercase()) {
+                    "TEXT" -> com.example.model.StoryType.TEXT
+                    "VIDEO" -> com.example.model.StoryType.VIDEO
+                    else -> com.example.model.StoryType.IMAGE
+                }
+
+                storiesList.add(
+                    com.example.model.FamilyStory(
+                        id = "story_${s.getInt("id")}",
+                        author = author,
+                        title = caption,
+                        imageUrl = fullUrl,
+                        mediaUrl = fullUrl,
+                        storyType = storyType,
+                        caption = caption,
+                        backgroundColorHex = s.optLong("bg_color_hex", 0xFF1E3A8A),
+                        timestamp = parseTimestamp(s.optString("created_at"))
+                    )
+                )
+            }
+            Result.success(storiesList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Sube una publicación real con archivo multimedia, miniatura y duración al Synology NAS.
      */
     suspend fun createPost(
         ip: String,
@@ -177,7 +304,9 @@ class NasApiClient(
         text: String,
         feeling: String?,
         location: String?,
-        mediaUri: Uri?
+        mediaUri: Uri?,
+        thumbnailFile: File? = null,
+        durationLabel: String? = null
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val url = "${buildBaseUrl(ip, port, path)}/index.php/api/post"
@@ -187,6 +316,13 @@ class NasApiClient(
 
             feeling?.let { multipartBuilder.addFormDataPart("feeling", it) }
             location?.let { multipartBuilder.addFormDataPart("location", it) }
+            durationLabel?.let { multipartBuilder.addFormDataPart("duration_label", it) }
+
+            // Si hay miniatura extraída explícita para vídeos, enviarla
+            if (thumbnailFile != null && thumbnailFile.exists()) {
+                val thumbBody = thumbnailFile.asRequestBody("image/jpeg".toMediaTypeOrNull())
+                multipartBuilder.addFormDataPart("thumbnail", thumbnailFile.name, thumbBody)
+            }
 
             // Si hay un archivo real seleccionado desde el dispositivo, leer los bytes y enviarlos
             if (mediaUri != null) {
@@ -225,6 +361,65 @@ class NasApiClient(
             val json = parseJsonObjectSafely(body)
             val newPostId = json.optInt("post_id", (1..99999).random())
             Result.success(newPostId)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Sube una historia familiar independiente a MariaDB 10 y al almacenamiento del NAS.
+     */
+    suspend fun createStory(
+        ip: String,
+        port: Int,
+        path: String,
+        context: Context,
+        userId: Int,
+        caption: String,
+        storyType: String,
+        bgColorHex: Long,
+        mediaUri: Uri?
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/story"
+            val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("user_id", userId.toString())
+                .addFormDataPart("caption", caption)
+                .addFormDataPart("story_type", storyType)
+                .addFormDataPart("bg_color_hex", bgColorHex.toString())
+
+            if (mediaUri != null) {
+                val inputStream = context.contentResolver.openInputStream(mediaUri)
+                val mimeType = context.contentResolver.getType(mediaUri) ?: "image/jpeg"
+                val isVideo = mimeType.startsWith("video")
+                val extension = if (isVideo) "mp4" else "jpg"
+
+                val tempFile = File(context.cacheDir, "story_${System.currentTimeMillis()}.$extension")
+                inputStream?.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                val mediaRequestBody = tempFile.asRequestBody(mimeType.toMediaTypeOrNull())
+                multipartBuilder.addFormDataPart("photo", tempFile.name, mediaRequestBody)
+            }
+
+            val request = Request.Builder()
+                .url(url)
+                .post(multipartBuilder.build())
+                .build()
+
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val storyId = json.optInt("story_id", (1..99999).random())
+            Result.success(storyId)
         } catch (e: Exception) {
             Result.failure(e)
         }

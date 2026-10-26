@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,14 +41,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.model.FamilyMember
-import com.example.model.FamilyStory
+import com.example.model.StoryType
+import com.example.model.UserStoryGroup
 import com.example.ui.theme.FacebookBlue
 
 @Composable
 fun StoriesSection(
     currentMember: FamilyMember,
-    stories: List<FamilyStory>,
+    userStoryGroups: List<UserStoryGroup>,
     onCreateStoryClick: () -> Unit,
+    onStoryClick: (UserStoryGroup) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -60,7 +61,7 @@ fun StoriesSection(
         LazyRow(
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().testTag("stories_row")
         ) {
             // First item: Facebook "Crear historia" Card
             item {
@@ -132,26 +133,63 @@ fun StoriesSection(
                 }
             }
 
-            // Real Family Stories Cards (with Facebook blue ring and dark gradient scrim)
-            items(stories, key = { it.id }) { story ->
+            // Real Family Stories Cards grouped by user
+            items(userStoryGroups, key = { it.author.id }) { group ->
+                val latestStory = group.stories.firstOrNull()
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                     modifier = Modifier
                         .width(105.dp)
                         .height(180.dp)
-                        .testTag("story_card_${story.id}")
+                        .clickable { onStoryClick(group) }
+                        .testTag("user_story_${group.author.id}")
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Full-bleed Story Image
-                        AsyncImage(
-                            model = story.imageUrl,
-                            contentDescription = story.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        // Background of the story card
+                        if (latestStory != null && latestStory.storyType == StoryType.TEXT) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color(latestStory.backgroundColorHex),
+                                                Color(latestStory.backgroundColorHex).copy(alpha = 0.8f),
+                                                Color.Black.copy(alpha = 0.85f)
+                                            )
+                                        )
+                                    )
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = latestStory.caption.take(24),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        textAlign = TextAlign.Center
+                                    ),
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        } else if (latestStory != null && latestStory.imageUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = latestStory.imageUrl,
+                                contentDescription = latestStory.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(group.author.avatarColorHex).copy(alpha = 0.7f))
+                            )
+                        }
 
-                        // Facebook-style vertical dark gradient scrim
+                        // Gradient scrim for readability
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -166,20 +204,39 @@ fun StoriesSection(
                                 )
                         )
 
-                        // Top-left: Avatar with Iconic Facebook Blue Ring
+                        // Top-left: Avatar with Iconic Facebook Blue Ring (indicates unviewed stories)
                         Box(
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(8.dp)
-                                .size(36.dp)
+                                .size(38.dp)
                                 .clip(CircleShape)
-                                .background(FacebookBlue)
+                                .background(if (group.hasUnseen) FacebookBlue else Color.White.copy(alpha = 0.6f))
                                 .padding(2.5.dp)
                                 .clip(CircleShape)
-                                .background(Color(story.author.avatarColorHex)),
+                                .background(Color(group.author.avatarColorHex)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(text = story.author.avatarEmoji, fontSize = 16.sp)
+                            Text(text = group.author.avatarEmoji, fontSize = 16.sp)
+                        }
+
+                        // Top-right: Badge showing number of stories if more than 1
+                        if (group.stories.size > 1) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color.Black.copy(alpha = 0.6f),
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(6.dp)
+                            ) {
+                                Text(
+                                    text = "${group.stories.size}",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
                         }
 
                         // Bottom-left: Author Name in Bold White
@@ -189,7 +246,7 @@ fun StoriesSection(
                                 .padding(8.dp)
                         ) {
                             Text(
-                                text = story.author.name,
+                                text = group.author.name,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White,

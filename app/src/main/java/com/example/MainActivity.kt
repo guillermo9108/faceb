@@ -9,32 +9,25 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
+import com.example.ui.components.CreateStoryDialog
 import com.example.ui.components.HeaderBar
 import com.example.ui.components.MemberSwitchDialog
+import com.example.ui.components.StoryViewerDialog
+import com.example.ui.components.VideoPlayerDialog
 import com.example.ui.screens.FamilyMembersScreen
 import com.example.ui.screens.FeedScreen
 import com.example.ui.screens.MenuScreen
@@ -42,7 +35,6 @@ import com.example.ui.screens.NasConfigScreen
 import com.example.ui.screens.NotificationsScreen
 import com.example.ui.screens.PhotosScreen
 import com.example.ui.screens.WatchScreen
-import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.FamilyFeedViewModel
 import com.example.viewmodel.FeedTab
@@ -63,15 +55,19 @@ class MainActivity : ComponentActivity() {
 fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val currentMember by viewModel.currentMember.collectAsState()
     val nasConfig by viewModel.nasConfig.collectAsState()
-    val stories by viewModel.stories.collectAsState()
+    val groupedStories by viewModel.groupedStories.collectAsState()
     val posts by viewModel.filteredPosts.collectAsState()
     val selectedTab by viewModel.selectedTab.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectedMemberFilter by viewModel.selectedMemberFilter.collectAsState()
-    val selectedPostForComments by viewModel.selectedPostForComments.collectAsState()
+    val selectedPostForComments by viewModel.activePostForComments.collectAsState()
     val isCreatePostDialogOpen by viewModel.isCreatePostDialogOpen.collectAsState()
+    val isCreateStoryDialogOpen by viewModel.isCreateStoryDialogOpen.collectAsState()
+    val selectedStoryGroupForViewing by viewModel.selectedStoryGroupForViewing.collectAsState()
     val isMemberSwitchDialogOpen by viewModel.isMemberSwitchDialogOpen.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
+
+    var activeVideoToPlay by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -117,7 +113,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                     FeedScreen(
                         currentMember = currentMember,
                         familyMembers = familyMembers,
-                        stories = stories,
+                        userStoryGroups = groupedStories,
                         posts = posts,
                         nasConfig = nasConfig,
                         isLoading = isLoading,
@@ -126,10 +122,15 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onFilterMember = { viewModel.setMemberFilter(it) },
                         onRefreshFeed = { viewModel.refreshFeed() },
                         onOpenCreatePost = { viewModel.openCreatePostDialog() },
+                        onOpenCreateStory = { viewModel.openCreateStoryDialog() },
+                        onStoryClick = { group -> viewModel.openStoryViewer(group) },
                         onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
+                        onPlayVideo = { url, title, author, dur ->
+                            activeVideoToPlay = Triple(url, title, dur)
+                        },
                         onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) }
                     )
                 }
@@ -140,7 +141,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onOpenCreatePost = { viewModel.openCreatePostDialog() }
+                        onOpenCreatePost = { viewModel.openCreatePostDialog() },
+                        onPlayVideo = { url, title, author, dur ->
+                            activeVideoToPlay = Triple(url, title, dur)
+                        }
                     )
                 }
                 FeedTab.MEMBERS -> {
@@ -191,9 +195,38 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         CreatePostDialog(
             currentMember = currentMember,
             onDismiss = { viewModel.closeCreatePostDialog() },
-            onSubmitPost = { text, mediaUri, feeling, loc ->
-                viewModel.createPost(text, mediaUri, feeling, loc)
+            onSubmitPost = { text, mediaUri, feeling, loc, thumbFile, durLabel ->
+                viewModel.createPost(text, mediaUri, feeling, loc, thumbFile, durLabel)
             }
+        )
+    }
+
+    // Modal Crear Historia Independiente Real
+    if (isCreateStoryDialogOpen) {
+        CreateStoryDialog(
+            currentMember = currentMember,
+            onDismiss = { viewModel.closeCreateStoryDialog() },
+            onSubmitStory = { caption, storyType, bgColorHex, mediaUri ->
+                viewModel.createStory(caption, storyType, bgColorHex, mediaUri)
+            }
+        )
+    }
+
+    // Modal Visor de Historias a pantalla completa
+    selectedStoryGroupForViewing?.let { group ->
+        StoryViewerDialog(
+            group = group,
+            onDismiss = { viewModel.closeStoryViewer() }
+        )
+    }
+
+    // Modal Reproductor de Vídeo optimizado
+    activeVideoToPlay?.let { (videoUrl, title, duration) ->
+        VideoPlayerDialog(
+            videoUrl = videoUrl,
+            title = title,
+            durationLabel = duration,
+            onDismiss = { activeVideoToPlay = null }
         )
     }
 
@@ -207,7 +240,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         )
     }
 
-    // Modal / Bottom Sheet de Comentarios
+    // Modal / Bottom Sheet de Comentarios Reactivo
     selectedPostForComments?.let { post ->
         CommentsSheet(
             post = post,

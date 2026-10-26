@@ -15,8 +15,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class FeedTab(val label: String) {
     FEED("Inicio"),
@@ -50,8 +52,23 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedPostForComments = MutableStateFlow<Post?>(null)
     val selectedPostForComments: StateFlow<Post?> = _selectedPostForComments.asStateFlow()
 
+    // Comentarios reactivos: se actualizan en vivo al recibir datos de MariaDB
+    val activePostForComments: StateFlow<Post?> = combine(
+        _selectedPostForComments,
+        repository.posts
+    ) { selected, posts ->
+        if (selected == null) null
+        else posts.find { it.id == selected.id } ?: selected
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     private val _isCreatePostDialogOpen = MutableStateFlow(false)
     val isCreatePostDialogOpen: StateFlow<Boolean> = _isCreatePostDialogOpen.asStateFlow()
+
+    private val _isCreateStoryDialogOpen = MutableStateFlow(false)
+    val isCreateStoryDialogOpen: StateFlow<Boolean> = _isCreateStoryDialogOpen.asStateFlow()
+
+    private val _selectedStoryGroupForViewing = MutableStateFlow<com.example.model.UserStoryGroup?>(null)
+    val selectedStoryGroupForViewing: StateFlow<com.example.model.UserStoryGroup?> = _selectedStoryGroupForViewing.asStateFlow()
 
     private val _isMemberSwitchDialogOpen = MutableStateFlow(false)
     val isMemberSwitchDialogOpen: StateFlow<Boolean> = _isMemberSwitchDialogOpen.asStateFlow()
@@ -66,6 +83,17 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
             repository.refreshFeed()
         }
     }
+
+    // Historias agrupadas por usuario para mostrar en StoriesRow
+    val groupedStories: StateFlow<List<com.example.model.UserStoryGroup>> = repository.stories.map { list ->
+        list.groupBy { it.author.id }.map { (_, userStories) ->
+            com.example.model.UserStoryGroup(
+                author = userStories.first().author,
+                stories = userStories.sortedByDescending { it.timestamp },
+                hasUnseen = userStories.any { !it.isViewed }
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Feed filtrado dinámico según búsqueda y autor seleccionado
     val filteredPosts: StateFlow<List<Post>> = combine(
@@ -106,6 +134,22 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _isCreatePostDialogOpen.value = false
     }
 
+    fun openCreateStoryDialog() {
+        _isCreateStoryDialogOpen.value = true
+    }
+
+    fun closeCreateStoryDialog() {
+        _isCreateStoryDialogOpen.value = false
+    }
+
+    fun openStoryViewer(group: com.example.model.UserStoryGroup) {
+        _selectedStoryGroupForViewing.value = group
+    }
+
+    fun closeStoryViewer() {
+        _selectedStoryGroupForViewing.value = null
+    }
+
     fun openMemberSwitchDialog() {
         _isMemberSwitchDialogOpen.value = true
     }
@@ -122,6 +166,10 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun openCommentsSheet(post: Post) {
         _selectedPostForComments.value = post
+        // Carga inmediata de comentarios reales desde MariaDB 10
+        viewModelScope.launch {
+            repository.loadCommentsForPost(post.id)
+        }
     }
 
     fun closeCommentsSheet() {
@@ -146,7 +194,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         text: String,
         mediaUri: Uri? = null,
         feeling: String? = null,
-        location: String? = null
+        location: String? = null,
+        thumbnailFile: File? = null,
+        durationLabel: String? = null
     ) {
         if (text.isBlank() && mediaUri == null) return
 
@@ -158,7 +208,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 contentText = text,
                 mediaUri = mediaUri,
                 feeling = feeling,
-                location = location
+                location = location,
+                thumbnailFile = thumbnailFile,
+                durationLabel = durationLabel
             )
 
             result.fold(
@@ -167,6 +219,34 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 },
                 onFailure = { error ->
                     showStatus("Error al subir al NAS: ${error.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun createStory(
+        caption: String,
+        storyType: com.example.model.StoryType,
+        bgColorHex: Long,
+        mediaUri: Uri? = null
+    ) {
+        viewModelScope.launch {
+            _isCreateStoryDialogOpen.value = false
+            showStatus("Subiendo historia familiar al Synology NAS...")
+
+            val result = repository.addStory(
+                caption = caption,
+                storyType = storyType,
+                bgColorHex = bgColorHex,
+                mediaUri = mediaUri
+            )
+
+            result.fold(
+                onSuccess = {
+                    showStatus("¡Historia compartida con la familia!")
+                },
+                onFailure = { error ->
+                    showStatus("Error al subir historia: ${error.localizedMessage}")
                 }
             )
         }
