@@ -10,6 +10,7 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -81,11 +82,162 @@ class NasApiClient(
                         avatarEmoji = obj.optString("avatar_emoji", "👤"),
                         avatarColorHex = obj.optLong("avatar_color_hex", 0xFF1E40AF),
                         pin = obj.optString("pin_hash", "1234"),
-                        bio = obj.optString("bio", "")
+                        bio = obj.optString("bio", ""),
+                        username = obj.optString("username", "")
                     )
                 )
             }
             Result.success(users)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Registro de nuevo usuario familiar en MariaDB 10.
+     */
+    suspend fun register(
+        ip: String,
+        port: Int,
+        path: String,
+        username: String,
+        pass: String,
+        displayName: String,
+        role: String,
+        avatarEmoji: String,
+        avatarColorHex: Long
+    ): Result<FamilyMember> = withContext(Dispatchers.IO) {
+        try {
+            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/auth/register"
+            val formBody = FormBody.Builder()
+                .add("username", username)
+                .add("password", pass)
+                .add("display_name", displayName)
+                .add("role", role)
+                .add("avatar_emoji", avatarEmoji)
+                .add("avatar_color_hex", avatarColorHex.toString())
+                .build()
+
+            val request = Request.Builder().url(url).post(formBody).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception(detail))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val uObj = json.getJSONObject("user")
+            val member = FamilyMember(
+                id = uObj.getInt("id"),
+                name = uObj.getString("display_name"),
+                role = uObj.optString("role", "Familiar"),
+                avatarEmoji = uObj.optString("avatar_emoji", "👤"),
+                avatarColorHex = uObj.optLong("avatar_color_hex", 0xFF1E40AF),
+                pin = "",
+                bio = uObj.optString("bio", ""),
+                username = uObj.optString("username", username)
+            )
+            Result.success(member)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Inicio de sesión de usuario familiar en MariaDB 10.
+     */
+    suspend fun login(
+        ip: String,
+        port: Int,
+        path: String,
+        username: String,
+        pass: String
+    ): Result<FamilyMember> = withContext(Dispatchers.IO) {
+        try {
+            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/auth/login"
+            val formBody = FormBody.Builder()
+                .add("username", username)
+                .add("password", pass)
+                .build()
+
+            val request = Request.Builder().url(url).post(formBody).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception(detail))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val uObj = json.getJSONObject("user")
+            val member = FamilyMember(
+                id = uObj.getInt("id"),
+                name = uObj.getString("display_name"),
+                role = uObj.optString("role", "Familiar"),
+                avatarEmoji = uObj.optString("avatar_emoji", "👤"),
+                avatarColorHex = uObj.optLong("avatar_color_hex", 0xFF1E40AF),
+                pin = "",
+                bio = uObj.optString("bio", ""),
+                username = uObj.optString("username", username)
+            )
+            Result.success(member)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Actualiza nick, avatar, bio y/o contraseña en MariaDB 10.
+     */
+    suspend fun updateProfile(
+        ip: String,
+        port: Int,
+        path: String,
+        userId: Int,
+        displayName: String,
+        avatarEmoji: String,
+        avatarColorHex: Long,
+        bio: String,
+        newPassword: String?
+    ): Result<FamilyMember> = withContext(Dispatchers.IO) {
+        try {
+            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/profile/update"
+            val formBuilder = FormBody.Builder()
+                .add("user_id", userId.toString())
+                .add("display_name", displayName)
+                .add("avatar_emoji", avatarEmoji)
+                .add("avatar_color_hex", avatarColorHex.toString())
+                .add("bio", bio)
+
+            if (!newPassword.isNullOrBlank()) {
+                formBuilder.add("new_password", newPassword)
+            }
+
+            val request = Request.Builder().url(url).post(formBuilder.build()).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: ""
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception(detail))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val uObj = json.getJSONObject("user")
+            val member = FamilyMember(
+                id = uObj.getInt("id"),
+                name = uObj.getString("display_name"),
+                role = uObj.optString("role", "Familiar"),
+                avatarEmoji = uObj.optString("avatar_emoji", "👤"),
+                avatarColorHex = uObj.optLong("avatar_color_hex", 0xFF1E40AF),
+                pin = "",
+                bio = uObj.optString("bio", ""),
+                username = uObj.optString("username", "")
+            )
+            Result.success(member)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -113,80 +265,115 @@ class NasApiClient(
 
             for (i in 0 until postsArray.length()) {
                 val p = postsArray.getJSONObject(i)
-                val postId = p.getInt("id")
-                val author = FamilyMember(
-                    id = p.getInt("user_id"),
-                    name = p.optString("display_name", "Familiar"),
-                    role = p.optString("role", "Familiar"),
-                    avatarEmoji = p.optString("avatar_emoji", "👤"),
-                    avatarColorHex = p.optLong("avatar_color_hex", 0xFF1E40AF)
-                )
-
-                val mediaItems = mutableListOf<MediaItem>()
-                val filePath = p.optString("file_path", "")
-                if (filePath.isNotBlank()) {
-                    val fullMediaUrl = "$baseUrl/$filePath"
-                    val thumbPath = p.optString("thumb_path", filePath)
-                    val fullThumbUrl = "$baseUrl/$thumbPath"
-                    val mediaTypeStr = p.optString("media_type", "IMAGE")
-
-                    mediaItems.add(
-                        MediaItem(
-                            id = "m_$postId",
-                            type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
-                            url = fullMediaUrl,
-                            thumbnailUrl = fullThumbUrl,
-                            durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() }
-                        )
-                    )
-                }
-
-                val likesCount = p.optInt("likes_count", 0)
-                val reactionsMap = if (likesCount > 0) mapOf(ReactionType.LIKE to likesCount) else emptyMap()
-
-                val commentsList = mutableListOf<Comment>()
-                val commentsArray = p.optJSONArray("comments")
-                if (commentsArray != null) {
-                    for (cIdx in 0 until commentsArray.length()) {
-                        val cObj = commentsArray.getJSONObject(cIdx)
-                        commentsList.add(
-                            Comment(
-                                id = cObj.getInt("id"),
-                                postId = postId,
-                                author = FamilyMember(
-                                    id = cObj.getInt("user_id"),
-                                    name = cObj.optString("display_name", "Familiar"),
-                                    role = cObj.optString("role", "Familiar"),
-                                    avatarEmoji = cObj.optString("avatar_emoji", "👤"),
-                                    avatarColorHex = cObj.optLong("avatar_color_hex", 0xFF1E40AF)
-                                ),
-                                text = cObj.optString("comment_text", ""),
-                                createdAt = parseTimestamp(cObj.optString("created_at"))
-                            )
-                        )
-                    }
-                }
-
-                postsList.add(
-                    Post(
-                        id = postId,
-                        author = author,
-                        contentText = p.optString("content_text", ""),
-                        createdAt = parseTimestamp(p.optString("created_at")),
-                        mediaItems = mediaItems,
-                        reactions = reactionsMap,
-                        comments = commentsList,
-                        feeling = p.optString("feeling").takeIf { it.isNotBlank() },
-                        location = p.optString("location").takeIf { it.isNotBlank() },
-                        isPinned = p.optInt("is_pinned", 0) == 1
-                    )
-                )
+                postsList.add(parsePostFromJson(p, baseUrl))
             }
 
             Result.success(postsList)
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Obtiene los Shorts (vídeos verticales y publicaciones marcadas como Short).
+     */
+    suspend fun fetchShorts(ip: String, port: Int, path: String): Result<List<Post>> = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = buildBaseUrl(ip, port, path)
+            val url = "$baseUrl/index.php/api/shorts"
+            val request = Request.Builder().url(url).get().build()
+            val response = client.newCall(request).execute()
+
+            val body = response.body?.string() ?: ""
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val postsArray = jsonObject.optJSONArray("shorts") ?: JSONArray()
+            val postsList = mutableListOf<Post>()
+
+            for (i in 0 until postsArray.length()) {
+                val p = postsArray.getJSONObject(i)
+                postsList.add(parsePostFromJson(p, baseUrl))
+            }
+
+            Result.success(postsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parsePostFromJson(p: JSONObject, baseUrl: String): Post {
+        val postId = p.getInt("id")
+        val author = FamilyMember(
+            id = p.getInt("user_id"),
+            name = p.optString("display_name", "Familiar"),
+            role = p.optString("role", "Familiar"),
+            avatarEmoji = p.optString("avatar_emoji", "👤"),
+            avatarColorHex = p.optLong("avatar_color_hex", 0xFF1E40AF),
+            username = p.optString("username", "")
+        )
+
+        val mediaItems = mutableListOf<MediaItem>()
+        val filePath = p.optString("file_path", "")
+        if (filePath.isNotBlank()) {
+            val fullMediaUrl = "$baseUrl/$filePath"
+            val thumbPath = p.optString("thumb_path", filePath)
+            val fullThumbUrl = "$baseUrl/$thumbPath"
+            val mediaTypeStr = p.optString("media_type", "IMAGE")
+
+            mediaItems.add(
+                MediaItem(
+                    id = "m_$postId",
+                    type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                    url = fullMediaUrl,
+                    thumbnailUrl = fullThumbUrl,
+                    durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() }
+                )
+            )
+        }
+
+        val likesCount = p.optInt("likes_count", 0)
+        val reactionsMap = if (likesCount > 0) mapOf(ReactionType.LIKE to likesCount) else emptyMap()
+
+        val commentsList = mutableListOf<Comment>()
+        val commentsArray = p.optJSONArray("comments")
+        if (commentsArray != null) {
+            for (cIdx in 0 until commentsArray.length()) {
+                val cObj = commentsArray.getJSONObject(cIdx)
+                commentsList.add(
+                    Comment(
+                        id = cObj.getInt("id"),
+                        postId = postId,
+                        author = FamilyMember(
+                            id = cObj.getInt("user_id"),
+                            name = cObj.optString("display_name", "Familiar"),
+                            role = cObj.optString("role", "Familiar"),
+                            avatarEmoji = cObj.optString("avatar_emoji", "👤"),
+                            avatarColorHex = cObj.optLong("avatar_color_hex", 0xFF1E40AF)
+                        ),
+                        text = cObj.optString("comment_text", ""),
+                        createdAt = parseTimestamp(cObj.optString("created_at"))
+                    )
+                )
+            }
+        }
+
+        return Post(
+            id = postId,
+            author = author,
+            contentText = p.optString("content_text", ""),
+            createdAt = parseTimestamp(p.optString("created_at")),
+            mediaItems = mediaItems,
+            reactions = reactionsMap,
+            comments = commentsList,
+            feeling = p.optString("feeling").takeIf { it.isNotBlank() },
+            location = p.optString("location").takeIf { it.isNotBlank() },
+            isPinned = p.optInt("is_pinned", 0) == 1,
+            isShort = p.optInt("is_short", 0) == 1
+        )
     }
 
     /**
@@ -306,13 +493,15 @@ class NasApiClient(
         location: String?,
         mediaUri: Uri?,
         thumbnailFile: File? = null,
-        durationLabel: String? = null
+        durationLabel: String? = null,
+        isShort: Boolean = false
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val url = "${buildBaseUrl(ip, port, path)}/index.php/api/post"
             val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("user_id", userId.toString())
                 .addFormDataPart("content_text", text)
+                .addFormDataPart("is_short", if (isShort) "1" else "0")
 
             feeling?.let { multipartBuilder.addFormDataPart("feeling", it) }
             location?.let { multipartBuilder.addFormDataPart("location", it) }

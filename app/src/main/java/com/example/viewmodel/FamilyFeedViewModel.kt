@@ -22,6 +22,7 @@ import java.io.File
 
 enum class FeedTab(val label: String) {
     FEED("Inicio"),
+    SHORTS("Shorts"),
     WATCH("Watch"),
     MEMBERS("Familia"),
     NOTIFICATIONS("Notificaciones"),
@@ -36,8 +37,10 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     val familyMembers = repository.familyMembers
     val currentMember = repository.currentMember
+    val isUserLoggedIn = repository.isUserLoggedIn
     val nasConfig = repository.nasConfig
     val stories = repository.stories
+    val shorts = repository.shorts
     val isLoading = repository.isLoading
 
     private val _selectedTab = MutableStateFlow(FeedTab.FEED)
@@ -73,14 +76,18 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _isMemberSwitchDialogOpen = MutableStateFlow(false)
     val isMemberSwitchDialogOpen: StateFlow<Boolean> = _isMemberSwitchDialogOpen.asStateFlow()
 
+    private val _isProfileDialogOpen = MutableStateFlow(false)
+    val isProfileDialogOpen: StateFlow<Boolean> = _isProfileDialogOpen.asStateFlow()
+
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
     init {
-        // Intento de conexión inicial y refresco del feed real
+        // Intento de conexión inicial y refresco del feed real y shorts
         viewModelScope.launch {
             repository.pingNas()
             repository.refreshFeed()
+            repository.refreshShorts()
         }
     }
 
@@ -196,13 +203,14 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         feeling: String? = null,
         location: String? = null,
         thumbnailFile: File? = null,
-        durationLabel: String? = null
+        durationLabel: String? = null,
+        isShort: Boolean = false
     ) {
         if (text.isBlank() && mediaUri == null) return
 
         viewModelScope.launch {
             _isCreatePostDialogOpen.value = false
-            showStatus("Subiendo publicación al Synology NAS...")
+            showStatus(if (isShort) "Subiendo Short familiar al Synology NAS..." else "Subiendo publicación al Synology NAS...")
 
             val result = repository.addPost(
                 contentText = text,
@@ -210,17 +218,114 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 feeling = feeling,
                 location = location,
                 thumbnailFile = thumbnailFile,
-                durationLabel = durationLabel
+                durationLabel = durationLabel,
+                isShort = isShort
             )
 
             result.fold(
                 onSuccess = { postId ->
-                    showStatus("Publicado en Synology NAS (ID #$postId)")
+                    showStatus(if (isShort) "¡Short publicado en la sección Shorts!" else "Publicado en Synology NAS (ID #$postId)")
                 },
                 onFailure = { error ->
                     showStatus("Error al subir al NAS: ${error.localizedMessage}")
                 }
             )
+        }
+    }
+
+    fun login(
+        username: String,
+        pass: String,
+        rememberSession: Boolean = true,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val result = repository.login(username, pass, rememberSession)
+            result.fold(
+                onSuccess = { member ->
+                    showStatus("¡Bienvenido/a, ${member.name}!")
+                    onResult?.invoke(true, null)
+                },
+                onFailure = { error ->
+                    val msg = error.localizedMessage ?: "Error al iniciar sesión"
+                    showStatus(msg)
+                    onResult?.invoke(false, msg)
+                }
+            )
+        }
+    }
+
+    fun register(
+        username: String,
+        displayName: String,
+        pass: String,
+        avatarEmoji: String = "👨‍💼",
+        avatarColorHex: Long = 0xFF1877F2L,
+        role: String = "Familiar",
+        rememberSession: Boolean = true,
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val result = repository.register(username, pass, displayName, role, avatarEmoji, avatarColorHex, rememberSession)
+            result.fold(
+                onSuccess = { member ->
+                    showStatus("¡Cuenta familiar creada para ${member.name}!")
+                    onResult?.invoke(true, null)
+                },
+                onFailure = { error ->
+                    val msg = error.localizedMessage ?: "Error al registrar usuario"
+                    showStatus(msg)
+                    onResult?.invoke(false, msg)
+                }
+            )
+        }
+    }
+
+    fun logout() {
+        repository.logout()
+        showStatus("Sesión cerrada")
+    }
+
+    fun skipLoginAsGuest() {
+        repository.skipLoginAsGuest()
+    }
+
+    fun openProfileDialog() {
+        _isProfileDialogOpen.value = true
+    }
+
+    fun closeProfileDialog() {
+        _isProfileDialogOpen.value = false
+    }
+
+    fun updateProfile(
+        displayName: String,
+        avatarEmoji: String,
+        avatarColorHex: Long,
+        newPassword: String? = null,
+        bio: String = "",
+        onResult: ((Boolean, String?) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val result = repository.updateProfile(displayName, avatarEmoji, avatarColorHex, bio, newPassword)
+            result.fold(
+                onSuccess = { member ->
+                    showStatus("Perfil de ${member.name} actualizado")
+                    _isProfileDialogOpen.value = false
+                    onResult?.invoke(true, null)
+                },
+                onFailure = { error ->
+                    val msg = error.localizedMessage ?: "Error al actualizar perfil"
+                    showStatus(msg)
+                    onResult?.invoke(false, msg)
+                }
+            )
+        }
+    }
+
+    fun refreshShorts() {
+        viewModelScope.launch {
+            repository.refreshShorts()
         }
     }
 
@@ -262,15 +367,24 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         if (text.isBlank()) return
         viewModelScope.launch {
             val result = repository.addComment(postId, text)
+            // Actualizar inmediatamente el post activo para que el comentario nuevo aparezca al instante
+            _selectedPostForComments.value = repository.posts.value.find { it.id == postId } ?: _selectedPostForComments.value
             result.fold(
                 onSuccess = {
                     showStatus("Comentario guardado en MariaDB 10")
-                    _selectedPostForComments.value = repository.posts.value.find { it.id == postId }
+                    _selectedPostForComments.value = repository.posts.value.find { it.id == postId } ?: _selectedPostForComments.value
                 },
                 onFailure = { error ->
                     showStatus("Error al comentar: ${error.localizedMessage}")
                 }
             )
+        }
+    }
+
+    fun reloadComments(postId: Int) {
+        viewModelScope.launch {
+            repository.loadCommentsForPost(postId)
+            _selectedPostForComments.value = repository.posts.value.find { it.id == postId } ?: _selectedPostForComments.value
         }
     }
 

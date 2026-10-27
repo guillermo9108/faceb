@@ -90,7 +90,7 @@ fun FeedScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // 1. LAN Real Connection Banner
-        item {
+        item(key = "lan_banner", contentType = "banner") {
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = if (nasConfig.isConnected) LanOnlineGreen.copy(alpha = 0.12f) else LanOfflineAmber.copy(alpha = 0.12f),
@@ -166,7 +166,7 @@ fun FeedScreen(
         }
 
         // 2. "What's on your mind?" Composer Card (Directly below header tabs, like Facebook)
-        item {
+        item(key = "composer_card", contentType = "composer") {
             CreatePostCard(
                 currentMember = currentMember,
                 onOpenCreatePost = onOpenCreatePost
@@ -174,7 +174,7 @@ fun FeedScreen(
         }
 
         // 3. Stories Row (Directly below composer widget)
-        item {
+        item(key = "stories_section", contentType = "stories") {
             StoriesSection(
                 currentMember = currentMember,
                 userStoryGroups = userStoryGroups,
@@ -320,7 +320,7 @@ fun FeedScreen(
             }
         } else {
             // 5. Publicaciones reales del muro (Full-width edge-to-edge con separador)
-            items(posts, key = { it.id }) { post ->
+            items(posts, key = { it.id }, contentType = { "post_card" }) { post ->
                 PostCard(
                     post = post,
                     onReactionClick = { reactionType -> onReactionClick(post.id, reactionType) },

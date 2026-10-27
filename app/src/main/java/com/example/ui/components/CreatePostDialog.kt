@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
@@ -44,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -84,7 +86,7 @@ import java.io.File
 fun CreatePostDialog(
     currentMember: FamilyMember,
     onDismiss: () -> Unit,
-    onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?) -> Unit
+    onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?, isShort: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -98,6 +100,8 @@ fun CreatePostDialog(
     var videoThumbnailFile by remember { mutableStateOf<File?>(null) }
     var videoDurationLabel by remember { mutableStateOf<String?>(null) }
     var isExtractingVideo by remember { mutableStateOf(false) }
+    var isShort by remember { mutableStateOf(false) }
+    var isVerticalVideoDetected by remember { mutableStateOf(false) }
 
     // Selector de Fotos/Vídeos Real de Android
     val mediaPickerLauncher = rememberLauncherForActivityResult(
@@ -115,11 +119,17 @@ fun CreatePostDialog(
                     val info = VideoHelper.extractVideoInfo(context, uri)
                     videoDurationLabel = info.durationFormatted
                     videoThumbnailFile = info.thumbnailFile
+                    isVerticalVideoDetected = info.isVertical
+                    if (info.isVertical) {
+                        isShort = true
+                    }
                     isExtractingVideo = false
                 }
             } else {
                 videoDurationLabel = null
                 videoThumbnailFile = null
+                isVerticalVideoDetected = false
+                isShort = false
                 isExtractingVideo = false
             }
         }
@@ -194,7 +204,8 @@ fun CreatePostDialog(
                                     selectedFeeling,
                                     selectedLocation,
                                     videoThumbnailFile,
-                                    videoDurationLabel
+                                    videoDurationLabel,
+                                    isShort
                                 )
                             }
                         },
@@ -392,6 +403,63 @@ fun CreatePostDialog(
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Subir como Shorts toggle if a video is selected
+                if (isVideoMedia) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Card(
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isShort) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (isShort) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ElectricBolt,
+                                    contentDescription = null,
+                                    tint = if (isShort) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "Subir como Short",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        text = if (isVerticalVideoDetected)
+                                            "Vídeo vertical detectado · Solo saldrá en Shorts"
+                                        else
+                                            "Solo saldrá en la sección Shorts familiares",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isShort,
+                                onCheckedChange = { isShort = it },
+                                modifier = Modifier.testTag("upload_as_short_switch")
                             )
                         }
                     }

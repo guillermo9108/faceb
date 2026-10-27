@@ -21,19 +21,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.model.ReactionType
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
 import com.example.ui.components.HeaderBar
 import com.example.ui.components.MemberSwitchDialog
+import com.example.ui.components.ProfileSettingsDialog
 import com.example.ui.components.StoryViewerDialog
 import com.example.ui.components.VideoPlayerDialog
 import com.example.ui.screens.FamilyMembersScreen
 import com.example.ui.screens.FeedScreen
+import com.example.ui.screens.LoginRegisterScreen
 import com.example.ui.screens.MenuScreen
 import com.example.ui.screens.NasConfigScreen
 import com.example.ui.screens.NotificationsScreen
 import com.example.ui.screens.PhotosScreen
+import com.example.ui.screens.ShortsScreen
 import com.example.ui.screens.WatchScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.FamilyFeedViewModel
@@ -73,6 +77,9 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
 
     val familyMembers by viewModel.familyMembers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isUserLoggedIn by viewModel.isUserLoggedIn.collectAsState()
+    val shorts by viewModel.shorts.collectAsState()
+    val isProfileDialogOpen by viewModel.isProfileDialogOpen.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -80,6 +87,27 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             snackbarHostState.showSnackbar(msg)
             viewModel.clearStatus()
         }
+    }
+
+    // Si el usuario no ha iniciado sesión, mostrar la pantalla de Login / Registro
+    if (!isUserLoggedIn) {
+        LoginRegisterScreen(
+            members = familyMembers,
+            nasIp = nasConfig.ip,
+            onLogin = { u, p, remember -> viewModel.login(u, p, remember) },
+            onRegister = { u, nick, p, emoji, colorHex, remember ->
+                viewModel.register(
+                    username = u,
+                    displayName = nick,
+                    pass = p,
+                    avatarEmoji = emoji,
+                    avatarColorHex = colorHex,
+                    rememberSession = remember
+                )
+            },
+            onSkipLogin = { viewModel.skipLoginAsGuest() }
+        )
+        return
     }
 
     // Manejo de retroceso para volver al feed principal
@@ -147,6 +175,17 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         }
                     )
                 }
+                FeedTab.SHORTS -> {
+                    ShortsScreen(
+                        shorts = shorts,
+                        members = familyMembers,
+                        baseUrl = nasConfig.baseUrl,
+                        onLikePost = { postId -> viewModel.reactToPost(postId, ReactionType.LIKE) },
+                        onOpenComments = { post -> viewModel.openCommentsSheet(post) },
+                        onOpenCreateShort = { viewModel.openCreatePostDialog() },
+                        onRefresh = { viewModel.refreshShorts() }
+                    )
+                }
                 FeedTab.MEMBERS -> {
                     FamilyMembersScreen(
                         currentMember = currentMember,
@@ -173,7 +212,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onNavigateToNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
                         onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
                         onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
-                        onOpenMemberSwitch = { viewModel.openMemberSwitchDialog() }
+                        onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
+                        onOpenMemberSwitch = { viewModel.openMemberSwitchDialog() },
+                        onOpenProfileSettings = { viewModel.openProfileDialog() },
+                        onLogout = { viewModel.logout() }
                     )
                 }
                 FeedTab.PHOTOS -> {
@@ -195,8 +237,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         CreatePostDialog(
             currentMember = currentMember,
             onDismiss = { viewModel.closeCreatePostDialog() },
-            onSubmitPost = { text, mediaUri, feeling, loc, thumbFile, durLabel ->
-                viewModel.createPost(text, mediaUri, feeling, loc, thumbFile, durLabel)
+            onSubmitPost = { text, mediaUri, feeling, loc, thumbFile, durLabel, isShort ->
+                viewModel.createPost(text, mediaUri, feeling, loc, thumbFile, durLabel, isShort)
             }
         )
     }
@@ -246,7 +288,24 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             post = post,
             currentMember = currentMember,
             onDismiss = { viewModel.closeCommentsSheet() },
-            onSendComment = { text -> viewModel.addCommentToPost(post.id, text) }
+            onSendComment = { text -> viewModel.addCommentToPost(post.id, text) },
+            onRefreshComments = { viewModel.reloadComments(post.id) }
+        )
+    }
+
+    // Modal Ajustes de Perfil (Nick, Avatar, Clave)
+    if (isProfileDialogOpen) {
+        ProfileSettingsDialog(
+            currentMember = currentMember,
+            onDismiss = { viewModel.closeProfileDialog() },
+            onSaveProfile = { nick, emoji, colorHex, newPass ->
+                viewModel.updateProfile(
+                    displayName = nick,
+                    avatarEmoji = emoji,
+                    avatarColorHex = colorHex,
+                    newPassword = newPass
+                )
+            }
         )
     }
 }

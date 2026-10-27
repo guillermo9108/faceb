@@ -142,5 +142,66 @@ class ExampleRobolectricTest {
         assertEquals("01:24", com.example.util.VideoHelper.formatDuration(84_000L))
         assertEquals("10:05", com.example.util.VideoHelper.formatDuration(605_000L))
     }
+
+    @Test
+    fun `session persistence remembers logged in user and survives restart`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo1 = FamilyRepository(context)
+
+        // Login as Mateo with rememberSession = true
+        val result = repo1.login("mateo", "1234", rememberSession = true)
+        assertTrue("Login should succeed", result.isSuccess)
+        assertTrue(repo1.isUserLoggedIn.value)
+        assertEquals("Mateo", repo1.currentMember.value.name)
+
+        // Re-create repository simulating app kill & restart
+        val repo2 = FamilyRepository(context)
+        assertTrue("Session should be restored upon app restart", repo2.isUserLoggedIn.value)
+        assertEquals("Mateo", repo2.currentMember.value.name)
+
+        // Now logout
+        repo2.logout()
+        org.junit.Assert.assertFalse("User should be logged out", repo2.isUserLoggedIn.value)
+
+        // Re-create again, session should stay logged out
+        val repo3 = FamilyRepository(context)
+        org.junit.Assert.assertFalse("Session should stay logged out", repo3.isUserLoggedIn.value)
+    }
+
+    @Test
+    fun `profile update updates nick and avatar emoji`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = FamilyRepository(context)
+
+        repo.login("carlos", "1234", rememberSession = false)
+        val updateRes = repo.updateProfile("Papá Genial 🚀", "🚀", 0xFF1877F2L, "Bio genial", null)
+        assertTrue(updateRes.isSuccess)
+        assertEquals("Papá Genial 🚀", repo.currentMember.value.name)
+        assertEquals("🚀", repo.currentMember.value.avatarEmoji)
+    }
+
+    @Test
+    fun `synology backend scripts include auth, shorts, and profile update endpoints`() {
+        val config = com.example.model.NasConfig()
+        val zipBytes = com.example.util.SynologyZipExporter.createZipBytes(config)
+        val entries = mutableMapOf<String, String>()
+        val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(zipBytes))
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val content = zis.readBytes().toString(Charsets.UTF_8)
+            entries[entry.name] = content
+            entry = zis.nextEntry
+        }
+        zis.close()
+
+        val indexPhp = entries["index.php"] ?: ""
+        assertTrue("index.php must contain auth login", indexPhp.contains("/auth/login"))
+        assertTrue("index.php must contain auth register", indexPhp.contains("/auth/register"))
+        assertTrue("index.php must contain profile update", indexPhp.contains("/profile/update"))
+        assertTrue("index.php must contain shorts endpoint", indexPhp.contains("/shorts"))
+
+        val schemaSql = entries["schema.sql"] ?: ""
+        assertTrue("schema.sql must contain is_short column", schemaSql.contains("is_short"))
+    }
 }
 

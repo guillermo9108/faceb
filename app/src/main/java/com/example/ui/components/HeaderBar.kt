@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OndemandVideo
@@ -249,6 +250,16 @@ fun HeaderBar(
                     iconUnselected = Icons.Outlined.OndemandVideo,
                     contentDescription = "Videos",
                     modifier = Modifier.weight(1f).testTag("tab_watch")
+                )
+
+                // Tab: Shorts
+                FacebookTabItem(
+                    selected = selectedTab == FeedTab.SHORTS,
+                    onClick = { onTabSelected(FeedTab.SHORTS) },
+                    iconSelected = Icons.Default.ElectricBolt,
+                    iconUnselected = Icons.Default.ElectricBolt,
+                    contentDescription = "Shorts",
+                    modifier = Modifier.weight(1f).testTag("tab_shorts")
                 )
 
                 // Tab 3: Grupos / Familia

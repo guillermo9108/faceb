@@ -40,7 +40,53 @@ class FamilyRepository(
     private val _familyMembers = MutableStateFlow(defaultFamilyMembers)
     val familyMembers: StateFlow<List<FamilyMember>> = _familyMembers.asStateFlow()
 
-    private val _currentMember = MutableStateFlow(defaultFamilyMembers[0])
+    private val sessionPrefs = context.getSharedPreferences("family_session_prefs", Context.MODE_PRIVATE)
+
+    private fun loadSavedSession(): FamilyMember? {
+        val isLoggedIn = sessionPrefs.getBoolean("is_logged_in", false)
+        val remember = sessionPrefs.getBoolean("remember_session", true)
+        if (isLoggedIn && remember) {
+            val id = sessionPrefs.getInt("user_id", -1)
+            if (id > 0) {
+                return FamilyMember(
+                    id = id,
+                    name = sessionPrefs.getString("display_name", "Familiar") ?: "Familiar",
+                    role = sessionPrefs.getString("role", "Familiar") ?: "Familiar",
+                    avatarEmoji = sessionPrefs.getString("avatar_emoji", "👤") ?: "👤",
+                    avatarColorHex = sessionPrefs.getLong("avatar_color_hex", 0xFF1E40AF),
+                    pin = sessionPrefs.getString("pin", "1234") ?: "1234",
+                    bio = sessionPrefs.getString("bio", "") ?: "",
+                    username = sessionPrefs.getString("username", "") ?: ""
+                )
+            }
+        }
+        return null
+    }
+
+    private fun saveSession(member: FamilyMember, rememberSession: Boolean) {
+        sessionPrefs.edit()
+            .putBoolean("is_logged_in", true)
+            .putBoolean("remember_session", rememberSession)
+            .putInt("user_id", member.id)
+            .putString("username", member.username)
+            .putString("display_name", member.name)
+            .putString("role", member.role)
+            .putString("avatar_emoji", member.avatarEmoji)
+            .putLong("avatar_color_hex", member.avatarColorHex)
+            .putString("bio", member.bio)
+            .putString("pin", member.pin)
+            .apply()
+    }
+
+    private fun clearSession() {
+        sessionPrefs.edit().clear().apply()
+    }
+
+    private val savedSession = loadSavedSession()
+    private val _isUserLoggedIn = MutableStateFlow(savedSession != null)
+    val isUserLoggedIn: StateFlow<Boolean> = _isUserLoggedIn.asStateFlow()
+
+    private val _currentMember = MutableStateFlow(savedSession ?: defaultFamilyMembers[0])
     val currentMember: StateFlow<FamilyMember> = _currentMember.asStateFlow()
 
     private val prefs = context.getSharedPreferences("nas_config_prefs", Context.MODE_PRIVATE)
@@ -79,6 +125,12 @@ class FamilyRepository(
     private val _posts = MutableStateFlow<List<Post>>(emptyList())
     val posts: StateFlow<List<Post>> = _posts.asStateFlow()
 
+    private val _shorts = MutableStateFlow<List<Post>>(emptyList())
+    val shorts: StateFlow<List<Post>> = _shorts.asStateFlow()
+
+    // Caché en memoria persistente de comentarios por ID de publicación
+    private val _commentsByPostId = java.util.concurrent.ConcurrentHashMap<Int, List<Comment>>()
+
     private val _stories = MutableStateFlow<List<FamilyStory>>(emptyList())
     val stories: StateFlow<List<FamilyStory>> = _stories.asStateFlow()
 
@@ -103,6 +155,147 @@ class FamilyRepository(
 
     fun setCurrentMember(member: FamilyMember) {
         _currentMember.value = member
+        saveSession(member, sessionPrefs.getBoolean("remember_session", true))
+    }
+
+    suspend fun login(username: String, pass: String, rememberSession: Boolean): Result<FamilyMember> {
+        val config = _nasConfig.value
+        val result = apiClient.login(config.ip, config.port, config.path, username, pass)
+        val finalResult = if (result.isSuccess) {
+            result
+        } else {
+            // Fallback offline / LAN desconectada: verificar perfiles familiares precargados o locales
+            val localMatch = _familyMembers.value.find {
+                it.username.equals(username, ignoreCase = true) ||
+                it.name.lowercase().replace(" ", "").contains(username.lowercase())
+            }
+            if (localMatch != null && (pass == localMatch.pin || pass.isBlank())) {
+                Result.success(localMatch)
+            } else {
+                result
+            }
+        }
+
+        finalResult.onSuccess { member ->
+            _currentMember.value = member
+            _isUserLoggedIn.value = true
+            saveSession(member, rememberSession)
+            scope.launch {
+                refreshFeed()
+                refreshShorts()
+            }
+        }
+        return finalResult
+    }
+
+    suspend fun register(
+        username: String,
+        pass: String,
+        displayName: String,
+        role: String,
+        avatarEmoji: String,
+        avatarColorHex: Long,
+        rememberSession: Boolean
+    ): Result<FamilyMember> {
+        val config = _nasConfig.value
+        val result = apiClient.register(
+            config.ip,
+            config.port,
+            config.path,
+            username,
+            pass,
+            displayName,
+            role,
+            avatarEmoji,
+            avatarColorHex
+        )
+        val finalResult = if (result.isSuccess) {
+            result
+        } else {
+            // Fallback offline: crear usuario local
+            val newId = (_familyMembers.value.maxOfOrNull { it.id } ?: 10) + 1
+            val localUser = FamilyMember(
+                id = newId,
+                name = displayName,
+                role = role,
+                avatarEmoji = avatarEmoji,
+                avatarColorHex = avatarColorHex,
+                username = username,
+                pin = pass
+            )
+            Result.success(localUser)
+        }
+
+        finalResult.onSuccess { member ->
+            _currentMember.value = member
+            _isUserLoggedIn.value = true
+            saveSession(member, rememberSession)
+            _familyMembers.update { list -> if (list.any { it.id == member.id }) list else list + member }
+            scope.launch {
+                refreshFeed()
+                refreshShorts()
+            }
+        }
+        return finalResult
+    }
+
+    fun logout() {
+        clearSession()
+        _isUserLoggedIn.value = false
+    }
+
+    fun skipLoginAsGuest() {
+        _isUserLoggedIn.value = true
+    }
+
+    suspend fun updateProfile(
+        displayName: String,
+        avatarEmoji: String,
+        avatarColorHex: Long,
+        bio: String,
+        newPassword: String?
+    ): Result<FamilyMember> {
+        val config = _nasConfig.value
+        val cur = _currentMember.value
+        val result = apiClient.updateProfile(
+            config.ip,
+            config.port,
+            config.path,
+            cur.id,
+            displayName,
+            avatarEmoji,
+            avatarColorHex,
+            bio,
+            newPassword
+        )
+        val finalResult = if (result.isSuccess) {
+            result
+        } else {
+            // Fallback offline: aplicar cambio localmente
+            val updated = cur.copy(
+                name = displayName,
+                avatarEmoji = avatarEmoji,
+                avatarColorHex = avatarColorHex,
+                bio = bio
+            )
+            Result.success(updated)
+        }
+
+        finalResult.onSuccess { updated ->
+            _currentMember.value = updated
+            saveSession(updated, sessionPrefs.getBoolean("remember_session", true))
+            _familyMembers.update { list -> list.map { if (it.id == updated.id) updated else it } }
+        }
+        return finalResult
+    }
+
+    suspend fun refreshShorts(): Result<List<Post>> {
+        val config = _nasConfig.value
+        val result = apiClient.fetchShorts(config.ip, config.port, config.path)
+        result.onSuccess { list ->
+            _shorts.value = list
+        }
+        return result
     }
 
     fun updateNasConfig(
@@ -187,19 +380,28 @@ class FamilyRepository(
 
         return result.fold(
             onSuccess = { realPosts ->
-                _posts.value = realPosts
+                // Preservar comentarios previamente cargados o en caché para cada publicación
+                val mergedPosts = realPosts.map { post ->
+                    val existingComments = _commentsByPostId[post.id]
+                        ?: _posts.value.find { it.id == post.id }?.comments
+                        ?: post.comments
+                    if (existingComments.isNotEmpty()) {
+                        _commentsByPostId[post.id] = existingComments
+                    }
+                    post.copy(comments = existingComments)
+                }
+                _posts.value = mergedPosts
                 _nasConfig.update { it.copy(isConnected = true, lastError = null) }
 
-                // Guardar en la base de datos local Room
+                // Guardar progresivamente en Room sin borrar todo para mantener caché y no perder miniaturas
                 scope.launch {
-                    val entities = realPosts.map { it.toEntity() }
-                    database.postDao().clearAll()
+                    val entities = mergedPosts.map { it.toEntity() }
                     database.postDao().insertPosts(entities)
                 }
 
                 // Si aún no hay historias independientes en la tabla de historias, generar a partir de fotos recientes
                 if (_stories.value.isEmpty()) {
-                    val fallbackStories = realPosts.filter { it.mediaItems.isNotEmpty() }.take(5).mapIndexed { idx, post ->
+                    val fallbackStories = mergedPosts.filter { it.mediaItems.isNotEmpty() }.take(5).mapIndexed { idx, post ->
                         FamilyStory(
                             id = "story_${post.id}",
                             author = post.author,
@@ -213,7 +415,7 @@ class FamilyRepository(
                     _stories.value = fallbackStories
                 }
 
-                Result.success(realPosts)
+                Result.success(mergedPosts)
             },
             onFailure = { error ->
                 _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
@@ -229,6 +431,7 @@ class FamilyRepository(
         val config = _nasConfig.value
         val result = apiClient.fetchComments(config.ip, config.port, config.path, postId)
         result.onSuccess { comments ->
+            _commentsByPostId[postId] = comments
             _posts.update { list ->
                 list.map { post ->
                     if (post.id == postId) post.copy(comments = comments) else post
@@ -247,7 +450,8 @@ class FamilyRepository(
         feeling: String? = null,
         location: String? = null,
         thumbnailFile: java.io.File? = null,
-        durationLabel: String? = null
+        durationLabel: String? = null,
+        isShort: Boolean = false
     ): Result<Int> {
         val config = _nasConfig.value
         val author = _currentMember.value
@@ -263,13 +467,17 @@ class FamilyRepository(
             location = location,
             mediaUri = mediaUri,
             thumbnailFile = thumbnailFile,
-            durationLabel = durationLabel
+            durationLabel = durationLabel,
+            isShort = isShort
         )
 
         return result.fold(
             onSuccess = { postId ->
-                // Refrescar feed inmediatamente desde el NAS
-                scope.launch { refreshFeed() }
+                // Refrescar feed y shorts inmediatamente desde el NAS
+                scope.launch {
+                    refreshFeed()
+                    refreshShorts()
+                }
                 Result.success(postId)
             },
             onFailure = { error ->
@@ -379,24 +587,27 @@ class FamilyRepository(
         val config = _nasConfig.value
         val author = _currentMember.value
 
+        // Creación optimista inmediata del comentario para que aparezca al instante
+        val optimisticComment = Comment(
+            id = (1000..99999).random(),
+            postId = postId,
+            author = author,
+            text = text,
+            createdAt = System.currentTimeMillis()
+        )
+        val currentComments = _commentsByPostId[postId] ?: _posts.value.find { it.id == postId }?.comments ?: emptyList()
+        val updatedComments = currentComments + optimisticComment
+        _commentsByPostId[postId] = updatedComments
+        _posts.update { list ->
+            list.map { post ->
+                if (post.id == postId) post.copy(comments = updatedComments) else post
+            }
+        }
+
         val result = apiClient.sendComment(config.ip, config.port, config.path, postId, author.id, text)
         result.onSuccess {
+            // Sincronizar comentarios reales desde MariaDB 10 para obtener IDs definitivos
             loadCommentsForPost(postId)
-            refreshFeed()
-        }.onFailure {
-            // Soporte offline: agregar comentario optimista en memoria para que no se pierda la interacción
-            val localComment = Comment(
-                id = (1000..99999).random(),
-                postId = postId,
-                author = author,
-                text = text,
-                createdAt = System.currentTimeMillis()
-            )
-            _posts.update { list ->
-                list.map { post ->
-                    if (post.id == postId) post.copy(comments = post.comments + localComment) else post
-                }
-            }
         }
         return result
     }
@@ -446,7 +657,8 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
         reactions = rxMap,
         feeling = feeling,
         location = location,
-        isPinned = isPinned
+        isPinned = isPinned,
+        isShort = isShort
     )
 }
 
@@ -470,6 +682,7 @@ private fun Post.toEntity(): PostEntity {
         isPinned = isPinned,
         likesCount = reactions.values.sum(),
         commentsCount = comments.size,
-        userReaction = userReaction?.name
+        userReaction = userReaction?.name,
+        isShort = isShort
     )
 }

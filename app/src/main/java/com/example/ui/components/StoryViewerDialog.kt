@@ -1,12 +1,7 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,11 +21,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +40,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -53,6 +47,7 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.model.StoryType
 import com.example.model.UserStoryGroup
+import kotlinx.coroutines.delay
 
 @Composable
 fun StoryViewerDialog(
@@ -60,45 +55,58 @@ fun StoryViewerDialog(
     onDismiss: () -> Unit
 ) {
     if (group.stories.isEmpty()) {
-        onDismiss()
+        LaunchedEffect(Unit) { onDismiss() }
         return
     }
 
     var currentIndex by remember { mutableIntStateOf(0) }
     var isPaused by remember { mutableStateOf(false) }
+    var canAcceptTap by remember { mutableStateOf(false) }
+    var currentProgress by remember(currentIndex) { mutableFloatStateOf(0f) }
+
     val currentStory = group.stories.getOrNull(currentIndex) ?: group.stories.first()
 
-    val progressAnim = remember(currentIndex) { Animatable(0f) }
+    // Evitar que el toque que abrió la historia cierre el visor por accidente
+    LaunchedEffect(Unit) {
+        delay(350)
+        canAcceptTap = true
+    }
 
-    // Animación de la barra de progreso de 5 segundos con auto-avance
+    // Temporizador suave y estable de 5 segundos
     LaunchedEffect(currentIndex, isPaused) {
-        if (!isPaused) {
-            val remaining = (1f - progressAnim.value).coerceIn(0f, 1f)
-            val duration = (5000L * remaining).toInt().coerceAtLeast(100)
-            val result = progressAnim.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(durationMillis = duration, easing = LinearEasing)
-            )
-            if (result.endReason == androidx.compose.animation.core.AnimationEndReason.Finished) {
-                if (currentIndex < group.stories.size - 1) {
-                    currentIndex++
-                } else {
-                    onDismiss()
-                }
+        val totalMs = 5000L
+        val tickMs = 40L
+        while (currentProgress < 1f) {
+            if (!isPaused) {
+                delay(tickMs)
+                currentProgress = (currentProgress + (tickMs.toFloat() / totalMs)).coerceAtMost(1f)
+            } else {
+                delay(80L)
             }
+        }
+
+        if (currentIndex < group.stories.size - 1) {
+            currentIndex++
+            currentProgress = 0f
+        } else {
+            onDismiss()
         }
     }
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false
+        )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
                 .testTag("story_viewer_dialog")
-                .pointerInput(Unit) {
+                .pointerInput(currentIndex) {
                     detectTapGestures(
                         onPress = {
                             isPaused = true
@@ -106,16 +114,21 @@ fun StoryViewerDialog(
                             isPaused = false
                         },
                         onTap = { offset ->
+                            if (!canAcceptTap) return@detectTapGestures
                             val screenWidth = size.width
                             if (offset.x < screenWidth * 0.35f) {
-                                // Retroceder historia
+                                // Retroceder
                                 if (currentIndex > 0) {
                                     currentIndex--
+                                    currentProgress = 0f
+                                } else {
+                                    currentProgress = 0f
                                 }
                             } else {
-                                // Avanzar historia
+                                // Avanzar
                                 if (currentIndex < group.stories.size - 1) {
                                     currentIndex++
+                                    currentProgress = 0f
                                 } else {
                                     onDismiss()
                                 }
@@ -127,7 +140,7 @@ fun StoryViewerDialog(
             // Contenido visual de la historia
             when (currentStory.storyType) {
                 StoryType.TEXT -> {
-                    // Historia en texto: degradado de color y tipografía grande
+                    // Historia en texto con degradado
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -171,15 +184,15 @@ fun StoryViewerDialog(
                                 .background(
                                     Brush.verticalGradient(
                                         colors = listOf(
-                                            Color.Black.copy(alpha = 0.6f),
+                                            Color.Black.copy(alpha = 0.65f),
                                             Color.Transparent,
-                                            Color.Black.copy(alpha = 0.75f)
+                                            Color.Black.copy(alpha = 0.8f)
                                         )
                                     )
                                 )
                         )
 
-                        // Pie de foto / texto de la historia
+                        // Pie de foto
                         if (currentStory.caption.isNotBlank()) {
                             Text(
                                 text = currentStory.caption,
@@ -201,28 +214,28 @@ fun StoryViewerDialog(
                 }
             }
 
-            // Top Bar: Barras de progreso segmentadas + Autor + Cerrar
+            // Barra superior de progreso e información del autor
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 16.dp)
+                    .padding(horizontal = 14.dp, vertical = 20.dp)
             ) {
-                // Segmented Progress Bars
+                // Barras de progreso segmentadas
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     group.stories.forEachIndexed { index, _ ->
-                        val progress = when {
+                        val barProgress = when {
                             index < currentIndex -> 1f
-                            index == currentIndex -> progressAnim.value
+                            index == currentIndex -> currentProgress
                             else -> 0f
                         }
                         LinearProgressIndicator(
-                            progress = { progress },
+                            progress = { barProgress },
                             modifier = Modifier
                                 .weight(1f)
-                                .height(3.dp)
+                                .height(3.5.dp)
                                 .clip(RoundedCornerShape(2.dp)),
                             color = Color.White,
                             trackColor = Color.White.copy(alpha = 0.35f)
@@ -230,9 +243,9 @@ fun StoryViewerDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // User Info Header
+                // Cabecera: Avatar, nombre y botón cerrar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -260,9 +273,9 @@ fun StoryViewerDialog(
                                 )
                             )
                             Text(
-                                text = "${group.author.role} · Historia familiar",
+                                text = "${group.author.role} · Historia familiar LAN",
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White.copy(alpha = 0.75f),
+                                    color = Color.White.copy(alpha = 0.8f),
                                     fontSize = 11.sp
                                 )
                             )
@@ -272,15 +285,15 @@ fun StoryViewerDialog(
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.5f))
+                            .background(Color.Black.copy(alpha = 0.55f))
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Cerrar historia",
+                            contentDescription = "Cerrar visor de historias",
                             tint = Color.White,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }

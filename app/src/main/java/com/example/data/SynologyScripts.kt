@@ -37,6 +37,7 @@ object SynologyScripts {
             feeling VARCHAR(100) NULL,
             location VARCHAR(100) NULL,
             is_pinned TINYINT(1) DEFAULT 0,
+            is_short TINYINT(1) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_post_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             INDEX idx_created (created_at DESC)
@@ -142,12 +143,26 @@ object SynologyScripts {
         <?php
         /**
          * index.php - API REST para Muro Familiar LAN
+         * Compatible con Synology Web Station (PHP 7.0, 7.2, 7.3, 7.4 y PHP 8.x)
          * Guardar en: /volume1/web/family_api/index.php
          * Servir vía Web Station en puerto dedicado (ej: 8085)
          */
         // Prevenir que errores o avisos de PHP impriman HTML (<br />) y rompan el JSON
         ini_set('display_errors', '0');
         error_reporting(E_ALL);
+
+        // Polyfills para compatibilidad total con PHP 7 en Synology NAS antiguos
+        if (!function_exists('str_ends_with')) {
+            function str_ends_with(${D}haystack, ${D}needle) {
+                ${D}length = strlen(${D}needle);
+                return ${D}length === 0 || (substr(${D}haystack, -${D}length) === ${D}needle);
+            }
+        }
+        if (!function_exists('str_contains')) {
+            function str_contains(${D}haystack, ${D}needle) {
+                return ${D}needle === '' || strpos(${D}haystack, ${D}needle) !== false;
+            }
+        }
 
         header("Access-Control-Allow-Origin: *");
         header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
@@ -190,7 +205,7 @@ object SynologyScripts {
         if (${D}method === 'GET' && str_ends_with(${D}uri, '/users')) {
             try {
                 ${D}db = getDB();
-                ${D}stmt = ${D}db->query("SELECT id, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
+                ${D}stmt = ${D}db->query("SELECT id, username, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
                 echo json_encode(${D}stmt->fetchAll());
             } catch (Exception ${D}e) {
                 http_response_code(500);
@@ -199,7 +214,148 @@ object SynologyScripts {
             exit;
         }
 
-        // 3. OBTENER FEED COMPLETO
+        // 2.1. REGISTRO DE USUARIO FAMILIAR
+        if (${D}method === 'POST' && str_ends_with(${D}uri, '/auth/register')) {
+            ${D}username = strtolower(trim(${D}_POST['username'] ?? ''));
+            ${D}password = trim(${D}_POST['password'] ?? '');
+            ${D}displayName = trim(${D}_POST['display_name'] ?? '');
+            ${D}role = trim(${D}_POST['role'] ?? 'Familiar');
+            ${D}avatarEmoji = trim(${D}_POST['avatar_emoji'] ?? '👤');
+            ${D}avatarColorHex = (int)(${D}_POST['avatar_color_hex'] ?? 4280391411);
+
+            if (empty(${D}username) || empty(${D}password) || empty(${D}displayName)) {
+                http_response_code(400);
+                echo json_encode(["error" => "Completa usuario, contraseña y nombre"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}check = ${D}db->prepare("SELECT id FROM users WHERE username = ?");
+                ${D}check->execute([${D}username]);
+                if (${D}check->fetch()) {
+                    http_response_code(409);
+                    echo json_encode(["error" => "El usuario '{${D}username}' ya existe. Elige otro nombre de usuario."]);
+                    exit;
+                }
+
+                ${D}hash = password_hash(${D}password, PASSWORD_DEFAULT);
+                ${D}stmt = ${D}db->prepare("INSERT INTO users (username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex) VALUES (?, ?, ?, ?, ?, ?)");
+                ${D}stmt->execute([${D}username, ${D}displayName, ${D}role, ${D}hash, ${D}avatarEmoji, ${D}avatarColorHex]);
+                ${D}newId = (int)${D}db->lastInsertId();
+
+                echo json_encode([
+                    "status" => "OK",
+                    "user" => [
+                        "id" => ${D}newId,
+                        "username" => ${D}username,
+                        "display_name" => ${D}displayName,
+                        "role" => ${D}role,
+                        "avatar_emoji" => ${D}avatarEmoji,
+                        "avatar_color_hex" => ${D}avatarColorHex,
+                        "bio" => ""
+                    ]
+                ]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 2.2. INICIO DE SESIÓN (LOGIN)
+        if (${D}method === 'POST' && str_ends_with(${D}uri, '/auth/login')) {
+            ${D}username = strtolower(trim(${D}_POST['username'] ?? ''));
+            ${D}password = trim(${D}_POST['password'] ?? '');
+
+            if (empty(${D}username) || empty(${D}password)) {
+                http_response_code(400);
+                echo json_encode(["error" => "Ingresa usuario y contraseña"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}stmt = ${D}db->prepare("SELECT id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio FROM users WHERE username = ? OR display_name = ? LIMIT 1");
+                ${D}stmt->execute([${D}username, ${D}username]);
+                ${D}user = ${D}stmt->fetch();
+
+                if (!${D}user) {
+                    http_response_code(401);
+                    echo json_encode(["error" => "Usuario '{${D}username}' no encontrado"]);
+                    exit;
+                }
+
+                ${D}hash = ${D}user['pin_hash'];
+                ${D}valid = password_verify(${D}password, ${D}hash) || (${D}password === ${D}hash);
+
+                if (!${D}valid) {
+                    http_response_code(401);
+                    echo json_encode(["error" => "Contraseña incorrecta"]);
+                    exit;
+                }
+
+                unset(${D}user['pin_hash']);
+                echo json_encode(["status" => "OK", "user" => ${D}user]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 2.3. ACTUALIZAR PERFIL (NICK, AVATAR, PASSWORD)
+        if (${D}method === 'POST' && str_ends_with(${D}uri, '/profile/update')) {
+            ${D}userId = (int)(${D}_POST['user_id'] ?? 0);
+            ${D}displayName = trim(${D}_POST['display_name'] ?? '');
+            ${D}avatarEmoji = trim(${D}_POST['avatar_emoji'] ?? '');
+            ${D}avatarColorHex = isset(${D}_POST['avatar_color_hex']) ? (int)${D}_POST['avatar_color_hex'] : null;
+            ${D}bio = trim(${D}_POST['bio'] ?? '');
+            ${D}newPassword = trim(${D}_POST['new_password'] ?? '');
+
+            if (${D}userId <= 0 || empty(${D}displayName)) {
+                http_response_code(400);
+                echo json_encode(["error" => "Datos de perfil inválidos"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}sql = "UPDATE users SET display_name = ?, bio = ?";
+                ${D}params = [${D}displayName, ${D}bio];
+
+                if (!empty(${D}avatarEmoji)) {
+                    ${D}sql .= ", avatar_emoji = ?";
+                    ${D}params[] = ${D}avatarEmoji;
+                }
+                if (${D}avatarColorHex !== null) {
+                    ${D}sql .= ", avatar_color_hex = ?";
+                    ${D}params[] = ${D}avatarColorHex;
+                }
+                if (!empty(${D}newPassword)) {
+                    ${D}sql .= ", pin_hash = ?";
+                    ${D}params[] = password_hash(${D}newPassword, PASSWORD_DEFAULT);
+                }
+
+                ${D}sql .= " WHERE id = ?";
+                ${D}params[] = ${D}userId;
+
+                ${D}stmt = ${D}db->prepare(${D}sql);
+                ${D}stmt->execute(${D}params);
+
+                ${D}stmtUser = ${D}db->prepare("SELECT id, username, display_name, role, avatar_emoji, avatar_color_hex, bio FROM users WHERE id = ?");
+                ${D}stmtUser->execute([${D}userId]);
+                ${D}updated = ${D}stmtUser->fetch();
+
+                echo json_encode(["status" => "OK", "user" => ${D}updated]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3. OBTENER FEED COMPLETO (Excluye vídeos subidos solo a Shorts)
         if (${D}method === 'GET' && (str_ends_with(${D}uri, '/feed') || str_ends_with(${D}uri, '/posts'))) {
             try {
                 ${D}db = getDB();
@@ -211,11 +367,36 @@ object SynologyScripts {
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
                     LEFT JOIN media m ON m.post_id = p.id
+                    WHERE (p.is_short = 0 OR p.is_short IS NULL)
                     ORDER BY p.is_pinned DESC, p.created_at DESC
                     LIMIT 50
                 ");
                 ${D}posts = ${D}stmt->fetchAll();
                 echo json_encode(["posts" => ${D}posts]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.0. OBTENER SHORTS (VÍDEOS VERTICALES Y MARCADOS COMO SHORTS)
+        if (${D}method === 'GET' && str_ends_with(${D}uri, '/shorts')) {
+            try {
+                ${D}db = getDB();
+                ${D}stmt = ${D}db->query("
+                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                           (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                    FROM posts p
+                    JOIN users u ON p.user_id = u.id
+                    JOIN media m ON m.post_id = p.id
+                    WHERE p.is_short = 1 OR m.media_type = 'VIDEO'
+                    ORDER BY p.created_at DESC
+                    LIMIT 50
+                ");
+                echo json_encode(["shorts" => ${D}stmt->fetchAll()]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
@@ -263,20 +444,21 @@ object SynologyScripts {
             exit;
         }
 
-        // 4. CREAR PUBLICACIÓN CON ARCHIVO REAL Y MINIATURA/DURACIÓN
+        // 4. CREAR PUBLICACIÓN CON ARCHIVO REAL Y MINIATURA/DURACIÓN (Y SOPORTE IS_SHORT)
         if (${D}method === 'POST' && (str_ends_with(${D}uri, '/post') || str_ends_with(${D}uri, '/posts'))) {
             ${D}userId = (int)(${D}_POST['user_id'] ?? 1);
             ${D}text = trim(${D}_POST['content_text'] ?? '');
             ${D}feeling = ${D}_POST['feeling'] ?? null;
             ${D}location = ${D}_POST['location'] ?? null;
             ${D}durationLabel = trim(${D}_POST['duration_label'] ?? '');
+            ${D}isShort = (int)(${D}_POST['is_short'] ?? 0);
 
             try {
                 ${D}db = getDB();
                 ${D}db->beginTransaction();
 
-                ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, content_text, feeling, location) VALUES (?, ?, ?, ?)");
-                ${D}stmt->execute([${D}userId, ${D}text, ${D}feeling, ${D}location]);
+                ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?)");
+                ${D}stmt->execute([${D}userId, ${D}text, ${D}feeling, ${D}location, ${D}isShort]);
                 ${D}postId = ${D}db->lastInsertId();
 
                 if (isset(${D}_FILES['photo']) && ${D}_FILES['photo']['error'] === UPLOAD_ERR_OK) {
@@ -405,22 +587,34 @@ object SynologyScripts {
 
         function createThumbnail(${D}src, ${D}dest, ${D}maxW = 720) {
             list(${D}w, ${D}h, ${D}type) = @getimagesize(${D}src);
-            if (!${D}w) return;
+            if (!${D}w || !${D}h) return;
             ${D}ratio = ${D}h / ${D}w;
             ${D}nw = min(${D}w, ${D}maxW);
             ${D}nh = (int)(${D}nw * ${D}ratio);
 
-            ${D}im = match(${D}type) {
-                IMAGETYPE_JPEG => @imagecreatefromjpeg(${D}src),
-                IMAGETYPE_PNG  => @imagecreatefrompng(${D}src),
-                IMAGETYPE_WEBP => @imagecreatefromwebp(${D}src),
-                default        => null
-            };
+            ${D}im = null;
+            switch (${D}type) {
+                case IMAGETYPE_JPEG:
+                    ${D}im = @imagecreatefromjpeg(${D}src);
+                    break;
+                case IMAGETYPE_PNG:
+                    ${D}im = @imagecreatefrompng(${D}src);
+                    break;
+                default:
+                    if (defined('IMAGETYPE_WEBP') && ${D}type === IMAGETYPE_WEBP && function_exists('imagecreatefromwebp')) {
+                        ${D}im = @imagecreatefromwebp(${D}src);
+                    }
+                    break;
+            }
             if (!${D}im) return;
 
             ${D}thumb = imagecreatetruecolor(${D}nw, ${D}nh);
             imagecopyresampled(${D}thumb, ${D}im, 0, 0, 0, 0, ${D}nw, ${D}nh, ${D}w, ${D}h);
-            imagewebp(${D}thumb, ${D}dest, 80);
+            if (function_exists('imagewebp')) {
+                imagewebp(${D}thumb, ${D}dest, 80);
+            } else {
+                imagejpeg(${D}thumb, ${D}dest, 80);
+            }
             imagedestroy(${D}im);
             imagedestroy(${D}thumb);
         }

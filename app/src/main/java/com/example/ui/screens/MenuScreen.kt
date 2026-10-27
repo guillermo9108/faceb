@@ -22,6 +22,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OndemandVideo
@@ -63,7 +66,10 @@ fun MenuScreen(
     onNavigateToNasConfig: () -> Unit,
     onNavigateToMembers: () -> Unit,
     onNavigateToWatch: () -> Unit,
+    onNavigateToShorts: () -> Unit,
     onOpenMemberSwitch: () -> Unit,
+    onOpenProfileSettings: () -> Unit,
+    onLogout: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     LazyVerticalGrid(
@@ -135,53 +141,78 @@ fun MenuScreen(
                 elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onOpenMemberSwitch() }
                     .testTag("menu_profile_card")
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Profile Avatar
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(Color(currentMember.avatarColorHex)),
-                        contentAlignment = Alignment.Center
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(text = currentMember.avatarEmoji, fontSize = 24.sp)
+                        // Profile Avatar
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color(currentMember.avatarColorHex)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(text = currentMember.avatarEmoji, fontSize = 26.sp)
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = currentMember.name,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Usuario: @${currentMember.username.ifBlank { currentMember.name.lowercase().replace(" ", "") }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onOpenMemberSwitch,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Cambiar usuario",
+                                tint = FacebookBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
 
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = currentMember.name,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Toca para cambiar de familiar en este teléfono",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = null,
-                            tint = FacebookBlue,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Button(
+                            onClick = onOpenProfileSettings,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp)
+                                .testTag("menu_edit_profile_button")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp), tint = FacebookBlue)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Editar perfil (nick, avatar, clave)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -226,6 +257,17 @@ fun MenuScreen(
                 title = "Watch",
                 subtitle = "Videos caseros en LAN",
                 onClick = onNavigateToWatch
+            )
+        }
+
+        // Shortcut Tile: Shorts
+        item {
+            FacebookMenuTile(
+                icon = Icons.Default.ElectricBolt,
+                iconColor = FacebookBlue,
+                title = "Shorts",
+                subtitle = "Vídeos verticales LAN",
+                onClick = onNavigateToShorts
             )
         }
 
@@ -316,6 +358,27 @@ fun MenuScreen(
                     .padding(top = 6.dp)
             ) {
                 Text("Cambiar de usuario familiar", fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        // Cerrar sesión
+        item(span = { GridItemSpan(2) }) {
+            Button(
+                onClick = onLogout,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .padding(top = 2.dp)
+                    .testTag("menu_logout_button")
+            ) {
+                Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Cerrar sesión", fontWeight = FontWeight.Bold)
             }
         }
     }

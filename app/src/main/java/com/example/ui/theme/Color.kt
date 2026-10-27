@@ -63,3 +63,4 @@ val TextPrimaryDark = FacebookTextPrimaryDark
 val TextSecondaryDark = FacebookTextSecondaryDark
 val DividerDark = FacebookDividerDark
 val ReactionLaughYellow = ReactionHahaYellow
+val FacebookRed = Color(0xFFFA383E)

@@ -22,5 +22,6 @@ data class PostEntity(
     val isPinned: Boolean,
     val likesCount: Int,
     val commentsCount: Int,
-    val userReaction: String?
+    val userReaction: String?,
+    val isShort: Boolean = false
 )

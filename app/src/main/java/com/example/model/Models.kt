@@ -22,7 +22,8 @@ data class FamilyMember(
     val pin: String = "1234",
     val bio: String = "",
     val postsCount: Int = 0,
-    val isOnlineInLan: Boolean = true
+    val isOnlineInLan: Boolean = true,
+    val username: String = ""
 )
 
 data class MediaItem(
@@ -53,7 +54,8 @@ data class Post(
     val comments: List<Comment> = emptyList(),
     val feeling: String? = null,
     val isPinned: Boolean = false,
-    val location: String? = null
+    val location: String? = null,
+    val isShort: Boolean = false
 )
 
 enum class StoryType {
@@ -96,4 +98,7 @@ data class NasConfig(
     val serverTech: String = "Synology Web Station (Nginx + PHP 8.2)",
     val databaseTech: String = "MariaDB 10",
     val uploadMaxLimit: String = "1024 MB"
-)
+) {
+    val baseUrl: String
+        get() = "http://$ip:$port$path"
+}

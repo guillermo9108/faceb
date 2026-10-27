@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -53,7 +54,8 @@ fun CommentsSheet(
     post: Post,
     currentMember: FamilyMember,
     onDismiss: () -> Unit,
-    onSendComment: (String) -> Unit
+    onSendComment: (String) -> Unit,
+    onRefreshComments: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var commentText by remember { mutableStateOf("") }
@@ -81,8 +83,13 @@ fun CommentsSheet(
                     text = "Comentarios familiares (${post.comments.size})",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Cerrar")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onRefreshComments) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Actualizar comentarios")
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Cerrar")
+                    }
                 }
             }
 

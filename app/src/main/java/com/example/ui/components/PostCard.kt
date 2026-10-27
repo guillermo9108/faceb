@@ -41,6 +41,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import android.net.Uri
+import android.widget.VideoView
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -79,6 +86,17 @@ fun PostCard(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showReactionPicker by remember { mutableStateOf(false) }
+    var isPlayingInline by remember { mutableStateOf(false) }
+    var isBuffering by remember { mutableStateOf(false) }
+    var isPaused by remember { mutableStateOf(false) }
+    var inlineVideoView by remember { mutableStateOf<VideoView?>(null) }
+
+    DisposableEffect(isPlayingInline) {
+        onDispose {
+            inlineVideoView?.stopPlayback()
+            inlineVideoView = null
+        }
+    }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -256,67 +274,216 @@ fun PostCard(
             if (post.mediaItems.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 val media = post.mediaItems.first()
+                val isVideo = media.type == MediaType.VIDEO
                 val imageModel = remember(media.thumbnailUrl, media.url) {
-                    if (media.type == MediaType.VIDEO) media.thumbnailUrl.ifBlank { media.url } else media.url
+                    if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
                 }
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(16f / 10f)
-                        .background(Color.Black.copy(alpha = 0.05f))
-                        .clickable(enabled = media.type == MediaType.VIDEO) {
-                            onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
-                        }
+                        .aspectRatio(16f / 9f)
+                        .background(Color.Black.copy(alpha = 0.08f))
                 ) {
-                    AsyncImage(
-                        model = imageModel,
-                        contentDescription = media.caption.ifBlank { "Foto de publicación" },
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    // Video overlay with prominent play button
-                    if (media.type == MediaType.VIDEO) {
-                        Box(
+                    if (isVideo && isPlayingInline) {
+                        // Reproducción directa en la misma tarjeta
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    setVideoURI(Uri.parse(media.url))
+                                    setOnPreparedListener { mp ->
+                                        isBuffering = false
+                                        mp.isLooping = true
+                                        start()
+                                    }
+                                    setOnErrorListener { _, _, _ ->
+                                        isBuffering = false
+                                        isPlayingInline = false
+                                        false
+                                    }
+                                    inlineVideoView = this
+                                }
+                            },
+                            update = { vv ->
+                                inlineVideoView = vv
+                                if (isPaused) {
+                                    if (vv.isPlaying) vv.pause()
+                                } else {
+                                    if (!vv.isPlaying && !isBuffering) vv.start()
+                                }
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.35f)),
-                            contentAlignment = Alignment.Center
-                        ) {
+                                .clickable {
+                                    isPaused = !isPaused
+                                }
+                        )
+
+                        // Indicador de carga / buffering
+                        if (isBuffering) {
                             Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.7f))
-                                    .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape),
+                                modifier = Modifier.fillMaxSize(),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = "Reproducir vídeo",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(36.dp)
-                                )
+                                CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp)
                             }
                         }
 
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.8f),
-                            shape = RoundedCornerShape(4.dp),
+                        // Overlay con botón para cerrar vídeo inline
+                        IconButton(
+                            onClick = {
+                                isPlayingInline = false
+                                inlineVideoView?.stopPlayback()
+                                inlineVideoView = null
+                            },
                             modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(10.dp)
+                                .align(Alignment.TopEnd)
+                                .padding(8.dp)
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
                         ) {
-                            Text(
-                                text = "Vídeo LAN · ${media.durationLabel ?: "Streaming"}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cerrar reproducción inline",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
                             )
+                        }
+
+                        // Barra inferior de controles inline
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.BottomCenter)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { isPaused = !isPaused },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                        contentDescription = if (isPaused) "Reanudar" else "Pausar",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Text(
+                                    text = if (isPaused) "Pausado" else "Reproduciendo en tarjeta",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = Color.White,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Fullscreen,
+                                    contentDescription = "Pantalla completa",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        // Vista previa de imagen o miniatura de vídeo
+                        AsyncImage(
+                            model = imageModel,
+                            contentDescription = media.caption.ifBlank { "Foto de publicación" },
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(enabled = isVideo) {
+                                    isPlayingInline = true
+                                    isBuffering = true
+                                    isPaused = false
+                                }
+                        )
+
+                        // Superposición de vídeo con botón reproducir en tarjeta
+                        if (isVideo) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.35f))
+                                    .clickable {
+                                        isPlayingInline = true
+                                        isBuffering = true
+                                        isPaused = false
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.7f))
+                                        .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Reproducir vídeo en tarjeta",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.8f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "Vídeo LAN · ${media.durationLabel ?: "Streaming"}",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
+                                    },
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.8f))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Fullscreen,
+                                        contentDescription = "Pantalla completa",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
