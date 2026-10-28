@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -24,7 +25,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.OndemandVideo
@@ -72,7 +73,8 @@ fun HeaderBar(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onOpenCreatePost: () -> Unit,
-    onOpenMemberSwitch: () -> Unit,
+    onRefreshFeed: () -> Unit = {},
+    unreadNotificationsCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     var isSearchExpanded by remember { mutableStateOf(false) }
@@ -82,9 +84,13 @@ fun HeaderBar(
         shadowElevation = 1.dp,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+        ) {
 
-            // ROW 1: Facebook-style Logotype ("familiar") + Circular Actions (+, 🔍, 💬)
+            // ROW 1: Facebook-style Logotype ("familiar") + Circular Actions (+, 🔍, 🔄)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -157,32 +163,21 @@ fun HeaderBar(
                         )
                     }
 
-                    // 3. Messenger / Family Chat (💬) Button with Notification Badge
+                    // 3. Refresh Synology Feed Button (🔄)
                     IconButton(
-                        onClick = onOpenMemberSwitch,
+                        onClick = onRefreshFeed,
                         modifier = Modifier
                             .size(38.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .testTag("fb_messenger_button")
+                            .testTag("fb_refresh_button")
                     ) {
-                        BadgedBox(
-                            badge = {
-                                Badge(
-                                    containerColor = FacebookBadgeRed,
-                                    contentColor = Color.White
-                                ) {
-                                    Text("LAN", fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Send,
-                                contentDescription = "Familiares en LAN",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Actualizar feed",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -279,7 +274,7 @@ fun HeaderBar(
                     iconSelected = Icons.Default.Notifications,
                     iconUnselected = Icons.Outlined.Notifications,
                     contentDescription = "Notificaciones",
-                    badgeText = "2",
+                    badgeText = if (unreadNotificationsCount > 0) unreadNotificationsCount.toString() else null,
                     modifier = Modifier.weight(1f).testTag("tab_notifications")
                 )
 

@@ -41,6 +41,8 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val nasConfig = repository.nasConfig
     val stories = repository.stories
     val shorts = repository.shorts
+    val notifications = repository.notifications
+    val unreadNotificationsCount = repository.unreadNotificationsCount
     val isLoading = repository.isLoading
 
     private val _selectedTab = MutableStateFlow(FeedTab.FEED)
@@ -73,22 +75,56 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedStoryGroupForViewing = MutableStateFlow<com.example.model.UserStoryGroup?>(null)
     val selectedStoryGroupForViewing: StateFlow<com.example.model.UserStoryGroup?> = _selectedStoryGroupForViewing.asStateFlow()
 
-    private val _isMemberSwitchDialogOpen = MutableStateFlow(false)
-    val isMemberSwitchDialogOpen: StateFlow<Boolean> = _isMemberSwitchDialogOpen.asStateFlow()
-
     private val _isProfileDialogOpen = MutableStateFlow(false)
     val isProfileDialogOpen: StateFlow<Boolean> = _isProfileDialogOpen.asStateFlow()
 
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    val isNasDetected = repository.isNasDetected
+    val isAutoDetectingNas = repository.isAutoDetecting
+    val showNasIpConfirmation = repository.showNasIpConfirmation
+
     init {
-        // Intento de conexión inicial y refresco del feed real y shorts
+        // Intento de conexión inicial con autodetección en puerto 80 y refresco del feed real y shorts
         viewModelScope.launch {
-            repository.pingNas()
+            val autoDetectResult = repository.autoDetectNasOnPort80()
+            if (autoDetectResult.isSuccess) {
+                showStatus("¡Synology NAS detectado en ${autoDetectResult.getOrNull()} (Puerto 80)!")
+            }
             repository.refreshFeed()
             repository.refreshShorts()
         }
+    }
+
+    fun retryAutoDetectNas() {
+        viewModelScope.launch {
+            showStatus("Buscando Synology NAS en la red LAN (puerto 80)...")
+            val res = repository.autoDetectNasOnPort80()
+            res.fold(
+                onSuccess = { ip -> showStatus("¡Synology NAS detectado en $ip!") },
+                onFailure = { showStatus("No se detectó el NAS automáticamente. Por favor confirma la IP.") }
+            )
+        }
+    }
+
+    fun confirmNasIp(ip: String, port: Int = 80, path: String = "/family_api") {
+        viewModelScope.launch {
+            showStatus("Conectando con $ip:$port...")
+            val result = repository.testAndConfirmNasConfig(ip, port, path)
+            result.fold(
+                onSuccess = {
+                    showStatus("¡Conexión exitosa con Synology NAS!")
+                },
+                onFailure = { error ->
+                    showStatus("Error de conexión: ${error.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun dismissNasIpConfirmation() {
+        repository.setNasIpConfirmationVisible(false)
     }
 
     // Historias agrupadas por usuario para mostrar en StoriesRow
@@ -157,18 +193,20 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _selectedStoryGroupForViewing.value = null
     }
 
-    fun openMemberSwitchDialog() {
-        _isMemberSwitchDialogOpen.value = true
+    fun markAllNotificationsAsRead() {
+        repository.markAllNotificationsAsRead()
     }
 
-    fun closeMemberSwitchDialog() {
-        _isMemberSwitchDialogOpen.value = false
+    fun markNotificationAsRead(id: String) {
+        repository.markNotificationAsRead(id)
     }
 
-    fun switchMember(member: FamilyMember) {
-        repository.setCurrentMember(member)
-        _isMemberSwitchDialogOpen.value = false
-        showStatus("Sesión cambiada a: ${member.name}")
+    fun markShortAsViewed(postId: Int) {
+        repository.markShortAsViewed(postId)
+    }
+
+    fun resetViewedShorts() {
+        repository.resetViewedShorts()
     }
 
     fun openCommentsSheet(post: Post) {

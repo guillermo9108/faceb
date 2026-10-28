@@ -22,11 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ReactionType
+import com.example.model.NotificationType
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
 import com.example.ui.components.HeaderBar
-import com.example.ui.components.MemberSwitchDialog
+import com.example.ui.components.NasIpConfirmationDialog
 import com.example.ui.components.ProfileSettingsDialog
 import com.example.ui.components.StoryViewerDialog
 import com.example.ui.components.VideoPlayerDialog
@@ -68,7 +69,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isCreatePostDialogOpen by viewModel.isCreatePostDialogOpen.collectAsState()
     val isCreateStoryDialogOpen by viewModel.isCreateStoryDialogOpen.collectAsState()
     val selectedStoryGroupForViewing by viewModel.selectedStoryGroupForViewing.collectAsState()
-    val isMemberSwitchDialogOpen by viewModel.isMemberSwitchDialogOpen.collectAsState()
+    val notifications by viewModel.notifications.collectAsState()
+    val unreadNotificationsCount by viewModel.unreadNotificationsCount.collectAsState()
+    val showNasIpConfirmation by viewModel.showNasIpConfirmation.collectAsState()
+    val isAutoDetectingNas by viewModel.isAutoDetectingNas.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
 
     var activeVideoToPlay by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
@@ -91,22 +95,37 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
 
     // Si el usuario no ha iniciado sesión, mostrar la pantalla de Login / Registro
     if (!isUserLoggedIn) {
-        LoginRegisterScreen(
-            members = familyMembers,
-            nasIp = nasConfig.ip,
-            onLogin = { u, p, remember -> viewModel.login(u, p, remember) },
-            onRegister = { u, nick, p, emoji, colorHex, remember ->
-                viewModel.register(
-                    username = u,
-                    displayName = nick,
-                    pass = p,
-                    avatarEmoji = emoji,
-                    avatarColorHex = colorHex,
-                    rememberSession = remember
+        Box(modifier = Modifier.fillMaxSize()) {
+            LoginRegisterScreen(
+                members = familyMembers,
+                nasIp = nasConfig.ip,
+                onLogin = { u, p, remember -> viewModel.login(u, p, remember) },
+                onRegister = { u, nick, p, emoji, colorHex, remember ->
+                    viewModel.register(
+                        username = u,
+                        displayName = nick,
+                        pass = p,
+                        avatarEmoji = emoji,
+                        avatarColorHex = colorHex,
+                        rememberSession = remember
+                    )
+                },
+                onSkipLogin = { viewModel.skipLoginAsGuest() },
+                onOpenNasConfig = { viewModel.retryAutoDetectNas() }
+            )
+
+            if (showNasIpConfirmation) {
+                NasIpConfirmationDialog(
+                    initialIp = nasConfig.ip,
+                    initialPort = nasConfig.port,
+                    initialPath = nasConfig.path,
+                    isScanning = isAutoDetectingNas,
+                    onConfirm = { ip, port, path -> viewModel.confirmNasIp(ip, port, path) },
+                    onRetryAutoDetect = { viewModel.retryAutoDetectNas() },
+                    onDismiss = { viewModel.dismissNasIpConfirmation() }
                 )
-            },
-            onSkipLogin = { viewModel.skipLoginAsGuest() }
-        )
+            }
+        }
         return
     }
 
@@ -125,7 +144,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                 searchQuery = searchQuery,
                 onSearchQueryChange = { viewModel.setSearchQuery(it) },
                 onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                onOpenMemberSwitch = { viewModel.openMemberSwitchDialog() }
+                onRefreshFeed = { viewModel.refreshFeed() },
+                unreadNotificationsCount = unreadNotificationsCount
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -183,14 +203,18 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onLikePost = { postId -> viewModel.reactToPost(postId, ReactionType.LIKE) },
                         onOpenComments = { post -> viewModel.openCommentsSheet(post) },
                         onOpenCreateShort = { viewModel.openCreatePostDialog() },
-                        onRefresh = { viewModel.refreshShorts() }
+                        onRefresh = { viewModel.refreshShorts() },
+                        onShortViewed = { viewModel.markShortAsViewed(it) }
                     )
                 }
                 FeedTab.MEMBERS -> {
                     FamilyMembersScreen(
                         currentMember = currentMember,
                         familyMembers = familyMembers,
-                        onSelectMember = { viewModel.switchMember(it) },
+                        onSelectMember = { member ->
+                            viewModel.setMemberFilter(member)
+                            viewModel.setSelectedTab(FeedTab.FEED)
+                        },
                         onViewMemberPosts = { member ->
                             viewModel.setMemberFilter(member)
                             viewModel.setSelectedTab(FeedTab.FEED)
@@ -200,8 +224,16 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                 FeedTab.NOTIFICATIONS -> {
                     NotificationsScreen(
                         currentMember = currentMember,
-                        familyMembers = familyMembers,
-                        onNotificationClick = { viewModel.setSelectedTab(FeedTab.FEED) }
+                        notifications = notifications,
+                        onMarkAllAsRead = { viewModel.markAllNotificationsAsRead() },
+                        onNotificationClick = { notif ->
+                            viewModel.markNotificationAsRead(notif.id)
+                            if (notif.type == NotificationType.SHORT) {
+                                viewModel.setSelectedTab(FeedTab.SHORTS)
+                            } else {
+                                viewModel.setSelectedTab(FeedTab.FEED)
+                            }
+                        }
                     )
                 }
                 FeedTab.MENU -> {
@@ -213,7 +245,6 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
                         onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
                         onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
-                        onOpenMemberSwitch = { viewModel.openMemberSwitchDialog() },
                         onOpenProfileSettings = { viewModel.openProfileDialog() },
                         onLogout = { viewModel.logout() }
                     )
@@ -272,16 +303,6 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         )
     }
 
-    // Modal Cambiar de Familiar
-    if (isMemberSwitchDialogOpen) {
-        MemberSwitchDialog(
-            currentMember = currentMember,
-            familyMembers = familyMembers,
-            onSelectMember = { viewModel.switchMember(it) },
-            onDismiss = { viewModel.closeMemberSwitchDialog() }
-        )
-    }
-
     // Modal / Bottom Sheet de Comentarios Reactivo
     selectedPostForComments?.let { post ->
         CommentsSheet(
@@ -306,6 +327,19 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                     newPassword = newPass
                 )
             }
+        )
+    }
+
+    // Modal de Confirmación de IP del Synology NAS (si no se autodetecta en puerto 80)
+    if (showNasIpConfirmation) {
+        NasIpConfirmationDialog(
+            initialIp = nasConfig.ip,
+            initialPort = nasConfig.port,
+            initialPath = nasConfig.path,
+            isScanning = isAutoDetectingNas,
+            onConfirm = { ip, port, path -> viewModel.confirmNasIp(ip, port, path) },
+            onRetryAutoDetect = { viewModel.retryAutoDetectNas() },
+            onDismiss = { viewModel.dismissNasIpConfirmation() }
         )
     }
 }

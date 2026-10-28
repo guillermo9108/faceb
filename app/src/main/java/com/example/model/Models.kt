@@ -85,7 +85,7 @@ data class UserStoryGroup(
 
 data class NasConfig(
     val ip: String = "192.168.1.100",
-    val port: Int = 8085,
+    val port: Int = 80,
     val path: String = "/family_api",
     val dbPort: Int = 3307,
     val dbHost: String = "127.0.0.1",
@@ -95,10 +95,30 @@ data class NasConfig(
     val isConnected: Boolean = false,
     val lastPingMs: Long = -1L,
     val lastError: String? = null,
-    val serverTech: String = "Synology Web Station (Nginx + PHP 8.2)",
+    val serverTech: String = "Synology Web Station (Nginx + PHP 7/8)",
     val databaseTech: String = "MariaDB 10",
     val uploadMaxLimit: String = "1024 MB"
 ) {
     val baseUrl: String
-        get() = "http://$ip:$port$path"
+        get() = if (port == 80) "http://$ip$path" else "http://$ip:$port$path"
 }
+
+enum class NotificationType {
+    POST,
+    COMMENT,
+    REACTION,
+    SHORT,
+    STORY
+}
+
+data class FamilyNotification(
+    val id: String,
+    val author: FamilyMember,
+    val actionText: String,
+    val detailText: String = "",
+    val timestamp: Long = System.currentTimeMillis(),
+    val isUnread: Boolean = true,
+    val type: NotificationType = NotificationType.POST,
+    val targetPostId: Int? = null,
+    val badgeEmoji: String = "🔔"
+)

@@ -42,7 +42,7 @@ class ExampleUnitTest {
     fun testNasConfigDefaults() {
         val config = NasConfig()
         assertEquals("192.168.1.100", config.ip)
-        assertEquals(8085, config.port)
+        assertEquals(80, config.port)
         assertEquals("/family_api", config.path)
         assertFalse(config.isConnected)
     }

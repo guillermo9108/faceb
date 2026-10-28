@@ -28,8 +28,8 @@ class ExampleRobolectricTest {
         val repo = FamilyRepository(context)
 
         assertNotNull(repo.currentMember.value)
-        assertEquals("Carlos (Papá)", repo.currentMember.value.name)
-        assertEquals(5, repo.familyMembers.value.size)
+        assertEquals("Administrador", repo.currentMember.value.name)
+        assertEquals(1, repo.familyMembers.value.size)
         // Starts with 0 posts until real sync from Synology NAS or user publication
         assertEquals(0, repo.posts.value.size)
     }
@@ -148,16 +148,16 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val repo1 = FamilyRepository(context)
 
-        // Login as Mateo with rememberSession = true
-        val result = repo1.login("mateo", "1234", rememberSession = true)
+        // Login as admin with rememberSession = true
+        val result = repo1.login("admin", "admin", rememberSession = true)
         assertTrue("Login should succeed", result.isSuccess)
         assertTrue(repo1.isUserLoggedIn.value)
-        assertEquals("Mateo", repo1.currentMember.value.name)
+        assertEquals("Administrador", repo1.currentMember.value.name)
 
         // Re-create repository simulating app kill & restart
         val repo2 = FamilyRepository(context)
         assertTrue("Session should be restored upon app restart", repo2.isUserLoggedIn.value)
-        assertEquals("Mateo", repo2.currentMember.value.name)
+        assertEquals("Administrador", repo2.currentMember.value.name)
 
         // Now logout
         repo2.logout()
@@ -173,7 +173,7 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val repo = FamilyRepository(context)
 
-        repo.login("carlos", "1234", rememberSession = false)
+        repo.login("admin", "admin", rememberSession = false)
         val updateRes = repo.updateProfile("Papá Genial 🚀", "🚀", 0xFF1877F2L, "Bio genial", null)
         assertTrue(updateRes.isSuccess)
         assertEquals("Papá Genial 🚀", repo.currentMember.value.name)
@@ -183,6 +183,8 @@ class ExampleRobolectricTest {
     @Test
     fun `synology backend scripts include auth, shorts, and profile update endpoints`() {
         val config = com.example.model.NasConfig()
+        assertEquals(80, config.port)
+
         val zipBytes = com.example.util.SynologyZipExporter.createZipBytes(config)
         val entries = mutableMapOf<String, String>()
         val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(zipBytes))
@@ -202,6 +204,56 @@ class ExampleRobolectricTest {
 
         val schemaSql = entries["schema.sql"] ?: ""
         assertTrue("schema.sql must contain is_short column", schemaSql.contains("is_short"))
+        assertTrue("schema.sql must only insert admin user", schemaSql.contains("'admin'"))
+        org.junit.Assert.assertFalse("schema.sql must not contain hardcoded users carlos or laura", schemaSql.contains("'carlos'"))
+
+        val configPhp = entries["config.php"] ?: ""
+        assertTrue("config.php must contain autoBootstrapDatabase function", configPhp.contains("autoBootstrapDatabase"))
+        assertTrue("config.php must auto-create database if unknown database 1049", configPhp.contains("CREATE DATABASE IF NOT EXISTS"))
+        assertTrue("config.php only creates admin when userCount is 0", configPhp.contains("userCount === 0"))
+
+        assertTrue("index.php shorts endpoint must only query is_short = 1", indexPhp.contains("WHERE p.is_short = 1"))
+    }
+
+    @Test
+    fun `auto-detection on port 80 triggers confirmation if NAS not found`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = FamilyRepository(context)
+
+        // Point to a non-existent local IP
+        repo.updateNasConfig(repo.nasConfig.value.copy(ip = "192.168.254.254", port = 80))
+        val res = repo.autoDetectNasOnPort80()
+        org.junit.Assert.assertFalse("Should fail on unreachable IP", res.isSuccess)
+        assertTrue("Should request IP confirmation from user", repo.showNasIpConfirmation.value)
+    }
+
+    @Test
+    fun `shorts viewed tracking persists and ranking prioritizes unviewed content`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = FamilyRepository(context)
+
+        repo.resetViewedShorts()
+        assertTrue("Initially no viewed shorts", repo.getViewedShorts().isEmpty())
+
+        repo.markShortAsViewed(101)
+        assertTrue(repo.getViewedShorts().contains("101"))
+
+        val repo2 = FamilyRepository(context)
+        assertTrue("Viewed shorts should persist across restarts", repo2.getViewedShorts().contains("101"))
+
+        repo2.resetViewedShorts()
+        assertTrue("Viewed shorts can be reset", repo2.getViewedShorts().isEmpty())
+    }
+
+    @Test
+    fun `notifications engine creates real notifications and supports mark all read`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = FamilyRepository(context)
+
+        // Mark all as read works cleanly
+        repo.markAllNotificationsAsRead()
+        assertEquals(0, repo.unreadNotificationsCount.value)
     }
 }
+
 

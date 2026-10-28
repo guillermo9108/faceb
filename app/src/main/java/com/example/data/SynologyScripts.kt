@@ -91,13 +91,9 @@ object SynologyScripts {
             INDEX idx_story_created (created_at DESC)
         ) ENGINE=InnoDB;
 
-        -- Miembros iniciales reales
+        -- Usuario administrador inicial por defecto
         INSERT IGNORE INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES
-        (1, 'papa', 'Carlos (Papá)', 'Papá', '1234', '👨‍💼', 4280391411, 'Organizador de los asados de domingo 🍖'),
-        (2, 'mama', 'Laura (Mamá)', 'Mamá', '1234', '👩‍🌾', 4293077672, 'Fotógrafa de las plantas y viajes familiares 🌸'),
-        (3, 'hija', 'Sofía', 'Hija Mayor', '1234', '👧', 4287518975, 'Estudiante y fan de la música 🎸'),
-        (4, 'hijo', 'Mateo', 'Hijo Menor', '1234', '👦', 4283151817, 'Fútbol y ciencia ⚽'),
-        (5, 'abuela', 'Rosa (Abuela)', 'Abuela', '1234', '👵', 4294432139, 'Recetas tradicionales de la familia 🥧');
+        (1, 'admin', 'Administrador', 'Administrador', 'admin', '👑', 4280391411, 'Cuenta administradora familiar');
     """.trimIndent()
 
     private const val D = "$"
@@ -121,17 +117,134 @@ object SynologyScripts {
         define('DB_USER', '$dbUser'); // Usuario MariaDB
         define('DB_PASS', '$dbPass'); // Contraseña MariaDB
 
+        function autoBootstrapDatabase(PDO ${D}pdo) {
+            try {
+                // 1. REPARAR O CREAR TABLAS QUE NO EXISTAN
+                ${D}ddl = "
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        username VARCHAR(50) UNIQUE NOT NULL,
+                        display_name VARCHAR(100) NOT NULL,
+                        role VARCHAR(50) DEFAULT 'Familiar',
+                        pin_hash VARCHAR(255) NOT NULL,
+                        avatar_emoji VARCHAR(10) DEFAULT '👤',
+                        avatar_color_hex BIGINT DEFAULT 4280391411,
+                        bio VARCHAR(255) DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS posts (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        content_text TEXT,
+                        feeling VARCHAR(100) NULL,
+                        location VARCHAR(100) NULL,
+                        is_pinned TINYINT(1) DEFAULT 0,
+                        is_short TINYINT(1) DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_created (created_at),
+                        INDEX idx_is_short (is_short)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS media (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        post_id INT NOT NULL,
+                        media_type VARCHAR(20) NOT NULL,
+                        file_path VARCHAR(255) NOT NULL,
+                        thumb_path VARCHAR(255) NULL,
+                        duration_label VARCHAR(20) NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_post (post_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS comments (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        post_id INT NOT NULL,
+                        user_id INT NOT NULL,
+                        comment_text TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_post_c (post_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS reactions (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        post_id INT NOT NULL,
+                        user_id INT NOT NULL,
+                        reaction_type VARCHAR(20) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_post_user (post_id, user_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS stories (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        caption VARCHAR(255) NULL,
+                        story_type VARCHAR(20) DEFAULT 'IMAGE',
+                        file_path VARCHAR(255) NULL,
+                        thumb_path VARCHAR(255) NULL,
+                        bg_color_hex BIGINT DEFAULT 4279892618,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_stories_time (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                ";
+                ${D}pdo->exec(${D}ddl);
+
+                // 2. REPARACIÓN DE COLUMNAS ACTUALIZADAS
+                try {
+                    ${D}pdo->exec("ALTER TABLE posts ADD COLUMN is_short TINYINT(1) DEFAULT 0");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE media ADD COLUMN thumb_path VARCHAR(255) NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE media ADD COLUMN duration_label VARCHAR(20) NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE stories ADD COLUMN thumb_path VARCHAR(255) NULL");
+                } catch (Exception ${D}eCol) {}
+
+                // 3. CREACIÓN EXCLUSIVA DE USUARIO ADMIN SOLO SI LA BD ES NUEVA
+                // Si la BD ya existe, no se toca ni recrea el usuario admin, protegiendo credenciales
+                ${D}countQuery = ${D}pdo->query("SELECT COUNT(*) FROM users");
+                ${D}userCount = ${D}countQuery ? (int)${D}countQuery->fetchColumn() : 0;
+
+                if (${D}userCount === 0) {
+                    ${D}hash = password_hash('admin', PASSWORD_DEFAULT);
+                    ${D}stmt = ${D}pdo->prepare("INSERT INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES (1, 'admin', 'Administrador', 'Administrador', ?, '👑', 4280391411, 'Cuenta administradora familiar')");
+                    ${D}stmt->execute([${D}hash]);
+                }
+            } catch (Exception ${D}ex) {
+                error_log("Bootstrap DB error: " . ${D}ex->getMessage());
+            }
+        }
+
         function getDB(): PDO {
             static ${D}pdo = null;
             if (${D}pdo === null) {
-                ${D}dsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
                 ${D}options = [
                     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES   => false,
                     PDO::ATTR_TIMEOUT            => 5,
                 ];
-                ${D}pdo = new PDO(${D}dsn, DB_USER, DB_PASS, ${D}options);
+
+                try {
+                    // Conexión regular a la base de datos
+                    ${D}dsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+                    ${D}pdo = new PDO(${D}dsn, DB_USER, DB_PASS, ${D}options);
+                } catch (PDOException ${D}e) {
+                    // Si no existe la BD en MariaDB 10, conectarse al servidor y crearla automáticamente
+                    if (${D}e->getCode() == 1049 || strpos(${D}e->getMessage(), 'Unknown database') !== false) {
+                        ${D}rootDsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";charset=utf8mb4";
+                        ${D}serverPdo = new PDO(${D}rootDsn, DB_USER, DB_PASS, ${D}options);
+                        ${D}serverPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+                        ${D}pdo = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS, ${D}options);
+                    } else {
+                        throw ${D}e;
+                    }
+                }
+
+                autoBootstrapDatabase(${D}pdo);
             }
             return ${D}pdo;
         }
@@ -392,9 +505,9 @@ object SynologyScripts {
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
                     JOIN media m ON m.post_id = p.id
-                    WHERE p.is_short = 1 OR m.media_type = 'VIDEO'
+                    WHERE p.is_short = 1
                     ORDER BY p.created_at DESC
-                    LIMIT 50
+                    LIMIT 100
                 ");
                 echo json_encode(["shorts" => ${D}stmt->fetchAll()]);
             } catch (Exception ${D}e) {

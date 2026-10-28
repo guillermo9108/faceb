@@ -73,7 +73,8 @@ fun LoginRegisterScreen(
     nasIp: String,
     onLogin: (username: String, pass: String, remember: Boolean) -> Unit,
     onRegister: (username: String, nick: String, pass: String, emoji: String, colorHex: Long, remember: Boolean) -> Unit,
-    onSkipLogin: () -> Unit
+    onSkipLogin: () -> Unit,
+    onOpenNasConfig: () -> Unit = {}
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Login, 1: Register
 
@@ -142,7 +143,9 @@ fun LoginRegisterScreen(
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.padding(top = 10.dp)
+                modifier = Modifier
+                    .padding(top = 10.dp)
+                    .clickable { onOpenNasConfig() }
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -156,7 +159,7 @@ fun LoginRegisterScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Synology NAS: $nasIp",
+                        text = "Synology NAS: $nasIp (Puerto 80)",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -223,7 +226,7 @@ fun LoginRegisterScreen(
                         OutlinedTextField(
                             value = loginUsername,
                             onValueChange = { loginUsername = it },
-                            placeholder = { Text("Ej: papa, mama, lucia...") },
+                            placeholder = { Text("Ej: admin (o tu usuario)") },
                             leadingIcon = {
                                 Icon(Icons.Default.Person, contentDescription = null, tint = FacebookBlue)
                             },
@@ -246,7 +249,7 @@ fun LoginRegisterScreen(
                         OutlinedTextField(
                             value = loginPassword,
                             onValueChange = { loginPassword = it },
-                            placeholder = { Text("Contraseña (o PIN inicial: 1234)") },
+                            placeholder = { Text("Contraseña (admin por defecto)") },
                             leadingIcon = {
                                 Icon(Icons.Default.Lock, contentDescription = null, tint = FacebookBlue)
                             },
@@ -318,55 +321,6 @@ fun LoginRegisterScreen(
                                 fontSize = 15.sp,
                                 color = Color.White
                             )
-                        }
-
-                        // Quick Pick from known family members
-                        if (members.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(20.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), thickness = 0.5.dp)
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Text(
-                                text = "O selecciona tu perfil rápido:",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(members) { member ->
-                                    Card(
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                        modifier = Modifier.clickable {
-                                            loginUsername = member.username.ifBlank { member.name.lowercase().replace(" ", "") }
-                                            if (loginPassword.isBlank()) {
-                                                loginPassword = "1234"
-                                            }
-                                        }
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(24.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(member.avatarColorHex)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(text = member.avatarEmoji, fontSize = 13.sp)
-                                            }
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = member.name,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                        }
-                                    }
-                                }
-                            }
                         }
                     } else {
                         // --- REGISTER FORM ---

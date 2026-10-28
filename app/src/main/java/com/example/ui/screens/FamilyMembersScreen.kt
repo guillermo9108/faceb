@@ -171,44 +171,15 @@ fun FamilyMembersScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        if (!isCurrent) {
-                            Button(
-                                onClick = { onSelectMember(member) },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = FamilyBluePrimary),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Usar perfil", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        } else {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(40.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
-                                ) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = FamilyBluePrimary, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Perfil en uso", color = FamilyBluePrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                            }
-                        }
-
-                        OutlinedButton(
+                        Button(
                             onClick = { onViewMemberPosts(member) },
                             shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = FamilyBluePrimary),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Feed, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Ver muro", fontSize = 13.sp)
+                            Text("Ver muro de ${member.name.split(" ").first()}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

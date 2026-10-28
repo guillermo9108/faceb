@@ -67,7 +67,6 @@ fun MenuScreen(
     onNavigateToMembers: () -> Unit,
     onNavigateToWatch: () -> Unit,
     onNavigateToShorts: () -> Unit,
-    onOpenMemberSwitch: () -> Unit,
     onOpenProfileSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
@@ -114,21 +113,6 @@ fun MenuScreen(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-
-                    IconButton(
-                        onClick = onOpenMemberSwitch,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = "Cambiar usuario",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
                 }
             }
         }
@@ -170,21 +154,6 @@ fun MenuScreen(
                                 text = "Usuario: @${currentMember.username.ifBlank { currentMember.name.lowercase().replace(" ", "") }}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        IconButton(
-                            onClick = onOpenMemberSwitch,
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = "Cambiar usuario",
-                                tint = FacebookBlue,
-                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -340,24 +309,6 @@ fun MenuScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        }
-
-        // Log out / Switch User Button
-        item(span = { GridItemSpan(2) }) {
-            Button(
-                onClick = onOpenMemberSwitch,
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .padding(top = 6.dp)
-            ) {
-                Text("Cambiar de usuario familiar", fontWeight = FontWeight.SemiBold)
             }
         }
 

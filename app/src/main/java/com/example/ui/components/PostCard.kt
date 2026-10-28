@@ -388,6 +388,10 @@ fun PostCard(
 
                             IconButton(
                                 onClick = {
+                                    isPlayingInline = false
+                                    isPaused = true
+                                    inlineVideoView?.stopPlayback()
+                                    inlineVideoView = null
                                     onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
                                 },
                                 modifier = Modifier.size(32.dp)
@@ -469,6 +473,10 @@ fun PostCard(
 
                                 IconButton(
                                     onClick = {
+                                        isPlayingInline = false
+                                        isPaused = true
+                                        inlineVideoView?.stopPlayback()
+                                        inlineVideoView = null
                                         onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
                                     },
                                     modifier = Modifier

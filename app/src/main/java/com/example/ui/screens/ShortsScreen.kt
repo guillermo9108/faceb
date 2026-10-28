@@ -76,7 +76,8 @@ fun ShortsScreen(
     onLikePost: (Int) -> Unit,
     onOpenComments: (Post) -> Unit,
     onOpenCreateShort: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onShortViewed: (Int) -> Unit = {}
 ) {
     Box(
         modifier = Modifier
@@ -149,6 +150,12 @@ fun ShortsScreen(
                 val shortPost = shorts[page]
                 val author = members.find { it.id == shortPost.author.id } ?: shortPost.author
                 val isCurrentPage = pagerState.currentPage == page
+
+                LaunchedEffect(isCurrentPage, shortPost.id) {
+                    if (isCurrentPage) {
+                        onShortViewed(shortPost.id)
+                    }
+                }
 
                 ShortVideoItem(
                     post = shortPost,
