@@ -265,6 +265,14 @@ private fun ShortVideoItem(
         else "$baseUrl/$rel"
     }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val localThumbModel = remember(thumbFullUrl) {
+        if (thumbFullUrl != null) com.example.util.OfflineMediaManager.getDisplayModel(context, thumbFullUrl) else null
+    }
+    val localVideoUri = remember(videoFullUrl) {
+        if (videoFullUrl.isNotEmpty()) com.example.util.OfflineMediaManager.getPlayableMediaUri(context, videoFullUrl) else Uri.EMPTY
+    }
+
     LaunchedEffect(isActive, videoViewRef) {
         val vv = videoViewRef ?: return@LaunchedEffect
         if (isActive) {
@@ -296,9 +304,9 @@ private fun ShortVideoItem(
             }
     ) {
         // Thumbnail backdrop while loading
-        if (thumbFullUrl != null && !isPlaying) {
+        if (localThumbModel != null && !isPlaying) {
             AsyncImage(
-                model = thumbFullUrl,
+                model = localThumbModel,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -308,13 +316,13 @@ private fun ShortVideoItem(
         // Full Screen Video View
         if (videoFullUrl.isNotEmpty()) {
             AndroidView(
-                factory = { context ->
-                    VideoView(context).apply {
+                factory = { ctx ->
+                    VideoView(ctx).apply {
                         layoutParams = FrameLayout.LayoutParams(
                             FrameLayout.LayoutParams.MATCH_PARENT,
                             FrameLayout.LayoutParams.MATCH_PARENT
                         )
-                        setVideoURI(Uri.parse(videoFullUrl))
+                        setVideoURI(localVideoUri)
                         setOnPreparedListener { mp ->
                             mp.isLooping = true
                             isBuffering = false

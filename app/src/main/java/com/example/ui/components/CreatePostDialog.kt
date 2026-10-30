@@ -85,6 +85,7 @@ import java.io.File
 @Composable
 fun CreatePostDialog(
     currentMember: FamilyMember,
+    initiallyShortMode: Boolean = false,
     onDismiss: () -> Unit,
     onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?, isShort: Boolean) -> Unit
 ) {
@@ -100,7 +101,7 @@ fun CreatePostDialog(
     var videoThumbnailFile by remember { mutableStateOf<File?>(null) }
     var videoDurationLabel by remember { mutableStateOf<String?>(null) }
     var isExtractingVideo by remember { mutableStateOf(false) }
-    var isShort by remember { mutableStateOf(false) }
+    var isShort by remember { mutableStateOf(initiallyShortMode) }
     var isVerticalVideoDetected by remember { mutableStateOf(false) }
 
     // Selector de Fotos/Vídeos Real de Android
@@ -120,7 +121,7 @@ fun CreatePostDialog(
                     videoDurationLabel = info.durationFormatted
                     videoThumbnailFile = info.thumbnailFile
                     isVerticalVideoDetected = info.isVertical
-                    if (info.isVertical) {
+                    if (initiallyShortMode) {
                         isShort = true
                     }
                     isExtractingVideo = false
@@ -442,15 +443,17 @@ fun CreatePostDialog(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column {
                                     Text(
-                                        text = "Subir como Short",
+                                        text = "Subir solo a Shorts",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp
                                     )
                                     Text(
-                                        text = if (isVerticalVideoDetected)
-                                            "Vídeo vertical detectado · Solo saldrá en Shorts"
+                                        text = if (isShort)
+                                            "Solo saldrá en la sección Shorts familiares"
+                                        else if (isVerticalVideoDetected)
+                                            "Vídeo vertical · Se publicará en el Muro (activa si solo lo quieres en Shorts)"
                                         else
-                                            "Solo saldrá en la sección Shorts familiares",
+                                            "Se publicará en el Muro (activa si solo lo quieres en Shorts)",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

@@ -69,6 +69,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _isCreatePostDialogOpen = MutableStateFlow(false)
     val isCreatePostDialogOpen: StateFlow<Boolean> = _isCreatePostDialogOpen.asStateFlow()
 
+    private val _isCreateShortMode = MutableStateFlow(false)
+    val isCreateShortMode: StateFlow<Boolean> = _isCreateShortMode.asStateFlow()
+
     private val _isCreateStoryDialogOpen = MutableStateFlow(false)
     val isCreateStoryDialogOpen: StateFlow<Boolean> = _isCreateStoryDialogOpen.asStateFlow()
 
@@ -169,12 +172,14 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _selectedMemberFilter.value = member
     }
 
-    fun openCreatePostDialog() {
+    fun openCreatePostDialog(isShortMode: Boolean = false) {
+        _isCreateShortMode.value = isShortMode
         _isCreatePostDialogOpen.value = true
     }
 
     fun closeCreatePostDialog() {
         _isCreatePostDialogOpen.value = false
+        _isCreateShortMode.value = false
     }
 
     fun openCreateStoryDialog() {

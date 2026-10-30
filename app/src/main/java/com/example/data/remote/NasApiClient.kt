@@ -27,11 +27,19 @@ import java.util.concurrent.TimeUnit
 
 class NasApiClient(
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 ) {
+
+    // Cliente especializado sin límites de tiempo de espera (timeout) para subida de vídeos pesados en LAN
+    private val uploadClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
 
     var onPathAutoDetected: ((String) -> Unit)? = null
 
@@ -673,7 +681,7 @@ class NasApiClient(
                 .post(multipartBuilder.build())
                 .build()
 
-            var response = client.newCall(request).execute()
+            var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
             if (response.code == 404) {
@@ -682,7 +690,7 @@ class NasApiClient(
                     currentPath = detected
                     url = buildEndpointUrl(ip, port, currentPath, "post")
                     val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
-                    response = client.newCall(retryReq).execute()
+                    response = uploadClient.newCall(retryReq).execute()
                     body = response.body?.string() ?: ""
                 }
             }
@@ -745,7 +753,7 @@ class NasApiClient(
                 .post(multipartBuilder.build())
                 .build()
 
-            var response = client.newCall(request).execute()
+            var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
             if (response.code == 404) {
@@ -754,7 +762,7 @@ class NasApiClient(
                     currentPath = detected
                     url = buildEndpointUrl(ip, port, currentPath, "story")
                     val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
-                    response = client.newCall(retryReq).execute()
+                    response = uploadClient.newCall(retryReq).execute()
                     body = response.body?.string() ?: ""
                 }
             }

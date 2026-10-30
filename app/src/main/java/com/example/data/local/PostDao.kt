@@ -12,6 +12,12 @@ interface PostDao {
     @Query("SELECT * FROM cached_posts ORDER BY isPinned DESC, createdAt DESC")
     fun getAllPosts(): Flow<List<PostEntity>>
 
+    @Query("SELECT * FROM cached_posts WHERE isShort = 0 ORDER BY isPinned DESC, createdAt DESC")
+    fun getFeedPosts(): Flow<List<PostEntity>>
+
+    @Query("SELECT * FROM cached_posts WHERE isShort = 1 ORDER BY createdAt DESC")
+    fun getShortsPosts(): Flow<List<PostEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPosts(posts: List<PostEntity>)
 

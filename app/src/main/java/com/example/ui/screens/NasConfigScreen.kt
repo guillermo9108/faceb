@@ -572,6 +572,89 @@ fun NasConfigScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Tarjeta Almacenamiento Offline Oculto (.offline_media)
+        var cacheStats by remember { mutableStateOf(com.example.util.OfflineMediaManager.getCacheStats(context)) }
+
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Storage, contentDescription = null, tint = FacebookBlue)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Almacenamiento Offline (.offline_media)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Carpeta oculta en el dispositivo que guarda fotos, vídeos de publicaciones y Shorts descargados para ver al instante y disfrutar sin conexión al servidor.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Archivos multimedia:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${cacheStats.fileCount} elementos guardados", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Espacio ocupado:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(cacheStats.formattedSize, style = MaterialTheme.typography.bodyMedium.copy(color = FacebookBlue, fontWeight = FontWeight.Bold))
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            com.example.util.OfflineMediaManager.clearCache(context)
+                            cacheStats = com.example.util.OfflineMediaManager.getCacheStats(context)
+                            Toast.makeText(context, "Caché offline liberada", Toast.LENGTH_SHORT).show()
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Liberar espacio", fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            onTestConnection()
+                            cacheStats = com.example.util.OfflineMediaManager.getCacheStats(context)
+                            Toast.makeText(context, "Sincronizando contenido offline...", Toast.LENGTH_SHORT).show()
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                        modifier = Modifier.weight(1.2f)
+                    ) {
+                        Text("Sincronizar todo", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // Synology Backend Scripts Viewer
         Card(
             shape = RoundedCornerShape(14.dp),

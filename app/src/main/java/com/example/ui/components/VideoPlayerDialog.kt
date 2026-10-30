@@ -68,6 +68,7 @@ fun VideoPlayerDialog(
     durationLabel: String? = null,
     onDismiss: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
     var currentPositionMs by remember { mutableIntStateOf(0) }
@@ -116,12 +117,16 @@ fun VideoPlayerDialog(
                 }
                 .testTag("video_player_dialog")
         ) {
+            val playableUri = remember(videoUrl) {
+                com.example.util.OfflineMediaManager.getPlayableMediaUri(context, videoUrl)
+            }
+
             // Reproductor nativo VideoView optimizado para streaming LAN desde Synology
             AndroidView(
                 factory = { ctx ->
                     VideoView(ctx).apply {
                         videoViewRef = this
-                        setVideoURI(Uri.parse(videoUrl))
+                        setVideoURI(playableUri)
                         setOnPreparedListener { mp ->
                             mp.isLooping = false
                             totalDurationMs = mp.duration

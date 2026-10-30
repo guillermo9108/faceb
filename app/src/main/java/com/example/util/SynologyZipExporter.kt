@@ -44,13 +44,13 @@ object SynologyZipExporter {
                 ".htaccess",
                 """
                 # Configuración recomendada para Synology Web Station (Apache / Nginx)
-                # Permite subida de fotos en alta resolución y vídeos familiares
+                # Permite subida de fotos en alta resolución y vídeos familiares sin límites
                 AcceptPathInfo On
-                php_value upload_max_filesize 512M
-                php_value post_max_size 512M
-                php_value memory_limit 512M
-                php_value max_execution_time 300
-                php_value max_input_time 300
+                php_value upload_max_filesize 4096M
+                php_value post_max_size 4096M
+                php_value memory_limit 2048M
+                php_value max_execution_time 0
+                php_value max_input_time 0
 
                 <IfModule mod_rewrite.c>
                     RewriteEngine On

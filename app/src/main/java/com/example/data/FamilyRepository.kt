@@ -172,11 +172,18 @@ class FamilyRepository(
             }
         }
 
-        // Cargar publicaciones en caché local (Room) primero
+        // Cargar publicaciones y shorts en caché local (Room) primero para modo offline
         scope.launch {
-            database.postDao().getAllPosts().collect { cachedList ->
+            database.postDao().getFeedPosts().collect { cachedList ->
                 if (_posts.value.isEmpty() && cachedList.isNotEmpty()) {
                     _posts.value = cachedList.map { it.toDomainPost(findMember(it.authorId)) }
+                }
+            }
+        }
+        scope.launch {
+            database.postDao().getShortsPosts().collect { cachedShorts ->
+                if (_shorts.value.isEmpty() && cachedShorts.isNotEmpty()) {
+                    _shorts.value = rankShorts(cachedShorts.map { it.toDomainPost(findMember(it.authorId)) })
                 }
             }
         }
@@ -368,6 +375,24 @@ class FamilyRepository(
         result.onSuccess { list ->
             _shorts.value = rankShorts(list)
             updateNotifications()
+            // Persistir shorts en Room para que estén disponibles sin conexión
+            scope.launch {
+                val entities = list.map { it.toEntity() }
+                database.postDao().insertPosts(entities)
+            }
+            // Precargar vídeos y miniaturas de Shorts en la carpeta oculta (.offline_media)
+            val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
+            com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, list)
+        }
+        result.onFailure {
+            // Modo offline: cargar los shorts guardados previamente en Room
+            scope.launch {
+                database.postDao().getShortsPosts().collect { cached ->
+                    if (cached.isNotEmpty() && _shorts.value.isEmpty()) {
+                        _shorts.value = rankShorts(cached.map { it.toDomainPost(findMember(it.authorId)) })
+                    }
+                }
+            }
         }
         return result
     }
@@ -759,10 +784,22 @@ class FamilyRepository(
                     _stories.value = fallbackStories
                 }
 
+                // Precargar fotos, vídeos y miniaturas en la carpeta oculta (.offline_media)
+                val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
+                com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, mergedPosts)
+
                 Result.success(mergedPosts)
             },
             onFailure = { error ->
                 _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
+                // Modo offline: recuperar publicaciones del Muro desde Room si no hay nada en memoria
+                scope.launch {
+                    database.postDao().getFeedPosts().collect { cached ->
+                        if (cached.isNotEmpty() && _posts.value.isEmpty()) {
+                            _posts.value = cached.map { it.toDomainPost(findMember(it.authorId)) }
+                        }
+                    }
+                }
                 Result.failure(error)
             }
         )
@@ -805,6 +842,21 @@ class FamilyRepository(
         val config = _nasConfig.value
         val author = _currentMember.value
 
+        var finalThumb = thumbnailFile
+        var finalDur = durationLabel
+        if (mediaUri != null && finalThumb == null) {
+            val mime = context.contentResolver.getType(mediaUri) ?: ""
+            if (mime.startsWith("video")) {
+                try {
+                    val info = com.example.util.VideoHelper.extractVideoInfo(context, mediaUri)
+                    finalThumb = info.thumbnailFile
+                    if (finalDur.isNullOrBlank()) {
+                        finalDur = info.durationFormatted
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
         val result = apiClient.createPost(
             ip = config.ip,
             port = config.port,
@@ -815,8 +867,8 @@ class FamilyRepository(
             feeling = feeling,
             location = location,
             mediaUri = mediaUri,
-            thumbnailFile = thumbnailFile,
-            durationLabel = durationLabel,
+            thumbnailFile = finalThumb,
+            durationLabel = finalDur,
             isShort = isShort
         )
 
@@ -1012,6 +1064,7 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
                 id = "m_$id",
                 type = if (mediaType.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
                 url = mediaUrl,
+                thumbnailUrl = thumbUrl ?: mediaUrl,
                 caption = mediaCaption ?: "",
                 durationLabel = mediaDuration
             )
@@ -1055,6 +1108,7 @@ private fun Post.toEntity(): PostEntity {
         likesCount = reactions.values.sum(),
         commentsCount = comments.size,
         userReaction = userReaction?.name,
-        isShort = isShort
+        isShort = isShort,
+        thumbUrl = firstMedia?.thumbnailUrl
     )
 }

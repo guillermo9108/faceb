@@ -84,6 +84,7 @@ fun PostCard(
     onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit = { _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
     var showReactionPicker by remember { mutableStateOf(false) }
     var isPlayingInline by remember { mutableStateOf(false) }
@@ -276,7 +277,11 @@ fun PostCard(
                 val media = post.mediaItems.first()
                 val isVideo = media.type == MediaType.VIDEO
                 val imageModel = remember(media.thumbnailUrl, media.url) {
-                    if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
+                    val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
+                    com.example.util.OfflineMediaManager.getDisplayModel(context, raw)
+                }
+                val playableVideoUri = remember(media.url) {
+                    com.example.util.OfflineMediaManager.getPlayableMediaUri(context, media.url)
                 }
 
                 Box(
@@ -290,7 +295,7 @@ fun PostCard(
                         AndroidView(
                             factory = { ctx ->
                                 VideoView(ctx).apply {
-                                    setVideoURI(Uri.parse(media.url))
+                                    setVideoURI(playableVideoUri)
                                     setOnPreparedListener { mp ->
                                         isBuffering = false
                                         mp.isLooping = true

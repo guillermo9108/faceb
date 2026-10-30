@@ -254,6 +254,45 @@ class ExampleRobolectricTest {
         repo.markAllNotificationsAsRead()
         assertEquals(0, repo.unreadNotificationsCount.value)
     }
+
+    @Test
+    fun `offline media manager creates hidden directory with nomedia file`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dir = com.example.util.OfflineMediaManager.getOfflineDir(context)
+
+        assertTrue("Directory must start with dot for hidden attribute", dir.name.startsWith("."))
+        assertEquals(".offline_media", dir.name)
+        assertTrue("Directory must exist", dir.exists())
+
+        val noMedia = java.io.File(dir, ".nomedia")
+        assertTrue(".nomedia file must exist in hidden dir", noMedia.exists())
+
+        val stats = com.example.util.OfflineMediaManager.getCacheStats(context)
+        assertNotNull(stats.formattedSize)
+    }
+
+    @Test
+    fun `htaccess and indexPhp include 4096M and unlimited execution time for uploads`() {
+        val config = com.example.model.NasConfig()
+        val zipBytes = com.example.util.SynologyZipExporter.createZipBytes(config)
+        val entries = mutableMapOf<String, String>()
+        val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(zipBytes))
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val content = zis.readBytes().toString(Charsets.UTF_8)
+            entries[entry.name] = content
+            entry = zis.nextEntry
+        }
+        zis.close()
+
+        val htaccess = entries[".htaccess"] ?: ""
+        assertTrue(".htaccess must allow 4096M uploads", htaccess.contains("4096M"))
+        assertTrue(".htaccess must set max_execution_time to 0", htaccess.contains("max_execution_time 0"))
+
+        val indexPhp = entries["index.php"] ?: ""
+        assertTrue("index.php must set time limit 0", indexPhp.contains("set_time_limit(0)"))
+        assertTrue("index.php must set 4096M upload size", indexPhp.contains("4096M"))
+    }
 }
 
 

@@ -23,5 +23,6 @@ data class PostEntity(
     val likesCount: Int,
     val commentsCount: Int,
     val userReaction: String?,
-    val isShort: Boolean = false
+    val isShort: Boolean = false,
+    val thumbUrl: String? = null
 )

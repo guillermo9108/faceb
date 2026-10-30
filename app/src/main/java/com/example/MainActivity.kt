@@ -67,6 +67,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val selectedMemberFilter by viewModel.selectedMemberFilter.collectAsState()
     val selectedPostForComments by viewModel.activePostForComments.collectAsState()
     val isCreatePostDialogOpen by viewModel.isCreatePostDialogOpen.collectAsState()
+    val isCreateShortMode by viewModel.isCreateShortMode.collectAsState()
     val isCreateStoryDialogOpen by viewModel.isCreateStoryDialogOpen.collectAsState()
     val selectedStoryGroupForViewing by viewModel.selectedStoryGroupForViewing.collectAsState()
     val notifications by viewModel.notifications.collectAsState()
@@ -202,7 +203,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         baseUrl = nasConfig.baseUrl,
                         onLikePost = { postId -> viewModel.reactToPost(postId, ReactionType.LIKE) },
                         onOpenComments = { post -> viewModel.openCommentsSheet(post) },
-                        onOpenCreateShort = { viewModel.openCreatePostDialog() },
+                        onOpenCreateShort = { viewModel.openCreatePostDialog(isShortMode = true) },
                         onRefresh = { viewModel.refreshShorts() },
                         onShortViewed = { viewModel.markShortAsViewed(it) }
                     )
@@ -267,6 +268,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     if (isCreatePostDialogOpen) {
         CreatePostDialog(
             currentMember = currentMember,
+            initiallyShortMode = isCreateShortMode,
             onDismiss = { viewModel.closeCreatePostDialog() },
             onSubmitPost = { text, mediaUri, feeling, loc, thumbFile, durLabel, isShort ->
                 viewModel.createPost(text, mediaUri, feeling, loc, thumbFile, durLabel, isShort)
