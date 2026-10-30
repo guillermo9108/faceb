@@ -459,11 +459,16 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun testNasConnection() {
         viewModelScope.launch {
-            val ping = repository.pingNas()
-            if (ping > 0) {
-                showStatus("Conexión con Synology Web Station exitosa (${ping} ms)")
+            val config = repository.nasConfig.value
+            val probe = repository.testAndConfirmNasConfig(config.ip, config.port, config.path)
+            if (probe.isSuccess) {
+                val ping = repository.pingNas()
+                val detectedPath = repository.nasConfig.value.path
+                val pathDesc = if (detectedPath.isBlank()) "raíz (/web)" else detectedPath
+                showStatus("¡Conexión con Synology Web Station exitosa en $pathDesc (${ping} ms)!")
             } else {
-                showStatus("No se pudo conectar con el NAS. Verifica IP y puerto.")
+                val err = repository.nasConfig.value.lastError ?: "No se pudo conectar con el NAS."
+                showStatus(err)
             }
         }
     }

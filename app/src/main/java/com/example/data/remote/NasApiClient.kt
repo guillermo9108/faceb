@@ -33,9 +33,17 @@ class NasApiClient(
         .build()
 ) {
 
+    var onPathAutoDetected: ((String) -> Unit)? = null
+
     private fun buildBaseUrl(ip: String, port: Int, path: String): String {
         val cleanPath = path.trim().trimEnd('/')
         return if (port == 80) "http://$ip$cleanPath" else "http://$ip:$port$cleanPath"
+    }
+
+    private fun buildEndpointUrl(ip: String, port: Int, path: String, action: String, extraParams: String? = null): String {
+        val base = buildBaseUrl(ip, port, path)
+        val query = if (extraParams.isNullOrBlank()) "action=$action" else "action=$action&$extraParams"
+        return "$base/index.php?$query"
     }
 
     /**
@@ -59,24 +67,41 @@ class NasApiClient(
      * Retorna la ruta válida (ej: "/family_api" o "") si responde positivamente.
      */
     suspend fun probeNasServer(ip: String, port: Int = 80, path: String = "/family_api"): Result<String> = withContext(Dispatchers.IO) {
-        val testPaths = listOf(path.trim().trimEnd('/'), "", "/family_feed")
+        val cleanPath = path.trim().trimEnd('/')
+        val testPaths = listOf(cleanPath, "/family_api", "", "/family_feed").distinct()
         val fastClient = client.newBuilder()
-            .connectTimeout(500, TimeUnit.MILLISECONDS)
-            .readTimeout(800, TimeUnit.MILLISECONDS)
+            .connectTimeout(1500, TimeUnit.MILLISECONDS)
+            .readTimeout(2000, TimeUnit.MILLISECONDS)
             .build()
 
         for (p in testPaths) {
-            val url = if (port == 80) "http://$ip$p/index.php/ping" else "http://$ip:$port$p/index.php/ping"
+            // 1. Probar con parámetro ?action=ping (compatible 100% con Synology Nginx y Apache)
+            val urlParam = if (port == 80) "http://$ip$p/index.php?action=ping" else "http://$ip:$port$p/index.php?action=ping"
             try {
-                val req = Request.Builder().url(url).get().build()
+                val req = Request.Builder().url(urlParam).get().build()
                 val resp = fastClient.newCall(req).execute()
                 val body = resp.body?.string() ?: ""
                 if (resp.isSuccessful && (body.contains("ONLINE") || body.contains("Synology") || body.contains("server"))) {
+                    if (p != cleanPath) {
+                        onPathAutoDetected?.invoke(p)
+                    }
                     return@withContext Result.success(p)
                 }
-            } catch (_: Exception) {
-                // Siguiente candidato
-            }
+            } catch (_: Exception) {}
+
+            // 2. Fallback probando también con /index.php/ping
+            val urlPath = if (port == 80) "http://$ip$p/index.php/ping" else "http://$ip:$port$p/index.php/ping"
+            try {
+                val req = Request.Builder().url(urlPath).get().build()
+                val resp = fastClient.newCall(req).execute()
+                val body = resp.body?.string() ?: ""
+                if (resp.isSuccessful && (body.contains("ONLINE") || body.contains("Synology") || body.contains("server"))) {
+                    if (p != cleanPath) {
+                        onPathAutoDetected?.invoke(p)
+                    }
+                    return@withContext Result.success(p)
+                }
+            } catch (_: Exception) {}
         }
         Result.failure(Exception("No responde Synology NAS en $ip:$port"))
     }
@@ -86,13 +111,23 @@ class NasApiClient(
      */
     suspend fun fetchUsers(ip: String, port: Int, path: String): Result<List<FamilyMember>> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/users"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "users")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "users")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
@@ -135,7 +170,8 @@ class NasApiClient(
         avatarColorHex: Long
     ): Result<FamilyMember> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/auth/register"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "auth/register")
             val formBody = FormBody.Builder()
                 .add("username", username)
                 .add("password", pass)
@@ -145,12 +181,21 @@ class NasApiClient(
                 .add("avatar_color_hex", avatarColorHex.toString())
                 .build()
 
-            val request = Request.Builder().url(url).post(formBody).build()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "auth/register")
+                    response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
 
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception(detail))
             }
 
@@ -183,18 +228,28 @@ class NasApiClient(
         pass: String
     ): Result<FamilyMember> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/auth/login"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "auth/login")
             val formBody = FormBody.Builder()
                 .add("username", username)
                 .add("password", pass)
                 .build()
 
-            val request = Request.Builder().url(url).post(formBody).build()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "auth/login")
+                    response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
 
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception(detail))
             }
 
@@ -231,7 +286,8 @@ class NasApiClient(
         newPassword: String?
     ): Result<FamilyMember> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/profile/update"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "profile/update")
             val formBuilder = FormBody.Builder()
                 .add("user_id", userId.toString())
                 .add("display_name", displayName)
@@ -243,12 +299,21 @@ class NasApiClient(
                 formBuilder.add("new_password", newPassword)
             }
 
-            val request = Request.Builder().url(url).post(formBuilder.build()).build()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(Request.Builder().url(url).post(formBuilder.build()).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "profile/update")
+                    response = client.newCall(Request.Builder().url(url).post(formBuilder.build()).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
 
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception(detail))
             }
 
@@ -275,20 +340,30 @@ class NasApiClient(
      */
     suspend fun fetchFeed(ip: String, port: Int, path: String): Result<List<Post>> = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = buildBaseUrl(ip, port, path)
-            val url = "$baseUrl/index.php/api/feed"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "feed")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "feed")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
             val jsonObject = parseJsonObjectSafely(body)
             val postsArray = jsonObject.optJSONArray("posts") ?: JSONArray()
             val postsList = mutableListOf<Post>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
 
             for (i in 0 until postsArray.length()) {
                 val p = postsArray.getJSONObject(i)
@@ -306,20 +381,30 @@ class NasApiClient(
      */
     suspend fun fetchShorts(ip: String, port: Int, path: String): Result<List<Post>> = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = buildBaseUrl(ip, port, path)
-            val url = "$baseUrl/index.php/api/shorts"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "shorts")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "shorts")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
             val jsonObject = parseJsonObjectSafely(body)
             val postsArray = jsonObject.optJSONArray("shorts") ?: JSONArray()
             val postsList = mutableListOf<Post>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
 
             for (i in 0 until postsArray.length()) {
                 val p = postsArray.getJSONObject(i)
@@ -408,13 +493,23 @@ class NasApiClient(
      */
     suspend fun fetchComments(ip: String, port: Int, path: String, postId: Int): Result<List<Comment>> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/comments?post_id=$postId"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "comments", "post_id=$postId")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "comments", "post_id=$postId")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
@@ -451,20 +546,30 @@ class NasApiClient(
      */
     suspend fun fetchStories(ip: String, port: Int, path: String): Result<List<com.example.model.FamilyStory>> = withContext(Dispatchers.IO) {
         try {
-            val baseUrl = buildBaseUrl(ip, port, path)
-            val url = "$baseUrl/index.php/api/stories"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "stories")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "stories")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
             val jsonObject = parseJsonObjectSafely(body)
             val storiesArray = jsonObject.optJSONArray("stories") ?: JSONArray()
             val storiesList = mutableListOf<com.example.model.FamilyStory>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
 
             for (i in 0 until storiesArray.length()) {
                 val s = storiesArray.getJSONObject(i)
@@ -524,7 +629,8 @@ class NasApiClient(
         isShort: Boolean = false
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/post"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "post")
             val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("user_id", userId.toString())
                 .addFormDataPart("content_text", text)
@@ -567,10 +673,22 @@ class NasApiClient(
                 .post(multipartBuilder.build())
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "post")
+                    val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
+                    response = client.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
@@ -597,7 +715,8 @@ class NasApiClient(
         mediaUri: Uri?
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/story"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "story")
             val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("user_id", userId.toString())
                 .addFormDataPart("caption", caption)
@@ -626,10 +745,22 @@ class NasApiClient(
                 .post(multipartBuilder.build())
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "story")
+                    val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
+                    response = client.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
@@ -653,7 +784,8 @@ class NasApiClient(
         reactionType: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/reaction"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "reaction")
             val json = JSONObject().apply {
                 put("post_id", postId)
                 put("user_id", userId)
@@ -665,10 +797,22 @@ class NasApiClient(
                 .post(json.toString().toRequestBody("application/json".toMediaTypeOrNull()))
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "reaction")
+                    val retryReq = Request.Builder().url(url).post(json.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()
+                    response = client.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
             Result.success(Unit)
@@ -689,7 +833,8 @@ class NasApiClient(
         text: String
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/comment"
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "comment")
             val json = JSONObject().apply {
                 put("post_id", postId)
                 put("user_id", userId)
@@ -701,10 +846,22 @@ class NasApiClient(
                 .post(json.toString().toRequestBody("application/json".toMediaTypeOrNull()))
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            var response = client.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "comment")
+                    val retryReq = Request.Builder().url(url).post(json.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()
+                    response = client.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
@@ -720,16 +877,23 @@ class NasApiClient(
      */
     suspend fun deletePost(ip: String, port: Int, path: String, postId: Int): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val url = "${buildBaseUrl(ip, port, path)}/index.php/api/post/$postId"
-            val request = Request.Builder()
-                .url(url)
-                .delete()
-                .build()
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "delete_post", "post_id=$postId")
+            var response = client.newCall(Request.Builder().url(url).delete().build()).execute()
+            var body = response.body?.string() ?: ""
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: ""
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "delete_post", "post_id=$postId")
+                    response = client.newCall(Request.Builder().url(url).delete().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
             if (!response.isSuccessful) {
-                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body) else response.message
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
             Result.success(Unit)
@@ -786,7 +950,11 @@ class NasApiClient(
         }
     }
 
-    private fun extractHtmlOrPhpError(raw: String): String {
+    private fun extractHtmlOrPhpError(raw: String, statusCode: Int = 0, path: String = ""): String {
+        if (statusCode == 404 || raw.contains("404 Not Found", ignoreCase = true) || raw.contains("File Not Found", ignoreCase = true)) {
+            val pDesc = if (path.isNotBlank()) " en '$path'" else ""
+            return "Error 404: No se encontró 'index.php'$pDesc en el Synology NAS. Comprueba que los archivos PHP estén en '/volume1/web' o '/volume1/web/family_api' de Web Station o pulsa 'Probar' para autodetectar la ruta."
+        }
         if (raw.contains("Access denied for user", ignoreCase = true) || raw.contains("1045", ignoreCase = true)) {
             return "Acceso denegado a MariaDB. Verifica el usuario y la contraseña de la base de datos en los ajustes."
         }
@@ -794,10 +962,18 @@ class NasApiClient(
             return "Conexión rechazada por MariaDB. Verifica el puerto de la base de datos (ej. 3307 o 3306) y que esté activo en DSM."
         }
         if (raw.contains("Unknown database", ignoreCase = true) || raw.contains("1049", ignoreCase = true)) {
-            return "La base de datos 'family_feed' no existe en MariaDB. Ejecuta el archivo 'schema.sql' en phpMyAdmin."
+            return "La base de datos 'family_feed' no existe en MariaDB. Se creará automáticamente al conectar o importa 'schema.sql'."
         }
         if (raw.contains("Table", ignoreCase = true) && raw.contains("doesn't exist", ignoreCase = true)) {
-            return "Faltan tablas en MariaDB. Ejecuta el archivo 'schema.sql' en phpMyAdmin."
+            return "Faltan tablas en MariaDB. Se repararán automáticamente o importa 'schema.sql'."
+        }
+
+        if (raw.contains("min-height:600px") || raw.contains("synoman") || raw.contains("Web Station")) {
+            return if (statusCode == 404) {
+                "Error 404: Web Station no encontró 'index.php'. Verifica que los archivos estén en '/volume1/web' o pulsa 'Probar'."
+            } else {
+                "Synology Web Station devolvió un error HTTP $statusCode. Comprueba que Web Station y PHP estén iniciados."
+            }
         }
 
         val cleaned = raw.replace(Regex("<[^>]*>"), " ")

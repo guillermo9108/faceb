@@ -107,8 +107,8 @@ fun NasConfigScreen(
     val currentConfig = remember(ipInput, portInput, pathInput, dbHostInput, dbPortInput, dbNameInput, dbUserInput, dbPassInput, nasConfig) {
         nasConfig.copy(
             ip = ipInput.trim().ifEmpty { "192.168.1.100" },
-            port = portInput.toIntOrNull() ?: 8085,
-            path = pathInput.trim().ifEmpty { "/family_api" },
+            port = portInput.toIntOrNull() ?: 80,
+            path = pathInput.trim(),
             dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
             dbPort = dbPortInput.toIntOrNull() ?: 3307,
             dbName = dbNameInput.trim().ifEmpty { "family_feed" },
@@ -256,7 +256,7 @@ fun NasConfigScreen(
                 ) {
                     Column {
                         Text("Ruta API en NAS:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("${currentConfig.path}/", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        Text(if (currentConfig.path.isBlank()) "/ (Raíz /web)" else "${currentConfig.path}/", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                     Column {
                         Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -402,9 +402,12 @@ fun NasConfigScreen(
                         value = pathInput,
                         onValueChange = { pathInput = it },
                         label = { Text("Ruta relativa API") },
-                        placeholder = { Text("/family_api") },
+                        placeholder = { Text("/family_api o vacío") },
                         modifier = Modifier.weight(1.5f),
-                        singleLine = true
+                        singleLine = true,
+                        supportingText = {
+                            Text("Ej: /family_api o vacío para raíz", fontSize = 10.sp)
+                        }
                     )
 
                     OutlinedTextField(
@@ -421,12 +424,12 @@ fun NasConfigScreen(
 
                 Button(
                     onClick = {
-                        val parsedPort = portInput.toIntOrNull() ?: 8085
+                        val parsedPort = portInput.toIntOrNull() ?: 80
                         val parsedDbPort = dbPortInput.toIntOrNull() ?: 3307
                         val updated = nasConfig.copy(
                             ip = ipInput.trim().ifEmpty { "192.168.1.100" },
                             port = parsedPort,
-                            path = pathInput.trim().ifEmpty { "/family_api" },
+                            path = pathInput.trim(),
                             dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
                             dbPort = parsedDbPort,
                             dbName = dbNameInput.trim().ifEmpty { "family_feed" },

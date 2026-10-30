@@ -39,17 +39,25 @@ object SynologyZipExporter {
             // 3. API REST index.php completa para Web Station
             addEntry("index.php", SynologyScripts.indexPhp)
 
-            // 4. Archivo .htaccess para Web Station / Apache con soporte de subidas pesadas
+            // 4. Archivo .htaccess para Web Station / Apache con soporte de subidas pesadas y rutas limpias
             addEntry(
                 ".htaccess",
                 """
                 # Configuración recomendada para Synology Web Station (Apache / Nginx)
                 # Permite subida de fotos en alta resolución y vídeos familiares
+                AcceptPathInfo On
                 php_value upload_max_filesize 512M
                 php_value post_max_size 512M
                 php_value memory_limit 512M
                 php_value max_execution_time 300
                 php_value max_input_time 300
+
+                <IfModule mod_rewrite.c>
+                    RewriteEngine On
+                    RewriteCond %{REQUEST_FILENAME} !-f
+                    RewriteCond %{REQUEST_FILENAME} !-d
+                    RewriteRule ^(.*)$ index.php?action=$1 [QSA,L]
+                </IfModule>
                 """.trimIndent()
             )
 

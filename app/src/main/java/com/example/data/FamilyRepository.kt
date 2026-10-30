@@ -164,6 +164,14 @@ class FamilyRepository(
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     init {
+        // Conectar callback de autorrecuperación de ruta si la API cambia o es detectada
+        apiClient.onPathAutoDetected = { detectedPath ->
+            if (detectedPath != _nasConfig.value.path) {
+                _nasConfig.update { it.copy(path = detectedPath) }
+                persistNasConfig(_nasConfig.value)
+            }
+        }
+
         // Cargar publicaciones en caché local (Room) primero
         scope.launch {
             database.postDao().getAllPosts().collect { cachedList ->
@@ -651,14 +659,12 @@ class FamilyRepository(
                     port = port,
                     path = path.trim(),
                     isConnected = true,
-                    lastError = null
+                    lastError = "Puerto $port alcanzable, pero no se encontró 'index.php'. Verifica la carpeta en Web Station."
                 )
                 updateNasConfig(updated)
-                _isNasDetected.value = true
-                _showNasIpConfirmation.value = false
-                Result.success(true)
+                Result.failure(Exception("Se detectó el NAS en el puerto $port, pero 'index.php' no responde en la ruta '${path.trim()}'. Comprueba que los archivos PHP estén en '/volume1/web' o '/volume1/web/family_api'."))
             } else {
-                Result.failure(Exception("No se pudo conectar a $ip:$port. Comprueba que el Synology NAS esté encendido y en la misma red LAN."))
+                Result.failure(Exception("No se pudo conectar a $ip:$port. Comprueba que el Synology NAS esté encendido, Web Station activo y en la misma red LAN."))
             }
         }
     }

@@ -295,11 +295,22 @@ object SynologyScripts {
 
         require_once __DIR__ . '/config.php';
 
-        ${D}uri = parse_url(${D}_SERVER['REQUEST_URI'], PHP_URL_PATH);
+        ${D}action = trim(${D}_GET['action'] ?? ${D}_GET['route'] ?? '', '/');
+        ${D}uri = parse_url(${D}_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
         ${D}method = ${D}_SERVER['REQUEST_METHOD'];
 
+        if (!function_exists('matchRoute')) {
+            function matchRoute(${D}action, ${D}uri, ${D}target) {
+                ${D}t = trim(${D}target, '/');
+                if (!empty(${D}action)) {
+                    return ${D}action === ${D}t || str_ends_with(${D}action, '/' . ${D}t);
+                }
+                return str_ends_with(${D}uri, '/' . ${D}t) || str_contains(${D}uri, '/' . ${D}t);
+            }
+        }
+
         // 1. Health check / Ping
-        if (str_ends_with(${D}uri, '/ping') || str_ends_with(${D}uri, '/health')) {
+        if (matchRoute(${D}action, ${D}uri, 'ping') || matchRoute(${D}action, ${D}uri, 'health')) {
             try {
                 ${D}db = getDB();
                 echo json_encode([
@@ -315,7 +326,7 @@ object SynologyScripts {
         }
 
         // 2. OBTENER USUARIOS
-        if (${D}method === 'GET' && str_ends_with(${D}uri, '/users')) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'users') || str_ends_with(${D}uri, '/users'))) {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("SELECT id, username, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
@@ -328,7 +339,7 @@ object SynologyScripts {
         }
 
         // 2.1. REGISTRO DE USUARIO FAMILIAR
-        if (${D}method === 'POST' && str_ends_with(${D}uri, '/auth/register')) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'auth/register') || str_ends_with(${D}uri, '/auth/register') || matchRoute(${D}action, ${D}uri, 'register'))) {
             ${D}username = strtolower(trim(${D}_POST['username'] ?? ''));
             ${D}password = trim(${D}_POST['password'] ?? '');
             ${D}displayName = trim(${D}_POST['display_name'] ?? '');
@@ -377,7 +388,7 @@ object SynologyScripts {
         }
 
         // 2.2. INICIO DE SESIÓN (LOGIN)
-        if (${D}method === 'POST' && str_ends_with(${D}uri, '/auth/login')) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'auth/login') || str_ends_with(${D}uri, '/auth/login') || matchRoute(${D}action, ${D}uri, 'login'))) {
             ${D}username = strtolower(trim(${D}_POST['username'] ?? ''));
             ${D}password = trim(${D}_POST['password'] ?? '');
 
@@ -418,7 +429,7 @@ object SynologyScripts {
         }
 
         // 2.3. ACTUALIZAR PERFIL (NICK, AVATAR, PASSWORD)
-        if (${D}method === 'POST' && str_ends_with(${D}uri, '/profile/update')) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'profile/update') || str_ends_with(${D}uri, '/profile/update') || matchRoute(${D}action, ${D}uri, 'profile'))) {
             ${D}userId = (int)(${D}_POST['user_id'] ?? 0);
             ${D}displayName = trim(${D}_POST['display_name'] ?? '');
             ${D}avatarEmoji = trim(${D}_POST['avatar_emoji'] ?? '');
@@ -469,7 +480,7 @@ object SynologyScripts {
         }
 
         // 3. OBTENER FEED COMPLETO (Excluye vídeos subidos solo a Shorts)
-        if (${D}method === 'GET' && (str_ends_with(${D}uri, '/feed') || str_ends_with(${D}uri, '/posts'))) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts') || str_ends_with(${D}uri, '/feed') || str_ends_with(${D}uri, '/posts'))) {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
@@ -494,7 +505,7 @@ object SynologyScripts {
         }
 
         // 3.0. OBTENER SHORTS (VÍDEOS VERTICALES Y MARCADOS COMO SHORTS)
-        if (${D}method === 'GET' && str_ends_with(${D}uri, '/shorts')) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'shorts') || str_ends_with(${D}uri, '/shorts'))) {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
@@ -518,7 +529,7 @@ object SynologyScripts {
         }
 
         // 3.1. OBTENER COMENTARIOS DE UNA PUBLICACIÓN
-        if (${D}method === 'GET' && (str_ends_with(${D}uri, '/comments') || str_contains(${D}uri, '/comments'))) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'comments') || str_ends_with(${D}uri, '/comments'))) {
             ${D}postId = (int)(${D}_GET['post_id'] ?? 0);
             try {
                 ${D}db = getDB();
@@ -539,7 +550,7 @@ object SynologyScripts {
         }
 
         // 3.2. OBTENER HISTORIAS INDEPENDIENTES (STORIES)
-        if (${D}method === 'GET' && (str_ends_with(${D}uri, '/stories') || str_ends_with(${D}uri, '/story'))) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'stories') || str_ends_with(${D}uri, '/stories') || matchRoute(${D}action, ${D}uri, 'story'))) {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
@@ -558,7 +569,7 @@ object SynologyScripts {
         }
 
         // 4. CREAR PUBLICACIÓN CON ARCHIVO REAL Y MINIATURA/DURACIÓN (Y SOPORTE IS_SHORT)
-        if (${D}method === 'POST' && (str_ends_with(${D}uri, '/post') || str_ends_with(${D}uri, '/posts'))) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'post') || matchRoute(${D}action, ${D}uri, 'posts') || str_ends_with(${D}uri, '/post') || str_ends_with(${D}uri, '/posts'))) {
             ${D}userId = (int)(${D}_POST['user_id'] ?? 1);
             ${D}text = trim(${D}_POST['content_text'] ?? '');
             ${D}feeling = ${D}_POST['feeling'] ?? null;
@@ -614,7 +625,7 @@ object SynologyScripts {
         }
 
         // 4.1. CREAR HISTORIA INDEPENDIENTE
-        if (${D}method === 'POST' && (str_ends_with(${D}uri, '/story') || str_ends_with(${D}uri, '/stories'))) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'story') || matchRoute(${D}action, ${D}uri, 'stories') || str_ends_with(${D}uri, '/story') || str_ends_with(${D}uri, '/stories'))) {
             ${D}userId = (int)(${D}_POST['user_id'] ?? 1);
             ${D}caption = trim(${D}_POST['caption'] ?? '');
             ${D}storyType = ${D}_POST['story_type'] ?? 'IMAGE';
@@ -653,7 +664,7 @@ object SynologyScripts {
         }
 
         // 5. REACCIÓN REAL
-        if (${D}method === 'POST' && str_ends_with(${D}uri, '/reaction')) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'reaction') || str_ends_with(${D}uri, '/reaction'))) {
             ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
             ${D}postId = (int)(${D}input['post_id'] ?? 0);
             ${D}userId = (int)(${D}input['user_id'] ?? 0);
@@ -680,7 +691,7 @@ object SynologyScripts {
         }
 
         // 6. COMENTARIO REAL
-        if (${D}method === 'POST' && str_ends_with(${D}uri, '/comment')) {
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'comment') || str_ends_with(${D}uri, '/comment'))) {
             ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
             ${D}postId = (int)(${D}input['post_id'] ?? 0);
             ${D}userId = (int)(${D}input['user_id'] ?? 0);
@@ -696,6 +707,34 @@ object SynologyScripts {
                 echo json_encode(["error" => ${D}e->getMessage()]);
             }
             exit;
+        }
+
+        // 7. ELIMINAR PUBLICACIÓN REAL
+        if ((${D}method === 'DELETE' && (str_contains(${D}uri, '/post') || !empty(${D}_GET['post_id']))) ||
+            (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'delete_post') || matchRoute(${D}action, ${D}uri, 'post/delete'))) ||
+            (${D}method === 'GET' && matchRoute(${D}action, ${D}uri, 'delete_post'))) {
+            ${D}delPostId = (int)(${D}_GET['post_id'] ?? ${D}_POST['post_id'] ?? 0);
+            if (${D}delPostId === 0 && preg_match('#/post/(\\d+)#', ${D}uri, ${D}m)) {
+                ${D}delPostId = (int)${D}m[1];
+            }
+            if (${D}delPostId > 0) {
+                try {
+                    ${D}db = getDB();
+                    ${D}mediaStmt = ${D}db->prepare("SELECT file_path, thumb_path FROM media WHERE post_id = ?");
+                    ${D}mediaStmt->execute([${D}delPostId]);
+                    while (${D}m = ${D}mediaStmt->fetch()) {
+                        if (!empty(${D}m['file_path']) && file_exists(__DIR__ . '/' . ${D}m['file_path'])) @unlink(__DIR__ . '/' . ${D}m['file_path']);
+                        if (!empty(${D}m['thumb_path']) && file_exists(__DIR__ . '/' . ${D}m['thumb_path'])) @unlink(__DIR__ . '/' . ${D}m['thumb_path']);
+                    }
+                    ${D}delStmt = ${D}db->prepare("DELETE FROM posts WHERE id = ?");
+                    ${D}delStmt->execute([${D}delPostId]);
+                    echo json_encode(["success" => true, "deleted_id" => ${D}delPostId]);
+                } catch (Exception ${D}e) {
+                    http_response_code(500);
+                    echo json_encode(["error" => ${D}e->getMessage()]);
+                }
+                exit;
+            }
         }
 
         function createThumbnail(${D}src, ${D}dest, ${D}maxW = 720) {
