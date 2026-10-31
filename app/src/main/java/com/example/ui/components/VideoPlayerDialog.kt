@@ -66,6 +66,7 @@ fun VideoPlayerDialog(
     title: String = "Vídeo familiar LAN",
     authorName: String = "",
     durationLabel: String? = null,
+    chunks: List<String> = emptyList(),
     onDismiss: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -75,6 +76,7 @@ fun VideoPlayerDialog(
     var totalDurationMs by remember { mutableIntStateOf(0) }
     var showControls by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
+    var currentChunkIndex by remember { mutableIntStateOf(0) }
 
     var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
 
@@ -117,11 +119,12 @@ fun VideoPlayerDialog(
                 }
                 .testTag("video_player_dialog")
         ) {
-            val playableUri = remember(videoUrl) {
-                com.example.util.OfflineMediaManager.getPlayableMediaUri(context, videoUrl)
+            val initialUrl = if (chunks.isNotEmpty()) chunks.first() else videoUrl
+            val playableUri = remember(initialUrl) {
+                com.example.util.OfflineMediaManager.getPlayableMediaUri(context, initialUrl)
             }
 
-            // Reproductor nativo VideoView optimizado para streaming LAN desde Synology
+            // Reproductor nativo VideoView optimizado para streaming LAN y reproducción continua de fragmentos
             AndroidView(
                 factory = { ctx ->
                     VideoView(ctx).apply {
@@ -135,9 +138,19 @@ fun VideoPlayerDialog(
                             isPlaying = true
                         }
                         setOnCompletionListener {
-                            isPlaying = false
-                            isEnded = true
-                            showControls = true
+                            // Reproducción continua y sin interrupción al siguiente fragmento
+                            if (chunks.isNotEmpty() && currentChunkIndex < chunks.size - 1) {
+                                currentChunkIndex++
+                                val nextChunkUrl = chunks[currentChunkIndex]
+                                val nextChunkUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextChunkUrl)
+                                setVideoURI(nextChunkUri)
+                                start()
+                                isPlaying = true
+                            } else {
+                                isPlaying = false
+                                isEnded = true
+                                showControls = true
+                            }
                         }
                         setOnErrorListener { _, _, _ ->
                             isBuffering = false
@@ -201,7 +214,16 @@ fun VideoPlayerDialog(
                                 ),
                                 maxLines = 1
                             )
-                            if (authorName.isNotBlank()) {
+                            if (chunks.isNotEmpty()) {
+                                Text(
+                                    text = "⚡ Reproducción continua (Fragmento ${currentChunkIndex + 1} de ${chunks.size})",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = FacebookBlue,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            } else if (authorName.isNotBlank()) {
                                 Text(
                                     text = "Publicado por $authorName · Synology LAN",
                                     style = MaterialTheme.typography.bodySmall.copy(
@@ -238,7 +260,13 @@ fun VideoPlayerDialog(
                             .clickable {
                                 videoViewRef?.let { vv ->
                                     if (isEnded) {
-                                        vv.seekTo(0)
+                                        currentChunkIndex = 0
+                                        if (chunks.isNotEmpty()) {
+                                            val firstUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, chunks.first())
+                                            vv.setVideoURI(firstUri)
+                                        } else {
+                                            vv.seekTo(0)
+                                        }
                                         vv.start()
                                         isPlaying = true
                                         isEnded = false

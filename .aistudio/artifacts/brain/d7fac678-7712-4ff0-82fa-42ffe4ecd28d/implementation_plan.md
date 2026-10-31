@@ -1,170 +1,157 @@
-# Plan de Trabajo: Grupos Familiares desde Carpetas del NAS
+# Plan de Trabajo: Fragmentación y Subida Resiliente de Vídeos con Reproducción Continua
 
-Plan arquitectónico y de implementación para permitir al Administrador configurar rutas de almacenamiento en el Synology NAS, explorar y seleccionar carpetas multimedia para convertirlas en Grupos Familiares, y sincronizar sus fotos y vídeos automáticamente en la base de datos MariaDB para que todos los familiares puedan ver y comentar.
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> Decisiones confirmadas a través de la fase de aclaración:
-> - **Selección de Carpetas**: El administrador introduce una ruta base de almacenamiento del NAS (ej. `/volume1/photo/Familia` o `/volume1/homes/admin/Fotos`) y el servidor lista las carpetas detectadas para que el administrador elija selectivamente cuáles importar como grupos.
-> - **Modo de Escaneo**: Escaneo y sincronización bajo demanda mediante botón administrativo en la app ("Escanear y Sincronizar"), evitando sobrecargar el CPU y discos del NAS de forma continua.
-> - **Permisos y Participación**: Todos los miembros de la familia pueden visualizar las publicaciones del grupo, dar me gusta, comentar y disfrutar del contenido tanto en línea como guardado en la carpeta oculta `.offline_media`.
-
-- **Confirmado 1**: El servidor PHP (`index.php`) expondrá endpoints de escaneo (`action=admin/scan_folders`) e importación (`action=admin/import_group`), ejecutables únicamente por la cuenta `admin`.
-- **Confirmado 2**: El nombre de la carpeta seleccionada se convierte en el nombre del Grupo (ej. `Vacaciones 2024`, `Cumpleaños Abuela`, `Asados`).
-- **Confirmado 3**: Los archivos de fotos (`.jpg`, `.png`, `.webp`) y vídeos (`.mp4`, `.mov`, etc.) contenidos dentro de cada carpeta se insertan en la tabla `posts` vinculados a un `group_id`, creando miniaturas y registros en la tabla `media`.
+Plan arquitectónico y de desarrollo para dividir vídeos en fracciones pequeñas antes de subirlos al servidor Synology NAS, gestionar la subida progresiva y tolerante a fallos, y reproducir los fragmentos en la aplicación como un solo vídeo continuo e ininterrumpido en el Muro y en Shorts.
 
 ---
 
-## 1. Overview & Core Concept
+## 1. Visión General del Sistema y Objetivos
 
-### Qué resuelve este módulo
-Actualmente, las publicaciones familiares se crean de manera individual desde el móvil subiendo fotos y vídeos uno a uno. Muchas familias ya tienen años de recuerdos organizados en carpetas dentro de los discos duros de su Synology NAS. Este módulo permite conectar esas carpetas existentes directamente al muro familiar:
-1. El Administrador ingresa una ruta del disco del NAS.
-2. El servidor lista las subcarpetas encontradas junto con la cantidad de fotos y vídeos en cada una.
-3. El Administrador selecciona qué carpetas desea convertir en Grupos Familiares y pulsa "Importar / Sincronizar".
-4. El servidor crea los grupos en MariaDB, genera las publicaciones y miniaturas correspondientes, y los familiares disfrutan de sus álbumes agrupados con comentarios y reacciones.
-
----
-
-## 2. User Experience & Visual Design
-
-### Flujo de Usuario: Administrador
-1. **Acceso al Panel de Grupos**: En el menú o pestaña de Ajustes del NAS, el Administrador tiene la sección *"Gestión de Grupos y Almacenamiento NAS"*.
-2. **Configuración de Ruta**: Campo de texto para la ruta absoluta en el NAS (ej. `/volume1/photo` o `/volume1/family_albums`) con botón *"Explorar Carpetas"*.
-3. **Selector de Carpetas**: Lista visual con tarjetas tipo carpeta (icono M3, nombre de la carpeta, número de fotos y vídeos detectados, tamaño aproximado y casilla de selección).
-4. **Ejecución del Escaneo**: Botón principal *"Sincronizar Grupos Seleccionados"* con barra de progreso y diálogo de resumen (ej. `3 grupos actualizados, 48 publicaciones creadas`).
-
-### Flujo de Usuario: Miembros Familiares
-1. **Pestaña / Selector de Grupos**: En el Muro o mediante una nueva pestaña *"Grupos"*, los familiares ven carruseles o tarjetas de grupos activos con su foto de portada (la más reciente de la carpeta).
-2. **Muro del Grupo**: Al entrar a un grupo, se muestra la cabecera con el nombre de la carpeta, fecha y miembros, seguido de la cuadrícula o feed de publicaciones pertenecientes a ese grupo.
-3. **Interacción Total**: Cada publicación del grupo permite dar "Me gusta", comentar, reproducir vídeos y guardar en la caché local `.offline_media`.
+### Problema que Resuelve
+En redes locales hogareñas o conexiones Wi-Fi con interferencias:
+- Los vídeos grandes de alta resolución (1080p, 4K o vídeos largos) tardan en subirse y pueden fallar por cortes temporales de red o límites de memoria/tiempo de ejecución de PHP.
+- Si falla la subida al 95%, el usuario se ve obligado a reiniciar toda la carga desde cero.
+- Al dividir el vídeo en fracciones pequeñas (ej. segmentos de 6 a 10 segundos alineados por fotogramas clave / I-frames o fragmentos binarios con metadatos):
+  1. Cada fragmento se sube de manera independiente con reintento automático si uno solo falla.
+  2. La subida muestra un progreso visual claro por fragmento.
+  3. La reproducción en el dispositivo receptor puede comenzar de inmediato cargando el primer fragmento y encadenando los siguientes sin pausas ni cortes perceptibles.
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
-
-- **Decisión 1: Sincronización Incremental (Evitar duplicados)**
-  - *Enfoque*: El servidor registra la ruta de archivo relativa (`source_path`) de cada medio escaneado. En escaneos posteriores de la misma carpeta, solo se añaden los archivos nuevos que no existan previamente en MariaDB.
-  - *Por qué*: Si el usuario añade 5 fotos nuevas a la carpeta del NAS, la sincronización tarda menos de un segundo y no duplica las publicaciones existentes.
-
-- **Decisión 2: Enlace Simbólico / Ruta Web Station para Medios del NAS**
-  - *Enfoque*: El servidor expone o sirve los medios escaneados a través de un controlador PHP (`index.php?action=media_proxy&path=...`) o copiando/creando enlaces a carpetas servibles por Web Station con miniaturas generadas en `uploads/thumbs/`.
-  - *Por qué*: En Synology DSM, Web Station por defecto solo tiene acceso directo a `/volume1/web`. Con el proxy seguro de medios o enlaces de lectura, el servidor puede acceder a volúmenes compartidos como `/volume1/photo` sin requerir reconfiguraciones complejas de Apache/Nginx.
-
-- **Decisión 3: Modo Offline Transparente**
-  - *Enfoque*: Los grupos y sus publicaciones se cachean en la base de datos Room (`cached_groups`, `cached_posts`) y los medios se descargan progresivamente a `.offline_media`.
-  - *Por qué*: Si la familia sale de casa o se apaga el NAS, los grupos y álbumes siguen viéndose en la app sin conexión.
-
----
-
-## 4. Technical Architecture & Data Strategy
-
-### Diagrama del Sistema
+## 2. Arquitectura Técnica
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       ANDROID APP                           │
-│  ┌───────────────────────┐       ┌───────────────────────┐  │
-│  │ AdminGroupScanDialog  │       │  GroupsFeedScreen     │  │
-│  │ (Ruta NAS + Selector) │       │  (Muro por Grupo)     │  │
-│  └───────────┬───────────┘       └───────────┬───────────┘  │
-│              │                               │              │
-│              ▼                               ▼              │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │                  FamilyRepository                     │  │
-│  │   ┌─────────────────────┐   ┌─────────────────────┐   │  │
-│  │   │ Room (cached_groups)│   │.offline_media Cache │   │  │
-│  │   └─────────────────────┘   └─────────────────────┘   │  │
-│  └───────────────────────────┬───────────────────────────┘  │
-└──────────────────────────────┼──────────────────────────────┘
-                               │ HTTP / JSON (LAN)
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 SYNOLOGY NAS (WEB STATION)                  │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ index.php                                             │  │
-│  │  ├── action=admin/scan_folders                        │  │
-│  │  ├── action=admin/import_group                        │  │
-│  │  ├── action=groups                                    │  │
-│  │  └── action=group/posts                               │  │
-│  └───────────┬───────────────────────────────┬───────────┘  │
-│              │                               │              │
-│              ▼                               ▼              │
-│  ┌───────────────────────┐       ┌───────────────────────┐  │
-│  │ MariaDB 10            │       │ Almacenamiento NAS    │  │
-│  │ - groups              │       │ /volume1/photo/...    │  │
-│  │ - posts (group_id)    │       │ /volume1/familia/...  │  │
-│  │ - media               │       │                       │  │
-│  └───────────────────────┘       └───────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                        DISPOSITIVO ANDROID                             │
+│                                                                        │
+│  [ Vídeo Original ]                                                    │
+│          │                                                             │
+│          ▼                                                             │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ VideoChunkingManager                                             │  │
+│  │ - Análisis de duración y puntos clave (MediaExtractor / Keyframe)│  │
+│  │ - Fragmentación en segmentos MP4 independientes (6-10s)         │  │
+│  │ - Generación de miniatura inicial y manifiesto local             │  │
+│  └──────────────────────────────────┬───────────────────────────────┘  │
+│                                     │                                  │
+│                                     ▼                                  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ ChunkedUploadManager (OkHttp LAN)                                │  │
+│  │ - Subida secuencial/paralela de fragmentos: chunk_001.mp4, etc.  │  │
+│  │ - Control de reintentos por fragmento sin perder los ya subidos  │  │
+│  │ - Envío del manifiesto final de publicación / short              │  │
+│  └──────────────────────────────────┬───────────────────────────────┘  │
+└─────────────────────────────────────┼──────────────────────────────────┘
+                                      │ HTTP POST (action=upload_chunk)
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                       SYNOLOGY NAS (WEB STATION)                       │
+│                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ index.php                                                        │  │
+│  │  ├── action=video/upload_chunk                                   │  │
+│  │  │   Guarda fragmentos en uploads/chunks/{session_id}/           │  │
+│  │  ├── action=video/finalize_chunks                                │  │
+│  │  │   Registra el post y los fragmentos en MariaDB 10             │  │
+│  │  │   Opcional: Fusión de archivo o generación de lista M3U8/JSON │  │
+│  │  └── action=media_proxy                                          │  │
+│  │      Streaming con soporte de rangos y caché                     │  │
+│  └──────────────────────────────────┬───────────────────────────────┘  │
+│                                     │                                  │
+│                                     ▼                                  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ MariaDB 10                                                       │  │
+│  │ - posts (id, user_id, is_short, total_duration)                  │  │
+│  │ - media (post_id, media_type='VIDEO', file_path, is_chunked)     │  │
+│  │ - media_chunks (media_id, chunk_index, file_path, duration_ms)   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│               REPRODUCCIÓN CONTINUA SIN INTERRUPCIONES                 │
+│                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ SeamlessVideoPlayer (Media3 / ExoPlayer / VideoSequencePlayer)   │  │
+│  │ - Precarga del siguiente fragmento en buffer antes de que acabe  │  │
+│  │   el actual (Zero-Gap Transition)                                │  │
+│  │ - Barra de tiempo unificada (progreso total, no por fragmento)   │  │
+│  │ - Integración transparente en PostCard (Feed) y ShortsScreen     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Esquema de Base de Datos (MariaDB & Room)
+---
 
-```sql
--- Tabla de Grupos Familiares
-CREATE TABLE IF NOT EXISTS `family_groups` (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(150) NOT NULL,
-    folder_path VARCHAR(255) NOT NULL,
-    description TEXT NULL,
-    cover_photo_url VARCHAR(255) NULL,
-    created_by_user_id INT DEFAULT 1,
-    posts_count INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_group_folder (folder_path)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+## 3. Fases de Implementación
 
--- Modificación en tabla posts para asociar a grupo
-ALTER TABLE posts ADD COLUMN group_id INT NULL;
-ALTER TABLE posts ADD INDEX idx_group_id (group_id);
-```
-
-### 2. Endpoints del Backend PHP (`index.php`)
-
-1. **`GET index.php?action=admin/scan_folders&base_path=/volume1/photo`**:
-   - Valida que el usuario sea el Administrador.
-   - Lee el directorio con `scandir()` o `DirectoryIterator`.
-   - Por cada subcarpeta, cuenta archivos compatibles (`jpg`, `jpeg`, `png`, `webp`, `mp4`, `mov`, `mkv`) y tamaño total.
-   - Retorna:
-     ```json
-     {
-       "base_path": "/volume1/photo",
-       "folders": [
-         { "folder_name": "Vacaciones Playa", "relative_path": "Vacaciones Playa", "media_count": 42, "already_imported": false },
-         { "folder_name": "Cumpleaños Abuelo", "relative_path": "Cumpleaños Abuelo", "media_count": 18, "already_imported": true }
-       ]
-     }
+### Fase 1: Base de Datos y Backend PHP en Synology NAS
+1. **Esquema de MariaDB (`schema.sql` y `config.php`):**
+   - Añadir la tabla `media_chunks`:
+     ```sql
+     CREATE TABLE IF NOT EXISTS media_chunks (
+         id INT AUTO_INCREMENT PRIMARY KEY,
+         post_id INT NOT NULL,
+         chunk_index INT NOT NULL,
+         total_chunks INT NOT NULL,
+         file_path VARCHAR(500) NOT NULL,
+         duration_ms INT DEFAULT 0,
+         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+         INDEX (post_id),
+         FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
      ```
+   - Añadir columnas en `media`: `is_chunked TINYINT DEFAULT 0`, `chunks_manifest TEXT NULL`.
+2. **Nuevos Endpoints en `index.php`:**
+   - `action=video/upload_chunk`: Recibe fragmentos individuales (`chunk_index`, `total_chunks`, `session_id`, `chunk_file`).
+   - `action=video/finalize_chunks`: Crea la publicación final (en el Muro o en Shorts), vincula los fragmentos en `media_chunks` y genera la miniatura principal.
+   - Soporte en `action=feed` y `action=shorts` para incluir la lista ordenada de URLs de fragmentos de cada vídeo.
 
-2. **`POST index.php?action=admin/import_group`**:
-   - Recibe: `folder_path`, `group_name`, `admin_user_id`.
-   - Crea el registro en `family_groups`.
-   - Escanea los archivos de la carpeta e inserta los posts con `group_id`.
-   - Genera miniaturas en `uploads/thumbs/` para fotos y vídeos.
-   - Retorna resumen de importación.
+### Fase 2: Motor de Fragmentación en Android (`VideoChunker`)
+1. **Módulo de corte de vídeo (`VideoChunkingManager.kt`):**
+   - Utilizar las APIs nativas de Android (`MediaExtractor` y `MediaMuxer`) para segmentar el archivo de vídeo en tramos de 6 a 10 segundos.
+   - Sincronización en Keyframes (I-frames): los cortes se realizan en puntos de sincronización natural para que cada fragmento sea un archivo MP4 válido e independiente sin necesidad de recodificar todo el vídeo (proceso casi instantáneo que no recalienta el móvil ni agota la batería).
+   - Generación de póster/miniatura representativa en el fragmento 0.
+2. **Caché temporal local:**
+   - Almacenar los fragmentos en la caché de la app (`cacheDir/chunks/{uuid}/`) hasta que se complete la subida, liberando espacio tras finalizar con éxito.
 
-3. **`GET index.php?action=groups`**:
-   - Lista todos los grupos activos con su portada, cantidad de publicaciones y última actualización.
+### Fase 3: Subida Resiliente con Progreso Detallado (`ChunkedUploadManager`)
+1. **Lógica de red en `NasApiClient.kt`:**
+   - Subida secuencial con control de flujo: si el fragmento 3 falla, se reintenta automáticamente hasta 3 veces sin reiniciar los fragmentos 1 y 2.
+   - Notificación de progreso reactivo: porcentaje global, fragmento actual (ej. `3 de 7`) y tiempo restante estimado.
+2. **Integración en `CreatePostDialog.kt`:**
+   - Indicador visual animado de fragmentación previa y barra de progreso paso a paso.
+   - Soporte idéntico para publicaciones normales del Muro y para subidas clasificadas como Shorts.
 
-4. **`GET index.php?action=group/posts&group_id=X`**:
-   - Retorna las publicaciones pertenecientes al grupo `X`.
+### Fase 4: Reproducción Fluida sin Pausas (Seamless Playback)
+1. **Componente de Reproducción en Secuencia (`SeamlessVideoPlayer`):**
+   - Encadenamiento de fragmentos mediante cola de medios con pre-buffering del siguiente segmento mientras se reproduce el actual.
+   - Al llegar al final de `part_001.mp4`, el reproductor conmuta de inmediato a `part_002.mp4` sin pantalla negra ni congelamiento.
+2. **Barra de Progreso y Duración Unificada:**
+   - La interfaz muestra la duración total del vídeo (suma de todos los fragmentos).
+   - El control de avance/retroceso (seek) mapea el segundo seleccionado al fragmento correspondiente de forma transparente.
+3. **Integración en Shorts (`ShortsScreen.kt`) y Muro (`PostCard.kt`):**
+   - En Shorts: precarga inmediata del primer fragmento de los siguientes vídeos para inicio instantáneo vertical.
+   - En Tarjetas del Muro: reproducción en la misma tarjeta o en el modal ampliado.
 
-### 3. Fases de Ejecución del Código
+### Fase 5: Caché Offline de Fragmentos
+1. **Gestión en `.offline_media`:**
+   - Adaptación de `OfflineMediaManager` para almacenar los fragmentos descargados con su nombre de sesión, permitiendo la reproducción ininterrumpida sin conexión a internet o cuando el Synology NAS esté apagado.
 
-- **Fase A (Backend NAS & Base de Datos)**:
-  - Actualizar `schema.sql` y `config.php` con la tabla `family_groups` y la columna `group_id` en `posts`.
-  - Implementar en `index.php` los controladores `admin/scan_folders`, `admin/import_group`, `groups` y filtro de grupo en `feed`.
-  - Actualizar el generador del ZIP de configuración con los nuevos scripts.
-- **Fase B (Capa de Datos Android & Caché)**:
-  - Crear entidad Room `GroupEntity`, DAO `GroupDao` y migración de base de datos local.
-  - Añadir métodos en `NasApiClient` y `FamilyRepository` para listar carpetas del NAS, importar grupos y sincronizar publicaciones grupales.
-- **Fase C (Interfaz de Usuario Jetpack Compose)**:
-  - Diálogo administrativo en Ajustes para ingresar la ruta del NAS, previsualizar subcarpetas detectadas con casillas de verificación y botón de escaneo/importación.
-  - Pestaña o carrusel de Grupos Familiares en la interfaz principal.
-  - Pantalla detallada de Grupo con visualización de feed, fotos, vídeos, likes y comentarios.
-- **Fase D (Pruebas Automatizadas & Compilación)**:
-  - Pruebas unitarias con Robolectric para validar el parseo de carpetas, creación de grupos, exclusión de duplicados y persistencia offline.
-  - Verificación final de compilación.
+---
+
+## 4. Pruebas y Validación
+
+1. **Pruebas Unitarias y Robolectric:**
+   - Cálculo correcto de fragmentos y límites de duración.
+   - Validación del nuevo endpoint de subida por fragmentos en `index.php`.
+   - Compatibilidad del esquema de base de datos en MariaDB 10.
+2. **Pruebas de Red y Resiliencia:**
+   - Simulación de corte de conexión a mitad de subida (verificar reanudación solo de las partes faltantes).
+   - Verificación de ausencia de pausas visuales o auditivas en el cambio entre fragmentos.
+
+---
+
+## 5. Preguntas Clave para el Usuario
+
+1. **Duración de los fragmentos:** ¿Prefieres segmentos de aproximadamente 6 a 8 segundos (óptimo para streaming rápido y bajo consumo de RAM) o fragmentos de 15 segundos?
+2. **Fusión en el servidor:** ¿Deseas que el Synology NAS intente unir los fragmentos en un único archivo MP4 en segundo plano además de conservar la lista de fragmentos para streaming rápido?

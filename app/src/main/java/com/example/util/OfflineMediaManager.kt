@@ -202,6 +202,16 @@ object OfflineMediaManager {
 
                     fullUrl?.let { urls.add(it) }
                     thumbUrl?.let { urls.add(it) }
+
+                    // Si es un vídeo fraccionado, precargar también todos sus fragmentos para reproducción offline
+                    media.chunks.forEach { chunkUrl ->
+                        val fullChunk = if (chunkUrl.startsWith("http://") || chunkUrl.startsWith("https://")) {
+                            chunkUrl
+                        } else if (chunkUrl.isNotBlank() && baseUrl.isNotBlank()) {
+                            "$baseUrl/${chunkUrl.trimStart('/')}"
+                        } else null
+                        fullChunk?.let { urls.add(it) }
+                    }
                 }
             }
 

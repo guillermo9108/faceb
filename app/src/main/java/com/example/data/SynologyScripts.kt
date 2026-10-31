@@ -67,8 +67,22 @@ object SynologyScripts {
             file_path VARCHAR(255) NOT NULL,
             thumb_path VARCHAR(255) NOT NULL,
             duration_label VARCHAR(20) NULL,
+            is_chunked TINYINT(1) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_media_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB;
+
+        -- 3.1. Tabla de Fragmentos de Vídeo (Chunked Uploads)
+        CREATE TABLE IF NOT EXISTS media_chunks (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            post_id INT NOT NULL,
+            chunk_index INT NOT NULL,
+            total_chunks INT NOT NULL,
+            file_path VARCHAR(255) NOT NULL,
+            duration_ms INT DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_chunk_post (post_id),
+            CONSTRAINT fk_chunk_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
         ) ENGINE=InnoDB;
 
         -- 4. Tabla de Comentarios
@@ -184,8 +198,20 @@ object SynologyScripts {
                         file_path VARCHAR(255) NOT NULL,
                         thumb_path VARCHAR(255) NULL,
                         duration_label VARCHAR(20) NULL,
+                        is_chunked TINYINT(1) DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_post (post_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                    CREATE TABLE IF NOT EXISTS media_chunks (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        post_id INT NOT NULL,
+                        chunk_index INT NOT NULL,
+                        total_chunks INT NOT NULL,
+                        file_path VARCHAR(255) NOT NULL,
+                        duration_ms INT DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_chunks_post (post_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
                     CREATE TABLE IF NOT EXISTS comments (
@@ -229,6 +255,9 @@ object SynologyScripts {
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("ALTER TABLE media ADD COLUMN duration_label VARCHAR(20) NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE media ADD COLUMN is_chunked TINYINT(1) DEFAULT 0");
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("ALTER TABLE stories ADD COLUMN thumb_path VARCHAR(255) NULL");
@@ -525,7 +554,8 @@ object SynologyScripts {
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
                            g.name as group_name,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
@@ -551,7 +581,8 @@ object SynologyScripts {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
@@ -635,7 +666,8 @@ object SynologyScripts {
                 ${D}stmt = ${D}db->prepare("
                     SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
                            g.name as group_name,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
@@ -845,6 +877,107 @@ object SynologyScripts {
             header('Accept-Ranges: bytes');
             header('Cache-Control: public, max-age=86400');
             @readfile(${D}filePath);
+            exit;
+        }
+
+        // 3.8. SUBIDA DE FRAGMENTOS DE VÍDEO (CHUNKED VIDEO UPLOAD)
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'video/upload_chunk') || str_ends_with(${D}uri, '/video/upload_chunk'))) {
+            ${D}sessionId = preg_replace('/[^a-zA-Z0-9_-]/', '', ${D}_POST['session_id'] ?? '');
+            ${D}chunkIndex = (int)(${D}_POST['chunk_index'] ?? 0);
+            ${D}totalChunks = (int)(${D}_POST['total_chunks'] ?? 1);
+
+            ${D}fileKey = isset(${D}_FILES['chunk']) ? 'chunk' : (isset(${D}_FILES['file']) ? 'file' : null);
+            if (empty(${D}sessionId) || !${D}fileKey || !isset(${D}_FILES[${D}fileKey])) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta session_id o archivo del fragmento"]);
+                exit;
+            }
+
+            if (${D}_FILES[${D}fileKey]['error'] !== UPLOAD_ERR_OK) {
+                http_response_code(500);
+                echo json_encode(["error" => "Error al recibir fragmento #{${D}chunkIndex}: código " . ${D}_FILES[${D}fileKey]['error']]);
+                exit;
+            }
+
+            ${D}chunkDir = __DIR__ . '/uploads/chunks/' . ${D}sessionId;
+            if (!is_dir(${D}chunkDir)) mkdir(${D}chunkDir, 0777, true);
+
+            ${D}chunkName = sprintf("chunk_%04d.mp4", ${D}chunkIndex);
+            ${D}targetPath = ${D}chunkDir . '/' . ${D}chunkName;
+
+            move_uploaded_file(${D}_FILES[${D}fileKey]['tmp_name'], ${D}targetPath);
+
+            echo json_encode([
+                "status" => "OK",
+                "session_id" => ${D}sessionId,
+                "chunk_index" => ${D}chunkIndex,
+                "received" => true
+            ]);
+            exit;
+        }
+
+        // 3.9. FINALIZAR PUBLICACIÓN O SHORT DE VÍDEO FRAGMENTADO
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'video/finalize_chunks') || str_ends_with(${D}uri, '/video/finalize_chunks'))) {
+            ${D}sessionId = preg_replace('/[^a-zA-Z0-9_-]/', '', ${D}_POST['session_id'] ?? '');
+            ${D}userId = (int)(${D}_POST['user_id'] ?? 1);
+            ${D}text = trim(${D}_POST['content_text'] ?? '');
+            ${D}feeling = ${D}_POST['feeling'] ?? null;
+            ${D}location = ${D}_POST['location'] ?? null;
+            ${D}durationLabel = trim(${D}_POST['duration_label'] ?? '');
+            ${D}isShort = (int)(${D}_POST['is_short'] ?? 0);
+            ${D}groupId = !empty(${D}_POST['group_id']) ? (int)${D}_POST['group_id'] : null;
+            ${D}totalChunks = (int)(${D}_POST['total_chunks'] ?? 1);
+
+            ${D}chunkDir = __DIR__ . '/uploads/chunks/' . ${D}sessionId;
+            if (empty(${D}sessionId) || !is_dir(${D}chunkDir)) {
+                http_response_code(400);
+                echo json_encode(["error" => "No se encontró el directorio de fragmentos para la sesión {${D}sessionId}"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}db->beginTransaction();
+
+                ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
+                ${D}stmt->execute([${D}userId, ${D}groupId, ${D}text, ${D}feeling, ${D}location, ${D}isShort]);
+                ${D}postId = (int)${D}db->lastInsertId();
+
+                // Póster / miniatura
+                ${D}thumbRel = "uploads/chunks/{${D}sessionId}/poster.jpg";
+                ${D}hasThumb = false;
+                if (isset(${D}_FILES['thumbnail']) && ${D}_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
+                    move_uploaded_file(${D}_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . ${D}thumbRel);
+                    ${D}hasThumb = true;
+                }
+
+                ${D}firstChunkRel = "uploads/chunks/{${D}sessionId}/chunk_0000.mp4";
+                if (!${D}hasThumb) {
+                    ${D}thumbRel = ${D}firstChunkRel;
+                }
+
+                ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
+                ${D}stmtMedia->execute([${D}postId, ${D}firstChunkRel, ${D}thumbRel, ${D}durationLabel ?: null]);
+
+                // Registrar cada fragmento en media_chunks
+                ${D}stmtChunk = ${D}db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
+                for (${D}i = 0; ${D}i < ${D}totalChunks; ${D}i++) {
+                    ${D}relPath = sprintf("uploads/chunks/%s/chunk_%04d.mp4", ${D}sessionId, ${D}i);
+                    ${D}stmtChunk->execute([${D}postId, ${D}i, ${D}totalChunks, ${D}relPath]);
+                }
+
+                ${D}db->commit();
+                echo json_encode([
+                    "success" => true,
+                    "post_id" => ${D}postId,
+                    "total_chunks" => ${D}totalChunks,
+                    "is_chunked" => true
+                ]);
+            } catch (Exception ${D}e) {
+                if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
             exit;
         }
 

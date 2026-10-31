@@ -108,6 +108,12 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    private val _uploadProgress = MutableStateFlow<String?>(null)
+    val uploadProgress: StateFlow<String?> = _uploadProgress.asStateFlow()
+
+    private val _uploadProgressFraction = MutableStateFlow(0f)
+    val uploadProgressFraction: StateFlow<Float> = _uploadProgressFraction.asStateFlow()
+
     val isNasDetected = repository.isNasDetected
     val isAutoDetectingNas = repository.isAutoDetecting
     val showNasIpConfirmation = repository.showNasIpConfirmation
@@ -363,32 +369,71 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         location: String? = null,
         thumbnailFile: File? = null,
         durationLabel: String? = null,
-        isShort: Boolean = false
+        isShort: Boolean = false,
+        groupId: Int? = null
     ) {
         if (text.isBlank() && mediaUri == null) return
 
         viewModelScope.launch {
             _isCreatePostDialogOpen.value = false
-            showStatus(if (isShort) "Subiendo Short familiar al Synology NAS..." else "Subiendo publicación al Synology NAS...")
 
-            val result = repository.addPost(
-                contentText = text,
-                mediaUri = mediaUri,
-                feeling = feeling,
-                location = location,
-                thumbnailFile = thumbnailFile,
-                durationLabel = durationLabel,
-                isShort = isShort
-            )
+            val mimeType = if (mediaUri != null) {
+                getApplication<Application>().contentResolver.getType(mediaUri) ?: ""
+            } else ""
+            val isVideo = mimeType.startsWith("video")
 
-            result.fold(
-                onSuccess = { postId ->
-                    showStatus(if (isShort) "¡Short publicado en la sección Shorts!" else "Publicado en Synology NAS (ID #$postId)")
-                },
-                onFailure = { error ->
-                    showStatus("Error al subir al NAS: ${error.localizedMessage}")
-                }
-            )
+            if (isVideo && mediaUri != null) {
+                _uploadProgress.value = "Iniciando preparación del vídeo..."
+                _uploadProgressFraction.value = 0.02f
+                showStatus(if (isShort) "Fragmentando y subiendo Short familiar al NAS..." else "Fragmentando y subiendo vídeo al NAS...")
+
+                val result = repository.uploadChunkedVideoPost(
+                    contentText = text,
+                    videoUri = mediaUri,
+                    feeling = feeling,
+                    location = location,
+                    isShort = isShort,
+                    groupId = groupId,
+                    onProgress = { step, fraction ->
+                        _uploadProgress.value = step
+                        _uploadProgressFraction.value = fraction
+                        showStatus(step)
+                    }
+                )
+
+                _uploadProgress.value = null
+                _uploadProgressFraction.value = 0f
+
+                result.fold(
+                    onSuccess = { postId ->
+                        showStatus(if (isShort) "¡Short subido en fragmentos continuos!" else "¡Vídeo publicado en fragmentos continuos (ID #$postId)!")
+                    },
+                    onFailure = { error ->
+                        showStatus("Error al subir fragmentos al NAS: ${error.localizedMessage}")
+                    }
+                )
+            } else {
+                showStatus(if (isShort) "Subiendo Short familiar al Synology NAS..." else "Subiendo publicación al Synology NAS...")
+
+                val result = repository.addPost(
+                    contentText = text,
+                    mediaUri = mediaUri,
+                    feeling = feeling,
+                    location = location,
+                    thumbnailFile = thumbnailFile,
+                    durationLabel = durationLabel,
+                    isShort = isShort
+                )
+
+                result.fold(
+                    onSuccess = { postId ->
+                        showStatus(if (isShort) "¡Short publicado en la sección Shorts!" else "Publicado en Synology NAS (ID #$postId)")
+                    },
+                    onFailure = { error ->
+                        showStatus("Error al subir al NAS: ${error.localizedMessage}")
+                    }
+                )
+            }
         }
     }
 

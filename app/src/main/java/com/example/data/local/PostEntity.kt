@@ -26,5 +26,7 @@ data class PostEntity(
     val isShort: Boolean = false,
     val thumbUrl: String? = null,
     val groupId: Int? = null,
-    val groupName: String? = null
+    val groupName: String? = null,
+    val isChunked: Boolean = false,
+    val chunksJson: String? = null
 )

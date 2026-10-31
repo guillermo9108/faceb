@@ -959,6 +959,103 @@ class FamilyRepository(
     }
 
     /**
+     * Sube un vídeo fraccionándolo en partes pequeñas independientes (Zero-Transcoding) antes de subirlas al NAS,
+     * permitiendo subidas resilientes con reintento automático por fragmento y reproducción continua sin interrupción.
+     */
+    suspend fun uploadChunkedVideoPost(
+        contentText: String,
+        videoUri: Uri,
+        feeling: String? = null,
+        location: String? = null,
+        isShort: Boolean = false,
+        groupId: Int? = null,
+        onProgress: (step: String, progressFraction: Float) -> Unit = { _, _ -> }
+    ): Result<Int> {
+        val config = _nasConfig.value
+        val author = _currentMember.value
+
+        onProgress("Fragmentando vídeo...", 0.05f)
+        val sliceResult = com.example.util.VideoChunkingManager.sliceVideo(context, videoUri)
+        if (sliceResult.isFailure) {
+            onProgress("Subiendo vídeo...", 0.2f)
+            return addPost(
+                contentText = contentText,
+                mediaUri = videoUri,
+                feeling = feeling,
+                location = location,
+                isShort = isShort
+            )
+        }
+
+        val sliceData = sliceResult.getOrThrow()
+        val totalChunks = sliceData.chunkFiles.size
+
+        try {
+            for ((index, chunkFile) in sliceData.chunkFiles.withIndex()) {
+                val baseProgress = 0.10f + (0.75f * (index.toFloat() / totalChunks.toFloat()))
+                onProgress("Subiendo fragmento ${index + 1} de $totalChunks...", baseProgress)
+
+                var chunkSuccess = false
+                var lastChunkError: Throwable? = null
+                // Reintentar hasta 3 veces por fragmento si hay fluctuación de red LAN
+                for (retry in 1..3) {
+                    val uploadRes = apiClient.uploadVideoChunk(
+                        ip = config.ip,
+                        port = config.port,
+                        path = config.path,
+                        sessionId = sliceData.sessionId,
+                        chunkIndex = index,
+                        totalChunks = totalChunks,
+                        chunkFile = chunkFile
+                    )
+                    if (uploadRes.isSuccess) {
+                        chunkSuccess = true
+                        break
+                    } else {
+                        lastChunkError = uploadRes.exceptionOrNull()
+                        kotlinx.coroutines.delay(500)
+                    }
+                }
+
+                if (!chunkSuccess) {
+                    return Result.failure(Exception("Error subiendo fragmento ${index + 1}/$totalChunks: ${lastChunkError?.message}"))
+                }
+            }
+
+            onProgress("Finalizando publicación...", 0.90f)
+            val finalizeResult = apiClient.finalizeChunkedVideo(
+                ip = config.ip,
+                port = config.port,
+                path = config.path,
+                sessionId = sliceData.sessionId,
+                userId = author.id,
+                text = contentText,
+                feeling = feeling,
+                location = location,
+                durationLabel = sliceData.durationLabel,
+                isShort = isShort,
+                groupId = groupId,
+                totalChunks = totalChunks,
+                thumbnailFile = sliceData.thumbnailFile
+            )
+
+            finalizeResult.onSuccess { postId ->
+                onProgress("¡Completado!", 1.0f)
+                scope.launch {
+                    refreshFeed()
+                    refreshShorts()
+                    if (groupId != null) {
+                        fetchGroupPosts(groupId)
+                    }
+                }
+            }
+            return finalizeResult
+        } finally {
+            com.example.util.VideoChunkingManager.cleanupSession(context, sliceData.sessionId)
+        }
+    }
+
+    /**
      * Crea y sube una historia independiente a MariaDB 10 en el Synology NAS.
      */
     suspend fun addStory(
@@ -1129,6 +1226,13 @@ class FamilyRepository(
 }
 
 private fun PostEntity.toDomainPost(author: FamilyMember): Post {
+    val chunksList: List<String> = if (!chunksJson.isNullOrBlank()) {
+        try {
+            val arr = org.json.JSONArray(chunksJson)
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (_: Exception) { emptyList() }
+    } else emptyList()
+
     val mediaList = if (!mediaUrl.isNullOrBlank()) {
         listOf(
             MediaItem(
@@ -1137,7 +1241,9 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
                 url = mediaUrl,
                 thumbnailUrl = thumbUrl ?: mediaUrl,
                 caption = mediaCaption ?: "",
-                durationLabel = mediaDuration
+                durationLabel = mediaDuration,
+                isChunked = isChunked,
+                chunks = chunksList
             )
         )
     } else emptyList()
@@ -1162,6 +1268,10 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
 
 private fun Post.toEntity(): PostEntity {
     val firstMedia = mediaItems.firstOrNull()
+    val chunksJsonStr = if (firstMedia?.chunks?.isNotEmpty() == true) {
+        org.json.JSONArray(firstMedia.chunks).toString()
+    } else null
+
     return PostEntity(
         id = id,
         authorId = author.id,
@@ -1184,6 +1294,8 @@ private fun Post.toEntity(): PostEntity {
         isShort = isShort,
         thumbUrl = firstMedia?.thumbnailUrl,
         groupId = groupId,
-        groupName = groupName
+        groupName = groupName,
+        isChunked = firstMedia?.isChunked ?: false,
+        chunksJson = chunksJsonStr
     )
 }

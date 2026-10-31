@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de trabajo para el sistema de grupos familiares generados desde carpetas del almacenamiento Synology NAS con escaneo manual administrativo, publicaciones grupales y participación familiar.",
-  "updatedAt":  "2026-10-30T18:30:21.029189654Z",
+  "summary":  "Plan de trabajo completo para la fragmentación de vídeos en partes pequeñas antes de la subida al Synology NAS, protocolo de subida resiliente por fragmentos, y reproducción fluida sin pausas ni interrupciones como un solo vídeo tanto en publicaciones regulares como en Shorts.",
+  "updatedAt":  "2026-10-31T16:17:23.730082099Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

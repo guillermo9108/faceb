@@ -455,6 +455,18 @@ class NasApiClient(
                 else -> "$baseUrl/$thumbPath"
             }
             val mediaTypeStr = p.optString("media_type", "IMAGE")
+            val isChunked = p.optInt("is_chunked", 0) == 1
+            val rawChunks = p.optString("chunks_paths", "")
+            val chunksList = if (rawChunks.isNotBlank()) {
+                rawChunks.split("|||").map { relPath ->
+                    when {
+                        relPath.startsWith("http://") || relPath.startsWith("https://") -> relPath
+                        relPath.startsWith("index.php") -> "$baseUrl/$relPath"
+                        relPath.startsWith("/") -> "$baseUrl$relPath"
+                        else -> "$baseUrl/$relPath"
+                    }
+                }
+            } else emptyList()
 
             mediaItems.add(
                 MediaItem(
@@ -462,7 +474,9 @@ class NasApiClient(
                     type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
                     url = fullMediaUrl,
                     thumbnailUrl = fullThumbUrl,
-                    durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() }
+                    durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() },
+                    isChunked = isChunked,
+                    chunks = chunksList
                 )
             )
         }
@@ -891,6 +905,130 @@ class NasApiClient(
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
                     url = buildEndpointUrl(ip, port, currentPath, "post")
+                    val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
+                    response = uploadClient.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val newPostId = json.optInt("post_id", (1..99999).random())
+            Result.success(newPostId)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Sube un fragmento de vídeo individual a la sesión especificada en el Synology NAS.
+     */
+    suspend fun uploadVideoChunk(
+        ip: String,
+        port: Int,
+        path: String,
+        sessionId: String,
+        chunkIndex: Int,
+        totalChunks: Int,
+        chunkFile: File
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "video/upload_chunk")
+
+            val fileBody = chunkFile.asRequestBody("video/mp4".toMediaTypeOrNull())
+            val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("session_id", sessionId)
+                .addFormDataPart("chunk_index", chunkIndex.toString())
+                .addFormDataPart("total_chunks", totalChunks.toString())
+                .addFormDataPart("chunk", chunkFile.name, fileBody)
+
+            val request = Request.Builder()
+                .url(url)
+                .post(multipartBuilder.build())
+                .build()
+
+            var response = uploadClient.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "video/upload_chunk")
+                    val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
+                    response = uploadClient.newCall(retryReq).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            Result.success(true)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Finaliza la subida de todos los fragmentos y crea la publicación o Short en MariaDB 10.
+     */
+    suspend fun finalizeChunkedVideo(
+        ip: String,
+        port: Int,
+        path: String,
+        sessionId: String,
+        userId: Int,
+        text: String,
+        feeling: String?,
+        location: String?,
+        durationLabel: String?,
+        isShort: Boolean,
+        groupId: Int?,
+        totalChunks: Int,
+        thumbnailFile: File?
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "video/finalize_chunks")
+
+            val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("session_id", sessionId)
+                .addFormDataPart("user_id", userId.toString())
+                .addFormDataPart("content_text", text)
+                .addFormDataPart("is_short", if (isShort) "1" else "0")
+                .addFormDataPart("total_chunks", totalChunks.toString())
+
+            feeling?.let { multipartBuilder.addFormDataPart("feeling", it) }
+            location?.let { multipartBuilder.addFormDataPart("location", it) }
+            durationLabel?.let { multipartBuilder.addFormDataPart("duration_label", it) }
+            groupId?.let { multipartBuilder.addFormDataPart("group_id", it.toString()) }
+
+            if (thumbnailFile != null && thumbnailFile.exists()) {
+                val thumbBody = thumbnailFile.asRequestBody("image/jpeg".toMediaTypeOrNull())
+                multipartBuilder.addFormDataPart("thumbnail", thumbnailFile.name, thumbBody)
+            }
+
+            val request = Request.Builder()
+                .url(url)
+                .post(multipartBuilder.build())
+                .build()
+
+            var response = uploadClient.newCall(request).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "video/finalize_chunks")
                     val retryReq = Request.Builder().url(url).post(multipartBuilder.build()).build()
                     response = uploadClient.newCall(retryReq).execute()
                     body = response.body?.string() ?: ""

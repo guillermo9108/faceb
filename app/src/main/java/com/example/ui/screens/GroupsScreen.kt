@@ -74,7 +74,7 @@ fun GroupsScreen(
     onRefreshGroups: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>) -> Unit,
     onTogglePin: (Int) -> Unit = {},
     onDeletePost: (Int) -> Unit = {}
 ) {
@@ -456,7 +456,7 @@ private fun GroupDetailView(
     onBack: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>) -> Unit,
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit
 ) {
@@ -592,7 +592,7 @@ private fun GroupDetailView(
                     onCommentClick = { onCommentClick(post) },
                     onTogglePin = { onTogglePin(post.id) },
                     onDeletePost = { onDeletePost(post.id) },
-                    onPlayVideo = { url, title, _, dur -> onPlayVideo(url, title, post.author, dur) }
+                    onPlayVideo = { url, title, _, dur, chunks -> onPlayVideo(url, title, post.author, dur, chunks) }
                 )
             }
         }

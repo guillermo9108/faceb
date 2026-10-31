@@ -78,7 +78,15 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isAutoDetectingNas by viewModel.isAutoDetectingNas.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
 
-    var activeVideoToPlay by remember { mutableStateOf<Triple<String, String, String?>?>(null) }
+    data class ActiveVideoPlayInfo(
+        val url: String,
+        val title: String,
+        val author: String = "",
+        val duration: String? = null,
+        val chunks: List<String> = emptyList()
+    )
+
+    var activeVideoToPlay by remember { mutableStateOf<ActiveVideoPlayInfo?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -186,8 +194,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onPlayVideo = { url, title, author, dur ->
-                            activeVideoToPlay = Triple(url, title, dur)
+                        onPlayVideo = { url, title, author, dur, chunks ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
                         },
                         onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) }
                     )
@@ -200,8 +208,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
                         onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                        onPlayVideo = { url, title, author, dur ->
-                            activeVideoToPlay = Triple(url, title, dur)
+                        onPlayVideo = { url, title, author, dur, chunks ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
                         }
                     )
                 }
@@ -230,8 +238,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onRefreshGroups = { viewModel.refreshGroups() },
                         onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                        onPlayVideo = { url, title, author, dur ->
-                            activeVideoToPlay = Triple(url, title, dur)
+                        onPlayVideo = { url, title, author, dur, chunks ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author.name, dur, chunks)
                         },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) }
@@ -325,12 +333,14 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         )
     }
 
-    // Modal Reproductor de Vídeo optimizado
-    activeVideoToPlay?.let { (videoUrl, title, duration) ->
+    // Modal Reproductor de Vídeo optimizado con reproducción continua de fragmentos
+    activeVideoToPlay?.let { info ->
         VideoPlayerDialog(
-            videoUrl = videoUrl,
-            title = title,
-            durationLabel = duration,
+            videoUrl = info.url,
+            title = info.title,
+            authorName = info.author,
+            durationLabel = info.duration,
+            chunks = info.chunks,
             onDismiss = { activeVideoToPlay = null }
         )
     }

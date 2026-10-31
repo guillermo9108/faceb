@@ -51,6 +51,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,7 +82,7 @@ fun PostCard(
     onCommentClick: () -> Unit,
     onTogglePin: () -> Unit,
     onDeletePost: () -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit = { _, _, _, _ -> },
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit = { _, _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -280,8 +281,11 @@ fun PostCard(
                     val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
                     com.example.util.OfflineMediaManager.getDisplayModel(context, raw)
                 }
-                val playableVideoUri = remember(media.url) {
-                    com.example.util.OfflineMediaManager.getPlayableMediaUri(context, media.url)
+                val isChunked = media.isChunked && media.chunks.isNotEmpty()
+                var inlineChunkIndex by remember { mutableIntStateOf(0) }
+                val initialVideoUrl = if (isChunked) media.chunks.first() else media.url
+                val playableVideoUri = remember(initialVideoUrl) {
+                    com.example.util.OfflineMediaManager.getPlayableMediaUri(context, initialVideoUrl)
                 }
 
                 Box(
@@ -291,15 +295,24 @@ fun PostCard(
                         .background(Color.Black.copy(alpha = 0.08f))
                 ) {
                     if (isVideo && isPlayingInline) {
-                        // Reproducción directa en la misma tarjeta
+                        // Reproducción directa en la misma tarjeta con soporte continuo para fragmentos
                         AndroidView(
                             factory = { ctx ->
                                 VideoView(ctx).apply {
                                     setVideoURI(playableVideoUri)
                                     setOnPreparedListener { mp ->
                                         isBuffering = false
-                                        mp.isLooping = true
+                                        mp.isLooping = !isChunked
                                         start()
+                                    }
+                                    setOnCompletionListener {
+                                        if (isChunked) {
+                                            inlineChunkIndex = (inlineChunkIndex + 1) % media.chunks.size
+                                            val nextUrl = media.chunks[inlineChunkIndex]
+                                            val nextUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextUrl)
+                                            setVideoURI(nextUri)
+                                            start()
+                                        }
                                     }
                                     setOnErrorListener { _, _, _ ->
                                         isBuffering = false
@@ -397,7 +410,7 @@ fun PostCard(
                                     isPaused = true
                                     inlineVideoView?.stopPlayback()
                                     inlineVideoView = null
-                                    onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
+                                    onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
@@ -466,7 +479,7 @@ fun PostCard(
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
-                                        text = "Vídeo LAN · ${media.durationLabel ?: "Streaming"}",
+                                        text = if (isChunked) "⚡ Vídeo continuo (${media.chunks.size} partes) · ${media.durationLabel ?: "Streaming"}" else "Vídeo LAN · ${media.durationLabel ?: "Streaming"}",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             color = Color.White,
                                             fontWeight = FontWeight.Bold,
@@ -482,7 +495,7 @@ fun PostCard(
                                         isPaused = true
                                         inlineVideoView?.stopPlayback()
                                         inlineVideoView = null
-                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel)
+                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
                                     },
                                     modifier = Modifier
                                         .size(28.dp)

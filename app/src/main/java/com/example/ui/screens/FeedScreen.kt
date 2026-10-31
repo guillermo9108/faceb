@@ -77,7 +77,7 @@ fun FeedScreen(
     onCommentClick: (Post) -> Unit,
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit,
     onOpenNasConfig: () -> Unit,
     modifier: Modifier = Modifier
 ) {

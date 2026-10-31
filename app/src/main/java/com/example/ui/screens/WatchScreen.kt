@@ -62,7 +62,7 @@ fun WatchScreen(
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
     onOpenCreatePost: () -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?) -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Filtrar publicaciones que contengan vídeos

@@ -45,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -269,8 +270,13 @@ private fun ShortVideoItem(
     val localThumbModel = remember(thumbFullUrl) {
         if (thumbFullUrl != null) com.example.util.OfflineMediaManager.getDisplayModel(context, thumbFullUrl) else null
     }
-    val localVideoUri = remember(videoFullUrl) {
-        if (videoFullUrl.isNotEmpty()) com.example.util.OfflineMediaManager.getPlayableMediaUri(context, videoFullUrl) else Uri.EMPTY
+    val isChunked = videoMedia?.isChunked == true && videoMedia.chunks.isNotEmpty()
+    val chunks = videoMedia?.chunks ?: emptyList()
+    var currentChunkIndex by remember { mutableIntStateOf(0) }
+
+    val activeChunkUrl = if (isChunked && chunks.isNotEmpty()) chunks.first() else videoFullUrl
+    val localVideoUri = remember(activeChunkUrl) {
+        if (activeChunkUrl.isNotEmpty()) com.example.util.OfflineMediaManager.getPlayableMediaUri(context, activeChunkUrl) else Uri.EMPTY
     }
 
     LaunchedEffect(isActive, videoViewRef) {
@@ -313,8 +319,8 @@ private fun ShortVideoItem(
             )
         }
 
-        // Full Screen Video View
-        if (videoFullUrl.isNotEmpty()) {
+        // Full Screen Video View with continuous chunk playback
+        if (activeChunkUrl.isNotEmpty()) {
             AndroidView(
                 factory = { ctx ->
                     VideoView(ctx).apply {
@@ -324,11 +330,24 @@ private fun ShortVideoItem(
                         )
                         setVideoURI(localVideoUri)
                         setOnPreparedListener { mp ->
-                            mp.isLooping = true
+                            mp.isLooping = !isChunked
                             isBuffering = false
                             if (isActive) {
                                 start()
                                 isPlaying = true
+                            }
+                        }
+                        setOnCompletionListener {
+                            // Reproducción continua y en bucle del siguiente fragmento del Short
+                            if (isChunked && chunks.isNotEmpty()) {
+                                currentChunkIndex = (currentChunkIndex + 1) % chunks.size
+                                val nextChunkUrl = chunks[currentChunkIndex]
+                                val nextChunkUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextChunkUrl)
+                                setVideoURI(nextChunkUri)
+                                if (isActive) {
+                                    start()
+                                    isPlaying = true
+                                }
                             }
                         }
                         setOnInfoListener { _, what, _ ->

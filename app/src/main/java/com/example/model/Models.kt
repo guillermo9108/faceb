@@ -32,7 +32,9 @@ data class MediaItem(
     val url: String,
     val thumbnailUrl: String = url,
     val caption: String = "",
-    val durationLabel: String? = null
+    val durationLabel: String? = null,
+    val isChunked: Boolean = false,
+    val chunks: List<String> = emptyList()
 )
 
 data class Comment(

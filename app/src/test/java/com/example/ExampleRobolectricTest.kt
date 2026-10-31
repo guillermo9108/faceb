@@ -318,6 +318,93 @@ class ExampleRobolectricTest {
         assertTrue("index.php must contain admin scan folders endpoint", indexPhp.contains("admin/scan_folders"))
         assertTrue("index.php must contain admin import groups endpoint", indexPhp.contains("admin/import_groups"))
         assertTrue("index.php must contain media proxy endpoint", indexPhp.contains("media_proxy"))
+        assertTrue("index.php must contain video upload_chunk endpoint", indexPhp.contains("video/upload_chunk"))
+        assertTrue("index.php must contain video finalize_chunks endpoint", indexPhp.contains("video/finalize_chunks"))
+    }
+
+    @Test
+    fun `synology scripts bundle media_chunks table and is_chunked column`() {
+        val config = com.example.model.NasConfig()
+        val zipBytes = com.example.util.SynologyZipExporter.createZipBytes(config)
+        val entries = mutableMapOf<String, String>()
+        val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(zipBytes))
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val content = zis.readBytes().toString(Charsets.UTF_8)
+            entries[entry.name] = content
+            entry = zis.nextEntry
+        }
+        zis.close()
+
+        val schemaSql = entries["schema.sql"] ?: ""
+        assertTrue("schema.sql must contain media_chunks table", schemaSql.contains("CREATE TABLE IF NOT EXISTS media_chunks"))
+        assertTrue("schema.sql must contain is_chunked in media table", schemaSql.contains("is_chunked"))
+
+        val configPhp = entries["config.php"] ?: ""
+        assertTrue("config.php must auto-bootstrap media_chunks", configPhp.contains("media_chunks"))
+        assertTrue("config.php must auto-repair is_chunked column", configPhp.contains("is_chunked"))
+    }
+
+    @Test
+    fun `post entity and media item preserve chunked video data and list of chunk urls`() {
+        val chunkUrls = listOf(
+            "http://192.168.1.100/web/family_api/uploads/chunks/abc/chunk_0.mp4",
+            "http://192.168.1.100/web/family_api/uploads/chunks/abc/chunk_1.mp4",
+            "http://192.168.1.100/web/family_api/uploads/chunks/abc/chunk_2.mp4"
+        )
+        val media = com.example.model.MediaItem(
+            id = "media_1",
+            type = com.example.model.MediaType.VIDEO,
+            url = chunkUrls.first(),
+            isChunked = true,
+            chunks = chunkUrls
+        )
+        assertTrue("MediaItem must record isChunked", media.isChunked)
+        assertEquals("MediaItem must hold all 3 chunk URLs", 3, media.chunks.size)
+        assertEquals(chunkUrls[1], media.chunks[1])
+
+        val chunksJsonStr = org.json.JSONArray(chunkUrls).toString()
+        val entity = com.example.data.local.PostEntity(
+            id = 42,
+            authorId = 1,
+            authorName = "Administrador",
+            authorRole = "Administrador",
+            authorEmoji = "👑",
+            authorColorHex = 0xFF1E40AF,
+            contentText = "Vídeo en fragmentos continuos",
+            createdAt = System.currentTimeMillis(),
+            mediaUrl = chunkUrls.first(),
+            mediaType = "VIDEO",
+            mediaCaption = null,
+            mediaDuration = "00:24",
+            feeling = null,
+            location = null,
+            isPinned = false,
+            likesCount = 5,
+            commentsCount = 2,
+            userReaction = null,
+            isShort = false,
+            thumbUrl = null,
+            groupId = null,
+            groupName = null,
+            isChunked = true,
+            chunksJson = chunksJsonStr
+        )
+
+        assertTrue("Entity must record isChunked", entity.isChunked)
+        assertNotNull("Entity must store chunks JSON", entity.chunksJson)
+        assertEquals(chunksJsonStr, entity.chunksJson)
+    }
+
+    @Test
+    fun `offline media manager initializes hidden directory with nomedia`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val offlineDir = com.example.util.OfflineMediaManager.getOfflineDir(context)
+        assertTrue("Hidden offline directory must exist", offlineDir.exists())
+        assertEquals(".offline_media", offlineDir.name)
+
+        val noMedia = java.io.File(offlineDir, ".nomedia")
+        assertTrue(".nomedia file must exist so gallery does not index internal chunks", noMedia.exists())
     }
 
     @Test
