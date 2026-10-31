@@ -311,6 +311,12 @@ class ExampleRobolectricTest {
         val schemaSql = entries["schema.sql"] ?: ""
         assertTrue("schema.sql must contain family_groups table", schemaSql.contains("CREATE TABLE IF NOT EXISTS family_groups"))
         assertTrue("schema.sql must contain group_id column in posts", schemaSql.contains("group_id"))
+        assertTrue("schema.sql must contain fk_post_group constraint", schemaSql.contains("fk_post_group"))
+
+        val configPhp = entries["config.php"] ?: ""
+        assertTrue("config.php must auto-repair group_id column", configPhp.contains("ALTER TABLE posts ADD COLUMN group_id"))
+        assertTrue("config.php must auto-repair idx_group index", configPhp.contains("ALTER TABLE posts ADD INDEX idx_group"))
+        assertTrue("config.php must auto-repair fk_post_group", configPhp.contains("fk_post_group"))
 
         val indexPhp = entries["index.php"] ?: ""
         assertTrue("index.php must contain groups endpoint", indexPhp.contains("groups"))
@@ -320,6 +326,8 @@ class ExampleRobolectricTest {
         assertTrue("index.php must contain media proxy endpoint", indexPhp.contains("media_proxy"))
         assertTrue("index.php must contain video upload_chunk endpoint", indexPhp.contains("video/upload_chunk"))
         assertTrue("index.php must contain video finalize_chunks endpoint", indexPhp.contains("video/finalize_chunks"))
+        assertTrue("index.php must correctly join groups with posts using LEFT JOIN posts p ON g.id = p.group_id", indexPhp.contains("LEFT JOIN posts p ON g.id = p.group_id"))
+        assertTrue("index.php must correctly join family_groups in group posts using JOIN family_groups g ON g.id = p.group_id", indexPhp.contains("JOIN family_groups g ON g.id = p.group_id"))
     }
 
     @Test

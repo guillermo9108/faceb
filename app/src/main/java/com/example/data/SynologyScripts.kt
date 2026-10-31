@@ -55,6 +55,7 @@ object SynologyScripts {
             is_short TINYINT(1) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_post_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            CONSTRAINT fk_post_group FOREIGN KEY (group_id) REFERENCES family_groups(id) ON DELETE SET NULL,
             INDEX idx_created (created_at DESC),
             INDEX idx_group (group_id)
         ) ENGINE=InnoDB;
@@ -186,6 +187,7 @@ object SynologyScripts {
                         is_pinned TINYINT(1) DEFAULT 0,
                         is_short TINYINT(1) DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT fk_post_group FOREIGN KEY (group_id) REFERENCES family_groups(id) ON DELETE SET NULL,
                         INDEX idx_created (created_at),
                         INDEX idx_is_short (is_short),
                         INDEX idx_group (group_id)
@@ -249,6 +251,18 @@ object SynologyScripts {
                 // 2. REPARACIÓN DE COLUMNAS ACTUALIZADAS
                 try {
                     ${D}pdo->exec("ALTER TABLE posts ADD COLUMN is_short TINYINT(1) DEFAULT 0");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE posts ADD COLUMN group_id INT NULL DEFAULT NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE posts ADD INDEX idx_group (group_id)");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE posts ADD CONSTRAINT fk_post_group FOREIGN KEY (group_id) REFERENCES family_groups(id) ON DELETE SET NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups");
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("ALTER TABLE media ADD COLUMN thumb_path VARCHAR(255) NULL");
@@ -560,7 +574,7 @@ object SynologyScripts {
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
-                    LEFT JOIN family_groups g ON p.group_id = g.id
+                    LEFT JOIN family_groups g ON g.id = p.group_id
                     LEFT JOIN media m ON m.post_id = p.id
                     WHERE (p.is_short = 0 OR p.is_short IS NULL)
                     ORDER BY p.is_pinned DESC, p.created_at DESC
@@ -581,12 +595,14 @@ object SynologyScripts {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                           g.name as group_name,
                            m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                            (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
+                    LEFT JOIN family_groups g ON g.id = p.group_id
                     JOIN media m ON m.post_id = p.id
                     WHERE p.is_short = 1
                     ORDER BY p.created_at DESC
@@ -645,9 +661,10 @@ object SynologyScripts {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
-                    SELECT g.*,
-                           (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) as posts_count
+                    SELECT g.*, COUNT(p.id) as posts_count
                     FROM family_groups g
+                    LEFT JOIN posts p ON g.id = p.group_id
+                    GROUP BY g.id
                     ORDER BY g.created_at DESC
                 ");
                 echo json_encode(["groups" => ${D}stmt->fetchAll()]);
@@ -672,9 +689,9 @@ object SynologyScripts {
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
-                    JOIN family_groups g ON p.group_id = g.id
+                    JOIN family_groups g ON g.id = p.group_id
                     LEFT JOIN media m ON m.post_id = p.id
-                    WHERE p.group_id = ?
+                    WHERE g.id = ?
                     ORDER BY p.created_at DESC
                     LIMIT 100
                 ");

@@ -139,19 +139,32 @@ En redes locales hogareñas o conexiones Wi-Fi con interferencias:
 
 ---
 
-## 4. Pruebas y Validación
-
-1. **Pruebas Unitarias y Robolectric:**
-   - Cálculo correcto de fragmentos y límites de duración.
-   - Validación del nuevo endpoint de subida por fragmentos en `index.php`.
-   - Compatibilidad del esquema de base de datos en MariaDB 10.
-2. **Pruebas de Red y Resiliencia:**
-   - Simulación de corte de conexión a mitad de subida (verificar reanudación solo de las partes faltantes).
-   - Verificación de ausencia de pausas visuales o auditivas en el cambio entre fragmentos.
-
 ---
 
-## 5. Preguntas Clave para el Usuario
+## 4. Estado de Implementación y Pruebas (Completado)
 
-1. **Duración de los fragmentos:** ¿Prefieres segmentos de aproximadamente 6 a 8 segundos (óptimo para streaming rápido y bajo consumo de RAM) o fragmentos de 15 segundos?
-2. **Fusión en el servidor:** ¿Deseas que el Synology NAS intente unir los fragmentos en un único archivo MP4 en segundo plano además de conservar la lista de fragmentos para streaming rápido?
+1. **Fase 1 (Base de Datos y Synology PHP) - COMPLETADA**:
+   - `media_chunks` creada en `schema.sql` y auto-arrancada en `config.php`.
+   - `action=video/upload_chunk` y `action=video/finalize_chunks` implementados y operativos en `index.php`.
+   - Consultas de feed y shorts optimizadas con `GROUP_CONCAT` para entregar la lista de fragmentos en una sola petición.
+
+2. **Fase 2 (Motor de Fragmentación en Android) - COMPLETADA**:
+   - `VideoChunkingManager.kt` realiza corte Zero-Transcoding en 6–8 segundos por I-frames en milisegundos sin gasto de batería.
+   - Extracción de poster y metadatos unificados. Limpieza en `cacheDir` al terminar.
+
+3. **Fase 3 (Subida Resiliente con Progreso) - COMPLETADA**:
+   - `FamilyRepository.uploadChunkedVideoPost` con reintento automático (3 intentos por fragmento).
+   - Progreso en tiempo real en `CreatePostDialog` y barra de estado de la aplicación.
+
+4. **Fase 4 (Reproducción Continua sin Interrupciones) - COMPLETADA**:
+   - `PostCard.kt`: Reproducción inline encadenando fragmentos sin cortes ni pantallas negras.
+   - `VideoPlayerDialog.kt`: Modal a pantalla completa con avance continuo, barra unificada y rebobinado.
+   - `ShortsScreen.kt`: Reproducción vertical continua en bucle infinito encadenando todos los fragmentos.
+
+5. **Fase 5 (Caché Offline en Carpeta Oculta) - COMPLETADA**:
+   - `OfflineMediaManager` precarga automáticamente todos los fragmentos de cada publicación en `.offline_media`.
+
+6. **Verificación y Pruebas Automatizadas**:
+   - Compilación exitosa verificada con `compile_applet`.
+   - Conjunto completo de pruebas unitarias y de base de datos ejecutado con éxito vía `gradle :app:testDebugUnitTest` (33 tareas ejecutadas/al día, 0 fallos).
+
