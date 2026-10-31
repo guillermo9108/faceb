@@ -24,5 +24,7 @@ data class PostEntity(
     val commentsCount: Int,
     val userReaction: String?,
     val isShort: Boolean = false,
-    val thumbUrl: String? = null
+    val thumbUrl: String? = null,
+    val groupId: Int? = null,
+    val groupName: String? = null
 )

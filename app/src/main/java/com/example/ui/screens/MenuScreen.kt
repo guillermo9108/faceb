@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.Person
@@ -67,6 +68,7 @@ fun MenuScreen(
     onNavigateToMembers: () -> Unit,
     onNavigateToWatch: () -> Unit,
     onNavigateToShorts: () -> Unit,
+    onNavigateToGroups: () -> Unit = {},
     onOpenProfileSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
@@ -243,10 +245,21 @@ fun MenuScreen(
         // Shortcut Tile 4: Grupos Familiares
         item {
             FacebookMenuTile(
+                icon = Icons.Default.Groups,
+                iconColor = Color(0xFF10B981),
+                title = "Grupos",
+                subtitle = "Álbumes del NAS",
+                onClick = onNavigateToGroups
+            )
+        }
+
+        // Shortcut Tile 5: Familia
+        item {
+            FacebookMenuTile(
                 icon = Icons.Default.Group,
                 iconColor = Color(0xFF1877F2),
                 title = "Familia",
-                subtitle = "5 perfiles configurados",
+                subtitle = "Perfiles configurados",
                 onClick = onNavigateToMembers
             )
         }

@@ -29,10 +29,25 @@ object SynologyScripts {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB;
 
-        -- 2. Tabla de Publicaciones (Muro)
+        -- 2. Tabla de Grupos Familiares (Carpetas del NAS)
+        CREATE TABLE IF NOT EXISTS family_groups (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            folder_path VARCHAR(255) NOT NULL,
+            description TEXT NULL,
+            cover_photo_url VARCHAR(255) NULL,
+            created_by_user_id INT DEFAULT 1,
+            posts_count INT DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_group_folder (folder_path)
+        ) ENGINE=InnoDB;
+
+        -- 3. Tabla de Publicaciones (Muro)
         CREATE TABLE IF NOT EXISTS posts (
             id INT AUTO_INCREMENT PRIMARY KEY,
             user_id INT NOT NULL,
+            group_id INT NULL DEFAULT NULL,
             content_text TEXT NULL,
             feeling VARCHAR(100) NULL,
             location VARCHAR(100) NULL,
@@ -40,7 +55,8 @@ object SynologyScripts {
             is_short TINYINT(1) DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             CONSTRAINT fk_post_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            INDEX idx_created (created_at DESC)
+            INDEX idx_created (created_at DESC),
+            INDEX idx_group (group_id)
         ) ENGINE=InnoDB;
 
         -- 3. Tabla de Multimedia (Fotos y Vídeos en el NAS)
@@ -133,9 +149,23 @@ object SynologyScripts {
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+                    CREATE TABLE IF NOT EXISTS family_groups (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        name VARCHAR(150) NOT NULL,
+                        folder_path VARCHAR(255) NOT NULL,
+                        description TEXT NULL,
+                        cover_photo_url VARCHAR(255) NULL,
+                        created_by_user_id INT DEFAULT 1,
+                        posts_count INT DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_group_folder (folder_path)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
                     CREATE TABLE IF NOT EXISTS posts (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         user_id INT NOT NULL,
+                        group_id INT NULL DEFAULT NULL,
                         content_text TEXT,
                         feeling VARCHAR(100) NULL,
                         location VARCHAR(100) NULL,
@@ -143,7 +173,8 @@ object SynologyScripts {
                         is_short TINYINT(1) DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_created (created_at),
-                        INDEX idx_is_short (is_short)
+                        INDEX idx_is_short (is_short),
+                        INDEX idx_group (group_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
                     CREATE TABLE IF NOT EXISTS media (
@@ -493,11 +524,13 @@ object SynologyScripts {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                           g.name as group_name,
                            m.media_type, m.file_path, m.thumb_path, m.duration_label,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     JOIN users u ON p.user_id = u.id
+                    LEFT JOIN family_groups g ON p.group_id = g.id
                     LEFT JOIN media m ON m.post_id = p.id
                     WHERE (p.is_short = 0 OR p.is_short IS NULL)
                     ORDER BY p.is_pinned DESC, p.created_at DESC
@@ -576,6 +609,245 @@ object SynologyScripts {
             exit;
         }
 
+        // 3.3. OBTENER GRUPOS FAMILIARES
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'groups') || str_ends_with(${D}uri, '/groups'))) {
+            try {
+                ${D}db = getDB();
+                ${D}stmt = ${D}db->query("
+                    SELECT g.*,
+                           (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) as posts_count
+                    FROM family_groups g
+                    ORDER BY g.created_at DESC
+                ");
+                echo json_encode(["groups" => ${D}stmt->fetchAll()]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.4. OBTENER PUBLICACIONES DE UN GRUPO
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'group/posts') || str_ends_with(${D}uri, '/group/posts'))) {
+            ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
+            try {
+                ${D}db = getDB();
+                ${D}stmt = ${D}db->prepare("
+                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                           g.name as group_name,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                           (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                    FROM posts p
+                    JOIN users u ON p.user_id = u.id
+                    JOIN family_groups g ON p.group_id = g.id
+                    LEFT JOIN media m ON m.post_id = p.id
+                    WHERE p.group_id = ?
+                    ORDER BY p.created_at DESC
+                    LIMIT 100
+                ");
+                ${D}stmt->execute([${D}groupId]);
+                echo json_encode(["posts" => ${D}stmt->fetchAll()]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.5. ESCANEAR CARPETAS DEL ALMACENAMIENTO DEL NAS (SOLO ADMIN)
+        if ((${D}method === 'GET' || ${D}method === 'POST') && (matchRoute(${D}action, ${D}uri, 'admin/scan_folders') || str_ends_with(${D}uri, '/admin/scan_folders'))) {
+            ${D}basePath = trim(${D}_GET['base_path'] ?? ${D}_POST['base_path'] ?? '/volume1/photo');
+            if (empty(${D}basePath)) ${D}basePath = '/volume1/photo';
+
+            if (!is_dir(${D}basePath)) {
+                http_response_code(404);
+                echo json_encode(["error" => "La ruta '{${D}basePath}' no existe o no tiene permisos de lectura"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}existingPaths = [];
+                try {
+                    ${D}stmtExisting = ${D}db->query("SELECT folder_path FROM family_groups");
+                    ${D}existingPaths = ${D}stmtExisting->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                } catch (Exception ${D}ex) {}
+
+                ${D}entries = @scandir(${D}basePath);
+                ${D}folders = [];
+
+                if (${D}entries !== false) {
+                    foreach (${D}entries as ${D}entry) {
+                        if (${D}entry === '.' || ${D}entry === '..' || ${D}entry === '@eaDir' || ${D}entry === '#recycle') continue;
+                        ${D}fullPath = rtrim(${D}basePath, '/') . '/' . ${D}entry;
+                        if (is_dir(${D}fullPath)) {
+                            ${D}subEntries = @scandir(${D}fullPath);
+                            ${D}photoCount = 0;
+                            ${D}videoCount = 0;
+
+                            if (${D}subEntries !== false) {
+                                foreach (${D}subEntries as ${D}sub) {
+                                    if (${D}sub === '.' || ${D}sub === '..' || ${D}sub === '@eaDir') continue;
+                                    ${D}subPath = ${D}fullPath . '/' . ${D}sub;
+                                    if (is_file(${D}subPath)) {
+                                        ${D}ext = strtolower(pathinfo(${D}sub, PATHINFO_EXTENSION));
+                                        if (in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'])) {
+                                            ${D}photoCount++;
+                                        } else if (in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'])) {
+                                            ${D}videoCount++;
+                                        }
+                                    }
+                                }
+                            }
+
+                            ${D}isImported = in_array(${D}fullPath, ${D}existingPaths);
+                            ${D}folders[] = [
+                                "name" => ${D}entry,
+                                "path" => ${D}fullPath,
+                                "photos_count" => ${D}photoCount,
+                                "videos_count" => ${D}videoCount,
+                                "media_count" => (${D}photoCount + ${D}videoCount),
+                                "already_imported" => ${D}isImported
+                            ];
+                        }
+                    }
+                }
+
+                echo json_encode(["status" => "OK", "base_path" => ${D}basePath, "folders" => ${D}folders]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.6. IMPORTAR CARPETAS COMO GRUPOS Y PUBLICAR CONTENIDO MULTIMEDIA (SOLO ADMIN)
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'admin/import_groups') || str_ends_with(${D}uri, '/admin/import_groups'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}folderPaths = ${D}input['folder_paths'] ?? [];
+            if (is_string(${D}folderPaths)) {
+                ${D}folderPaths = explode(',', ${D}folderPaths);
+            }
+            ${D}adminUserId = (int)(${D}input['admin_user_id'] ?? 1);
+
+            if (empty(${D}folderPaths) || !is_array(${D}folderPaths)) {
+                http_response_code(400);
+                echo json_encode(["error" => "No se recibieron carpetas para importar"]);
+                exit;
+            }
+
+            try {
+                ${D}db = getDB();
+                ${D}db->beginTransaction();
+                ${D}importedGroups = 0;
+                ${D}importedPosts = 0;
+
+                foreach (${D}folderPaths as ${D}fPath) {
+                    ${D}fPath = trim(${D}fPath);
+                    if (empty(${D}fPath) || !is_dir(${D}fPath)) continue;
+
+                    ${D}groupName = basename(${D}fPath);
+
+                    ${D}check = ${D}db->prepare("SELECT id FROM family_groups WHERE folder_path = ? LIMIT 1");
+                    ${D}check->execute([${D}fPath]);
+                    ${D}existingId = ${D}check->fetchColumn();
+
+                    if (${D}existingId) {
+                        ${D}groupId = (int)${D}existingId;
+                    } else {
+                        ${D}groupStmt = ${D}db->prepare("INSERT INTO family_groups (name, folder_path, description) VALUES (?, ?, ?)");
+                        ${D}groupStmt->execute([${D}groupName, ${D}fPath, "Grupo familiar sincronizado desde {${D}fPath}"]);
+                        ${D}groupId = (int)${D}db->lastInsertId();
+                    }
+
+                    ${D}files = @scandir(${D}fPath);
+                    ${D}coverSet = false;
+
+                    if (${D}files !== false) {
+                        foreach (${D}files as ${D}file) {
+                            if (${D}file === '.' || ${D}file === '..' || ${D}file === '@eaDir') continue;
+                            ${D}fullFile = ${D}fPath . '/' . ${D}file;
+                            if (!is_file(${D}fullFile)) continue;
+
+                            ${D}ext = strtolower(pathinfo(${D}file, PATHINFO_EXTENSION));
+                            ${D}isImg = in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic']);
+                            ${D}isVid = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
+
+                            if (!${D}isImg && !${D}isVid) continue;
+
+                            ${D}proxyUrl = "index.php?action=media_proxy&path=" . urlencode(${D}fullFile);
+
+                            // Verificar si el archivo ya fue importado
+                            ${D}checkMedia = ${D}db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
+                            ${D}checkMedia->execute([${D}proxyUrl]);
+                            if (${D}checkMedia->fetchColumn()) continue;
+
+                            ${D}caption = pathinfo(${D}file, PATHINFO_FILENAME);
+                            ${D}stmtPost = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
+                            ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
+                            ${D}newPostId = (int)${D}db->lastInsertId();
+
+                            ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
+                            ${D}stmtMedia->execute([
+                                ${D}newPostId,
+                                ${D}isVid ? 'VIDEO' : 'IMAGE',
+                                ${D}proxyUrl,
+                                ${D}proxyUrl
+                            ]);
+
+                            ${D}importedPosts++;
+
+                            if (!${D}coverSet && ${D}isImg) {
+                                ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}proxyUrl, ${D}groupId]);
+                                ${D}coverSet = true;
+                            }
+                        }
+                    }
+
+                    ${D}importedGroups++;
+                }
+
+                ${D}db->commit();
+                echo json_encode([
+                    "status" => "OK",
+                    "imported_groups" => ${D}importedGroups,
+                    "imported_posts" => ${D}importedPosts
+                ]);
+            } catch (Exception ${D}e) {
+                if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.7. STREAMING/PROXY DE MEDIOS DESDE VOLUMEN DEL SYNOLOGY NAS
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'media_proxy') || str_ends_with(${D}uri, '/media_proxy'))) {
+            ${D}filePath = ${D}_GET['path'] ?? '';
+            if (empty(${D}filePath) || !file_exists(${D}filePath)) {
+                http_response_code(404);
+                echo "Archivo multimedia no encontrado en NAS";
+                exit;
+            }
+
+            ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
+            ${D}mimes = [
+                'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
+                'webp' => 'image/webp', 'gif' => 'image/gif',
+                'mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'mkv' => 'video/x-matroska',
+                'webm' => 'video/webm', 'avi' => 'video/x-msvideo', '3gp' => 'video/3gpp'
+            ];
+            ${D}mime = ${D}mimes[${D}ext] ?? 'application/octet-stream';
+
+            header('Content-Type: ' . ${D}mime);
+            header('Content-Length: ' . filesize(${D}filePath));
+            header('Accept-Ranges: bytes');
+            header('Cache-Control: public, max-age=86400');
+            @readfile(${D}filePath);
+            exit;
+        }
+
         // 4. CREAR PUBLICACIÓN CON ARCHIVO REAL Y MINIATURA/DURACIÓN (Y SOPORTE IS_SHORT)
         if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'post') || matchRoute(${D}action, ${D}uri, 'posts') || str_ends_with(${D}uri, '/post') || str_ends_with(${D}uri, '/posts'))) {
             ${D}userId = (int)(${D}_POST['user_id'] ?? 1);
@@ -584,13 +856,14 @@ object SynologyScripts {
             ${D}location = ${D}_POST['location'] ?? null;
             ${D}durationLabel = trim(${D}_POST['duration_label'] ?? '');
             ${D}isShort = (int)(${D}_POST['is_short'] ?? 0);
+            ${D}groupId = !empty(${D}_POST['group_id']) ? (int)${D}_POST['group_id'] : null;
 
             try {
                 ${D}db = getDB();
                 ${D}db->beginTransaction();
 
-                ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?)");
-                ${D}stmt->execute([${D}userId, ${D}text, ${D}feeling, ${D}location, ${D}isShort]);
+                ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
+                ${D}stmt->execute([${D}userId, ${D}groupId, ${D}text, ${D}feeling, ${D}location, ${D}isShort]);
                 ${D}postId = ${D}db->lastInsertId();
 
                 if (isset(${D}_FILES['photo'])) {

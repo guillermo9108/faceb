@@ -5,10 +5,11 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [PostEntity::class], version = 3, exportSchema = false)
+@Database(entities = [PostEntity::class, GroupEntity::class], version = 4, exportSchema = false)
 abstract class FamilyDatabase : RoomDatabase() {
 
     abstract fun postDao(): PostDao
+    abstract fun groupDao(): GroupDao
 
     companion object {
         @Volatile

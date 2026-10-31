@@ -20,12 +20,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.OndemandVideo
@@ -257,7 +259,17 @@ fun HeaderBar(
                     modifier = Modifier.weight(1f).testTag("tab_shorts")
                 )
 
-                // Tab 3: Grupos / Familia
+                // Tab: Grupos Familiares
+                FacebookTabItem(
+                    selected = selectedTab == FeedTab.GROUPS,
+                    onClick = { onTabSelected(FeedTab.GROUPS) },
+                    iconSelected = Icons.Default.Groups,
+                    iconUnselected = Icons.Outlined.Groups,
+                    contentDescription = "Grupos",
+                    modifier = Modifier.weight(1f).testTag("tab_groups")
+                )
+
+                // Tab 3: Familia / Perfiles
                 FacebookTabItem(
                     selected = selectedTab == FeedTab.MEMBERS,
                     onClick = { onTabSelected(FeedTab.MEMBERS) },

@@ -18,6 +18,9 @@ interface PostDao {
     @Query("SELECT * FROM cached_posts WHERE isShort = 1 ORDER BY createdAt DESC")
     fun getShortsPosts(): Flow<List<PostEntity>>
 
+    @Query("SELECT * FROM cached_posts WHERE groupId = :groupId ORDER BY createdAt DESC")
+    fun getPostsByGroupId(groupId: Int): Flow<List<PostEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPosts(posts: List<PostEntity>)
 

@@ -293,6 +293,40 @@ class ExampleRobolectricTest {
         assertTrue("index.php must set time limit 0", indexPhp.contains("set_time_limit(0)"))
         assertTrue("index.php must set 4096M upload size", indexPhp.contains("4096M"))
     }
+
+    @Test
+    fun `synology backend scripts include family groups and admin folder scanning endpoints`() {
+        val config = com.example.model.NasConfig()
+        val zipBytes = com.example.util.SynologyZipExporter.createZipBytes(config)
+        val entries = mutableMapOf<String, String>()
+        val zis = java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(zipBytes))
+        var entry = zis.nextEntry
+        while (entry != null) {
+            val content = zis.readBytes().toString(Charsets.UTF_8)
+            entries[entry.name] = content
+            entry = zis.nextEntry
+        }
+        zis.close()
+
+        val schemaSql = entries["schema.sql"] ?: ""
+        assertTrue("schema.sql must contain family_groups table", schemaSql.contains("CREATE TABLE IF NOT EXISTS family_groups"))
+        assertTrue("schema.sql must contain group_id column in posts", schemaSql.contains("group_id"))
+
+        val indexPhp = entries["index.php"] ?: ""
+        assertTrue("index.php must contain groups endpoint", indexPhp.contains("groups"))
+        assertTrue("index.php must contain group posts endpoint", indexPhp.contains("group/posts"))
+        assertTrue("index.php must contain admin scan folders endpoint", indexPhp.contains("admin/scan_folders"))
+        assertTrue("index.php must contain admin import groups endpoint", indexPhp.contains("admin/import_groups"))
+        assertTrue("index.php must contain media proxy endpoint", indexPhp.contains("media_proxy"))
+    }
+
+    @Test
+    fun `repository initializes with groups flow`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = FamilyRepository(context)
+        assertNotNull(repo.groups)
+        assertEquals(0, repo.groups.value.size)
+    }
 }
 
 

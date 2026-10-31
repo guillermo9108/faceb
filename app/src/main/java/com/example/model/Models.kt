@@ -55,7 +55,29 @@ data class Post(
     val feeling: String? = null,
     val isPinned: Boolean = false,
     val location: String? = null,
-    val isShort: Boolean = false
+    val isShort: Boolean = false,
+    val groupId: Int? = null,
+    val groupName: String? = null
+)
+
+data class FamilyGroup(
+    val id: Int,
+    val name: String,
+    val folderPath: String,
+    val description: String = "",
+    val coverPhotoUrl: String? = null,
+    val postsCount: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class ScannedFolder(
+    val folderName: String,
+    val folderPath: String,
+    val mediaCount: Int = 0,
+    val photosCount: Int = 0,
+    val videosCount: Int = 0,
+    val isAlreadyImported: Boolean = false,
+    val isSelected: Boolean = false
 )
 
 enum class StoryType {

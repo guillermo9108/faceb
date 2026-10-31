@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ReactionType
 import com.example.model.NotificationType
+import com.example.ui.components.AdminFolderScanDialog
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
@@ -33,6 +34,7 @@ import com.example.ui.components.StoryViewerDialog
 import com.example.ui.components.VideoPlayerDialog
 import com.example.ui.screens.FamilyMembersScreen
 import com.example.ui.screens.FeedScreen
+import com.example.ui.screens.GroupsScreen
 import com.example.ui.screens.LoginRegisterScreen
 import com.example.ui.screens.MenuScreen
 import com.example.ui.screens.NasConfigScreen
@@ -85,6 +87,13 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isUserLoggedIn by viewModel.isUserLoggedIn.collectAsState()
     val shorts by viewModel.shorts.collectAsState()
     val isProfileDialogOpen by viewModel.isProfileDialogOpen.collectAsState()
+    val groups by viewModel.groups.collectAsState()
+    val selectedGroupForViewing by viewModel.selectedGroupForViewing.collectAsState()
+    val groupPosts by viewModel.groupPosts.collectAsState()
+    val isScanFoldersDialogOpen by viewModel.isScanFoldersDialogOpen.collectAsState()
+    val scannedFolders by viewModel.scannedFolders.collectAsState()
+    val isScanningFolders by viewModel.isScanningFolders.collectAsState()
+    val isImportingFolders by viewModel.isImportingFolders.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -208,6 +217,26 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onShortViewed = { viewModel.markShortAsViewed(it) }
                     )
                 }
+                FeedTab.GROUPS -> {
+                    GroupsScreen(
+                        currentMember = currentMember,
+                        groups = groups,
+                        selectedGroup = selectedGroupForViewing,
+                        groupPosts = groupPosts,
+                        baseUrl = nasConfig.baseUrl,
+                        onSelectGroup = { group -> viewModel.openGroup(group) },
+                        onCloseGroupDetail = { viewModel.closeGroup() },
+                        onOpenScanDialog = { viewModel.openScanFoldersDialog() },
+                        onRefreshGroups = { viewModel.refreshGroups() },
+                        onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
+                        onCommentClick = { post -> viewModel.openCommentsSheet(post) },
+                        onPlayVideo = { url, title, author, dur ->
+                            activeVideoToPlay = Triple(url, title, dur)
+                        },
+                        onTogglePin = { postId -> viewModel.togglePinPost(postId) },
+                        onDeletePost = { postId -> viewModel.deletePost(postId) }
+                    )
+                }
                 FeedTab.MEMBERS -> {
                     FamilyMembersScreen(
                         currentMember = currentMember,
@@ -246,6 +275,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
                         onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
                         onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
+                        onNavigateToGroups = { viewModel.setSelectedTab(FeedTab.GROUPS) },
                         onOpenProfileSettings = { viewModel.openProfileDialog() },
                         onLogout = { viewModel.logout() }
                     )
@@ -342,6 +372,20 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             onConfirm = { ip, port, path -> viewModel.confirmNasIp(ip, port, path) },
             onRetryAutoDetect = { viewModel.retryAutoDetectNas() },
             onDismiss = { viewModel.dismissNasIpConfirmation() }
+        )
+    }
+
+    // Modal de Escaneo y Sincronización de Carpetas del NAS para el Administrador
+    if (isScanFoldersDialogOpen) {
+        AdminFolderScanDialog(
+            scannedFolders = scannedFolders,
+            isScanning = isScanningFolders,
+            isImporting = isImportingFolders,
+            onScanPath = { path -> viewModel.scanFolders(path) },
+            onToggleFolder = { path -> viewModel.toggleFolderSelection(path) },
+            onSelectAll = { select -> viewModel.selectAllFolders(select) },
+            onImportSelected = { viewModel.importSelectedFolders() },
+            onDismiss = { viewModel.closeScanFoldersDialog() }
         )
     }
 }

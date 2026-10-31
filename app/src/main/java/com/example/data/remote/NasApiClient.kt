@@ -3,11 +3,13 @@ package com.example.data.remote
 import android.content.Context
 import android.net.Uri
 import com.example.model.Comment
+import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.ScannedFolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -439,9 +441,19 @@ class NasApiClient(
         val mediaItems = mutableListOf<MediaItem>()
         val filePath = p.optString("file_path", "")
         if (filePath.isNotBlank()) {
-            val fullMediaUrl = "$baseUrl/$filePath"
+            val fullMediaUrl = when {
+                filePath.startsWith("http://") || filePath.startsWith("https://") -> filePath
+                filePath.startsWith("index.php") -> "$baseUrl/$filePath"
+                filePath.startsWith("/") -> "$baseUrl$filePath"
+                else -> "$baseUrl/$filePath"
+            }
             val thumbPath = p.optString("thumb_path", filePath)
-            val fullThumbUrl = "$baseUrl/$thumbPath"
+            val fullThumbUrl = when {
+                thumbPath.startsWith("http://") || thumbPath.startsWith("https://") -> thumbPath
+                thumbPath.startsWith("index.php") -> "$baseUrl/$thumbPath"
+                thumbPath.startsWith("/") -> "$baseUrl$thumbPath"
+                else -> "$baseUrl/$thumbPath"
+            }
             val mediaTypeStr = p.optString("media_type", "IMAGE")
 
             mediaItems.add(
@@ -481,6 +493,9 @@ class NasApiClient(
             }
         }
 
+        val groupId = if (p.has("group_id") && !p.isNull("group_id")) p.getInt("group_id") else null
+        val groupName = p.optString("group_name").takeIf { it.isNotBlank() }
+
         return Post(
             id = postId,
             author = author,
@@ -492,8 +507,195 @@ class NasApiClient(
             feeling = p.optString("feeling").takeIf { it.isNotBlank() },
             location = p.optString("location").takeIf { it.isNotBlank() },
             isPinned = p.optInt("is_pinned", 0) == 1,
-            isShort = p.optInt("is_short", 0) == 1
+            isShort = p.optInt("is_short", 0) == 1,
+            groupId = groupId,
+            groupName = groupName
         )
+    }
+
+    /**
+     * Obtiene la lista de grupos familiares desde MariaDB en el NAS.
+     */
+    suspend fun fetchGroups(ip: String, port: Int, path: String): Result<List<FamilyGroup>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "groups")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "groups")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val groupsArray = jsonObject.optJSONArray("groups") ?: JSONArray()
+            val groupsList = mutableListOf<FamilyGroup>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+
+            for (i in 0 until groupsArray.length()) {
+                val g = groupsArray.getJSONObject(i)
+                val rawCover = g.optString("cover_photo_url", "")
+                val fullCover = if (rawCover.isNotBlank()) {
+                    if (rawCover.startsWith("http://") || rawCover.startsWith("https://")) rawCover
+                    else "$baseUrl/$rawCover"
+                } else null
+
+                groupsList.add(
+                    FamilyGroup(
+                        id = g.getInt("id"),
+                        name = g.optString("name", "Grupo"),
+                        folderPath = g.optString("folder_path", ""),
+                        description = g.optString("description", ""),
+                        coverPhotoUrl = fullCover,
+                        postsCount = g.optInt("posts_count", 0),
+                        createdAt = parseTimestamp(g.optString("created_at"))
+                    )
+                )
+            }
+            Result.success(groupsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Obtiene las publicaciones asociadas a un grupo familiar específico.
+     */
+    suspend fun fetchGroupPosts(ip: String, port: Int, path: String, groupId: Int): Result<List<Post>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "group/posts", "group_id=$groupId")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "group/posts", "group_id=$groupId")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val postsArray = jsonObject.optJSONArray("posts") ?: JSONArray()
+            val postsList = mutableListOf<Post>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+
+            for (i in 0 until postsArray.length()) {
+                val p = postsArray.getJSONObject(i)
+                postsList.add(parsePostFromJson(p, baseUrl))
+            }
+            Result.success(postsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Escanea carpetas con contenido multimedia en el almacenamiento del NAS (solo Administrador).
+     */
+    suspend fun scanNasFolders(ip: String, port: Int, path: String, basePath: String): Result<List<ScannedFolder>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            val encodedBase = java.net.URLEncoder.encode(basePath, "UTF-8")
+            var url = buildEndpointUrl(ip, port, currentPath, "admin/scan_folders", "base_path=$encodedBase")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "admin/scan_folders", "base_path=$encodedBase")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val foldersArray = jsonObject.optJSONArray("folders") ?: JSONArray()
+            val foldersList = mutableListOf<ScannedFolder>()
+
+            for (i in 0 until foldersArray.length()) {
+                val f = foldersArray.getJSONObject(i)
+                foldersList.add(
+                    ScannedFolder(
+                        folderName = f.optString("name", "Carpeta"),
+                        folderPath = f.optString("path", ""),
+                        mediaCount = f.optInt("media_count", 0),
+                        photosCount = f.optInt("photos_count", 0),
+                        videosCount = f.optInt("videos_count", 0),
+                        isAlreadyImported = f.optBoolean("already_imported", false),
+                        isSelected = false
+                    )
+                )
+            }
+            Result.success(foldersList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Importa las carpetas seleccionadas del NAS como grupos y publica sus fotos/vídeos (solo Administrador).
+     */
+    suspend fun importNasGroups(ip: String, port: Int, path: String, folderPaths: List<String>, adminUserId: Int): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "admin/import_groups")
+            val jsonBody = JSONObject().apply {
+                put("admin_user_id", adminUserId)
+                put("folder_paths", JSONArray(folderPaths))
+            }
+
+            val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            var response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "admin/import_groups")
+                    response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val imported = jsonObject.optInt("imported_groups", folderPaths.size)
+            Result.success(imported)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     /**

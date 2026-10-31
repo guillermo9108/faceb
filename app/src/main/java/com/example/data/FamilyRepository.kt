@@ -3,9 +3,12 @@ package com.example.data
 import android.content.Context
 import android.net.Uri
 import com.example.data.local.FamilyDatabase
+import com.example.data.local.GroupEntity
 import com.example.data.local.PostEntity
+import com.example.data.local.toEntity
 import com.example.data.remote.NasApiClient
 import com.example.model.Comment
+import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyNotification
 import com.example.model.FamilyStory
@@ -15,6 +18,7 @@ import com.example.model.NasConfig
 import com.example.model.NotificationType
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.ScannedFolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -147,6 +151,9 @@ class FamilyRepository(
     private val _shorts = MutableStateFlow<List<Post>>(emptyList())
     val shorts: StateFlow<List<Post>> = _shorts.asStateFlow()
 
+    private val _groups = MutableStateFlow<List<FamilyGroup>>(emptyList())
+    val groups: StateFlow<List<FamilyGroup>> = _groups.asStateFlow()
+
     // Sistema Real de Notificaciones
     private val _notifications = MutableStateFlow<List<FamilyNotification>>(emptyList())
     val notifications: StateFlow<List<FamilyNotification>> = _notifications.asStateFlow()
@@ -184,6 +191,13 @@ class FamilyRepository(
             database.postDao().getShortsPosts().collect { cachedShorts ->
                 if (_shorts.value.isEmpty() && cachedShorts.isNotEmpty()) {
                     _shorts.value = rankShorts(cachedShorts.map { it.toDomainPost(findMember(it.authorId)) })
+                }
+            }
+        }
+        scope.launch {
+            database.groupDao().getAllGroups().collect { cachedGroups ->
+                if (_groups.value.isEmpty() && cachedGroups.isNotEmpty()) {
+                    _groups.value = cachedGroups.map { it.toDomainGroup() }
                 }
             }
         }
@@ -393,6 +407,63 @@ class FamilyRepository(
                     }
                 }
             }
+        }
+        return result
+    }
+
+    suspend fun refreshGroups(): Result<List<FamilyGroup>> {
+        val config = _nasConfig.value
+        val result = apiClient.fetchGroups(config.ip, config.port, config.path)
+        result.onSuccess { list ->
+            _groups.value = list
+            scope.launch {
+                database.groupDao().insertGroups(list.map { it.toEntity() })
+            }
+        }
+        result.onFailure {
+            scope.launch {
+                database.groupDao().getAllGroups().collect { cached ->
+                    if (cached.isNotEmpty() && _groups.value.isEmpty()) {
+                        _groups.value = cached.map { it.toDomainGroup() }
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    suspend fun fetchGroupPosts(groupId: Int): Result<List<Post>> {
+        val config = _nasConfig.value
+        val result = apiClient.fetchGroupPosts(config.ip, config.port, config.path, groupId)
+        result.onSuccess { list ->
+            scope.launch {
+                database.postDao().insertPosts(list.map { it.toEntity() })
+            }
+            val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
+            com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, list)
+        }
+        result.onFailure {
+            scope.launch {
+                database.postDao().getPostsByGroupId(groupId).collect { cached ->
+                    // Cargar publicaciones cacheadas si offline
+                }
+            }
+        }
+        return result
+    }
+
+    suspend fun scanNasFolders(basePath: String): Result<List<ScannedFolder>> {
+        val config = _nasConfig.value
+        return apiClient.scanNasFolders(config.ip, config.port, config.path, basePath)
+    }
+
+    suspend fun importNasFolders(folderPaths: List<String>): Result<Int> {
+        val config = _nasConfig.value
+        val adminId = _currentMember.value.id
+        val result = apiClient.importNasGroups(config.ip, config.port, config.path, folderPaths, adminId)
+        result.onSuccess {
+            refreshGroups()
+            refreshFeed()
         }
         return result
     }
@@ -1083,7 +1154,9 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
         feeling = feeling,
         location = location,
         isPinned = isPinned,
-        isShort = isShort
+        isShort = isShort,
+        groupId = groupId,
+        groupName = groupName
     )
 }
 
@@ -1109,6 +1182,8 @@ private fun Post.toEntity(): PostEntity {
         commentsCount = comments.size,
         userReaction = userReaction?.name,
         isShort = isShort,
-        thumbUrl = firstMedia?.thumbnailUrl
+        thumbUrl = firstMedia?.thumbnailUrl,
+        groupId = groupId,
+        groupName = groupName
     )
 }
