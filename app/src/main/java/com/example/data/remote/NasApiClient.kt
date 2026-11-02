@@ -117,6 +117,40 @@ class NasApiClient(
     }
 
     /**
+     * Solicita la verificación y reparación/creación automática de todas las tablas en MariaDB (family_feed)
+     * ejecutando los DDL y migraciones pendientes en el Synology NAS.
+     */
+    suspend fun repairDatabase(ip: String, port: Int, path: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "repair_db")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "repair_db")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val msg = json.optString("message", "Tablas y base de datos verificadas y reparadas correctamente.")
+            Result.success(msg)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Obtiene los usuarios reales configurados en MariaDB 10.
      */
     suspend fun fetchUsers(ip: String, port: Int, path: String): Result<List<FamilyMember>> = withContext(Dispatchers.IO) {
@@ -133,6 +167,17 @@ class NasApiClient(
                     url = buildEndpointUrl(ip, port, currentPath, "users")
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
+                    val repairResult = repairDatabase(ip, port, currentPath)
+                    if (repairResult.isSuccess) {
+                        url = buildEndpointUrl(ip, port, currentPath, "users")
+                        response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                        body = response.body?.string() ?: ""
+                    }
                 }
             }
 
@@ -366,6 +411,17 @@ class NasApiClient(
             }
 
             if (!response.isSuccessful) {
+                if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
+                    val repairResult = repairDatabase(ip, port, currentPath)
+                    if (repairResult.isSuccess) {
+                        url = buildEndpointUrl(ip, port, currentPath, "feed")
+                        response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                        body = response.body?.string() ?: ""
+                    }
+                }
+            }
+
+            if (!response.isSuccessful) {
                 val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
@@ -403,6 +459,17 @@ class NasApiClient(
                     url = buildEndpointUrl(ip, port, currentPath, "shorts")
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
+                    val repairResult = repairDatabase(ip, port, currentPath)
+                    if (repairResult.isSuccess) {
+                        url = buildEndpointUrl(ip, port, currentPath, "shorts")
+                        response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                        body = response.body?.string() ?: ""
+                    }
                 }
             }
 
@@ -544,6 +611,17 @@ class NasApiClient(
                     url = buildEndpointUrl(ip, port, currentPath, "groups")
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
+                    val repairResult = repairDatabase(ip, port, currentPath)
+                    if (repairResult.isSuccess) {
+                        url = buildEndpointUrl(ip, port, currentPath, "groups")
+                        response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                        body = response.body?.string() ?: ""
+                    }
                 }
             }
 
@@ -782,6 +860,17 @@ class NasApiClient(
                     url = buildEndpointUrl(ip, port, currentPath, "stories")
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
+                    val repairResult = repairDatabase(ip, port, currentPath)
+                    if (repairResult.isSuccess) {
+                        url = buildEndpointUrl(ip, port, currentPath, "stories")
+                        response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                        body = response.body?.string() ?: ""
+                    }
                 }
             }
 
@@ -1313,7 +1402,7 @@ class NasApiClient(
             return "La base de datos 'family_feed' no existe en MariaDB. Se creará automáticamente al conectar o importa 'schema.sql'."
         }
         if (raw.contains("Table", ignoreCase = true) && raw.contains("doesn't exist", ignoreCase = true)) {
-            return "Faltan tablas en MariaDB. Se repararán automáticamente o importa 'schema.sql'."
+            return "Faltan tablas en MariaDB. Pulsa 'Reparar Tablas' para crearlas automáticamente o importa 'schema.sql'."
         }
 
         if (raw.contains("min-height:600px") || raw.contains("synoman") || raw.contains("Web Station")) {

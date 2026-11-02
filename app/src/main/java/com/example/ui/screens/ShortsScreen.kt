@@ -244,10 +244,6 @@ private fun ShortVideoItem(
     onLike: () -> Unit,
     onComment: () -> Unit
 ) {
-    var isPlaying by remember { mutableStateOf(false) }
-    var isBuffering by remember { mutableStateOf(true) }
-    var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
-
     val videoMedia = remember(post.mediaItems) {
         post.mediaItems.firstOrNull { it.type == MediaType.VIDEO } ?: post.mediaItems.firstOrNull()
     }
@@ -259,150 +255,24 @@ private fun ShortVideoItem(
         else ""
     }
 
-    val thumbFullUrl = remember(videoMedia, baseUrl) {
-        val rel = videoMedia?.thumbnailUrl
-        if (rel.isNullOrBlank()) null
-        else if (rel.startsWith("http://") || rel.startsWith("https://")) rel
-        else "$baseUrl/$rel"
-    }
-
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val localThumbModel = remember(thumbFullUrl) {
-        if (thumbFullUrl != null) com.example.util.OfflineMediaManager.getDisplayModel(context, thumbFullUrl) else null
-    }
     val isChunked = videoMedia?.isChunked == true && videoMedia.chunks.isNotEmpty()
     val chunks = videoMedia?.chunks ?: emptyList()
-    var currentChunkIndex by remember { mutableIntStateOf(0) }
-
-    val activeChunkUrl = if (isChunked && chunks.isNotEmpty()) chunks.first() else videoFullUrl
-    val localVideoUri = remember(activeChunkUrl) {
-        if (activeChunkUrl.isNotEmpty()) com.example.util.OfflineMediaManager.getPlayableMediaUri(context, activeChunkUrl) else Uri.EMPTY
-    }
-
-    LaunchedEffect(isActive, videoViewRef) {
-        val vv = videoViewRef ?: return@LaunchedEffect
-        if (isActive) {
-            vv.start()
-            isPlaying = true
-        } else {
-            vv.pause()
-            isPlaying = false
-        }
-    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = {
-                        val vv = videoViewRef ?: return@detectTapGestures
-                        if (vv.isPlaying) {
-                            vv.pause()
-                            isPlaying = false
-                        } else {
-                            vv.start()
-                            isPlaying = true
-                        }
-                    }
-                )
-            }
     ) {
-        // Thumbnail backdrop while loading
-        if (localThumbModel != null && !isPlaying) {
-            AsyncImage(
-                model = localThumbModel,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
+        if (videoFullUrl.isNotEmpty() || chunks.isNotEmpty()) {
+            com.example.ui.components.FamilyVideoPlayer(
+                videoUrl = videoFullUrl,
+                chunks = chunks,
+                isChunked = isChunked,
+                autoPlay = isActive,
+                isLooping = true,
+                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
                 modifier = Modifier.fillMaxSize()
             )
-        }
-
-        // Full Screen Video View with continuous chunk playback
-        if (activeChunkUrl.isNotEmpty()) {
-            AndroidView(
-                factory = { ctx ->
-                    VideoView(ctx).apply {
-                        layoutParams = FrameLayout.LayoutParams(
-                            FrameLayout.LayoutParams.MATCH_PARENT,
-                            FrameLayout.LayoutParams.MATCH_PARENT
-                        )
-                        setVideoURI(localVideoUri)
-                        setOnPreparedListener { mp ->
-                            mp.isLooping = !isChunked
-                            isBuffering = false
-                            if (isActive) {
-                                start()
-                                isPlaying = true
-                            }
-                        }
-                        setOnCompletionListener {
-                            // Reproducción continua y en bucle del siguiente fragmento del Short
-                            if (isChunked && chunks.isNotEmpty()) {
-                                currentChunkIndex = (currentChunkIndex + 1) % chunks.size
-                                val nextChunkUrl = chunks[currentChunkIndex]
-                                val nextChunkUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextChunkUrl)
-                                setVideoURI(nextChunkUri)
-                                if (isActive) {
-                                    start()
-                                    isPlaying = true
-                                }
-                            }
-                        }
-                        setOnInfoListener { _, what, _ ->
-                            if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) isBuffering = true
-                            if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) isBuffering = false
-                            true
-                        }
-                        setOnErrorListener { _, _, _ ->
-                            isBuffering = false
-                            true
-                        }
-                        videoViewRef = this
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        DisposableEffect(Unit) {
-            onDispose {
-                videoViewRef?.stopPlayback()
-            }
-        }
-
-        // Buffering spinner
-        if (isBuffering && videoFullUrl.isNotEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp)
-            }
-        }
-
-        // Pause icon overlay
-        AnimatedVisibility(
-            visible = !isPlaying && !isBuffering,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.5f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(38.dp)
-                )
-            }
         }
 
         // Gradient overlay for bottom readability

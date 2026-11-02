@@ -102,6 +102,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val scannedFolders by viewModel.scannedFolders.collectAsState()
     val isScanningFolders by viewModel.isScanningFolders.collectAsState()
     val isImportingFolders by viewModel.isImportingFolders.collectAsState()
+    val videoUploadProgress by viewModel.videoUploadProgress.collectAsState()
+    val isRepairingDb by viewModel.isRepairingDb.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -295,7 +297,9 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                     NasConfigScreen(
                         nasConfig = nasConfig,
                         onSaveConfig = { updatedConfig -> viewModel.updateNasSettings(updatedConfig) },
-                        onTestConnection = { viewModel.testNasConnection() }
+                        onTestConnection = { viewModel.testNasConnection() },
+                        onRepairDatabase = { viewModel.repairNasDatabase() },
+                        isRepairing = isRepairingDb
                     )
                 }
             }
@@ -397,5 +401,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             onImportSelected = { viewModel.importSelectedFolders() },
             onDismiss = { viewModel.closeScanFoldersDialog() }
         )
+    }
+
+    // Modal de Progreso Dual Secuencial (Fragmentación y Subida al NAS)
+    videoUploadProgress?.let { prog ->
+        com.example.ui.components.VideoUploadProgressDialog(progress = prog)
     }
 }

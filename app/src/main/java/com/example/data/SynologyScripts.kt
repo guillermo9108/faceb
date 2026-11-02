@@ -150,9 +150,9 @@ object SynologyScripts {
 
         function autoBootstrapDatabase(PDO ${D}pdo) {
             try {
-                // 1. REPARAR O CREAR TABLAS QUE NO EXISTAN
-                ${D}ddl = "
-                    CREATE TABLE IF NOT EXISTS users (
+                // 1. REPARAR O CREAR TABLAS QUE NO EXISTAN (Ejecución individual para máxima compatibilidad con MariaDB / MySQL)
+                ${D}tables = [
+                    "CREATE TABLE IF NOT EXISTS users (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         username VARCHAR(50) UNIQUE NOT NULL,
                         display_name VARCHAR(100) NOT NULL,
@@ -162,9 +162,9 @@ object SynologyScripts {
                         avatar_color_hex BIGINT DEFAULT 4280391411,
                         bio VARCHAR(255) DEFAULT '',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS family_groups (
+                    "CREATE TABLE IF NOT EXISTS family_groups (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         name VARCHAR(150) NOT NULL,
                         folder_path VARCHAR(255) NOT NULL,
@@ -175,9 +175,9 @@ object SynologyScripts {
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         UNIQUE KEY uq_group_folder (folder_path)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS posts (
+                    "CREATE TABLE IF NOT EXISTS posts (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         user_id INT NOT NULL,
                         group_id INT NULL DEFAULT NULL,
@@ -187,13 +187,12 @@ object SynologyScripts {
                         is_pinned TINYINT(1) DEFAULT 0,
                         is_short TINYINT(1) DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        CONSTRAINT fk_post_group FOREIGN KEY (group_id) REFERENCES family_groups(id) ON DELETE SET NULL,
                         INDEX idx_created (created_at),
                         INDEX idx_is_short (is_short),
                         INDEX idx_group (group_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS media (
+                    "CREATE TABLE IF NOT EXISTS media (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         post_id INT NOT NULL,
                         media_type VARCHAR(20) NOT NULL,
@@ -203,9 +202,9 @@ object SynologyScripts {
                         is_chunked TINYINT(1) DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_post (post_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS media_chunks (
+                    "CREATE TABLE IF NOT EXISTS media_chunks (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         post_id INT NOT NULL,
                         chunk_index INT NOT NULL,
@@ -214,27 +213,27 @@ object SynologyScripts {
                         duration_ms INT DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_chunks_post (post_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS comments (
+                    "CREATE TABLE IF NOT EXISTS comments (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         post_id INT NOT NULL,
                         user_id INT NOT NULL,
                         comment_text TEXT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_post_c (post_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS reactions (
+                    "CREATE TABLE IF NOT EXISTS reactions (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         post_id INT NOT NULL,
                         user_id INT NOT NULL,
                         reaction_type VARCHAR(20) NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE KEY uq_post_user (post_id, user_id)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-                    CREATE TABLE IF NOT EXISTS stories (
+                    "CREATE TABLE IF NOT EXISTS stories (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         user_id INT NOT NULL,
                         caption VARCHAR(255) NULL,
@@ -244,11 +243,18 @@ object SynologyScripts {
                         bg_color_hex BIGINT DEFAULT 4279892618,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_stories_time (created_at)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-                ";
-                ${D}pdo->exec(${D}ddl);
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+                ];
 
-                // 2. REPARACIÓN DE COLUMNAS ACTUALIZADAS
+                foreach (${D}tables as ${D}tableSql) {
+                    try {
+                        ${D}pdo->exec(${D}tableSql);
+                    } catch (Exception ${D}eTbl) {
+                        error_log("Error creating table: " . ${D}eTbl->getMessage());
+                    }
+                }
+
+                // 2. REPARACIÓN DE COLUMNAS ACTUALIZADAS Y CLAVES FORÁNEAS
                 try {
                     ${D}pdo->exec("ALTER TABLE posts ADD COLUMN is_short TINYINT(1) DEFAULT 0");
                 } catch (Exception ${D}eCol) {}
@@ -279,14 +285,24 @@ object SynologyScripts {
 
                 // 3. CREACIÓN EXCLUSIVA DE USUARIO ADMIN SOLO SI LA BD ES NUEVA
                 // Si la BD ya existe, no se toca ni recrea el usuario admin, protegiendo credenciales
-                ${D}countQuery = ${D}pdo->query("SELECT COUNT(*) FROM users");
-                ${D}userCount = ${D}countQuery ? (int)${D}countQuery->fetchColumn() : 0;
+                try {
+                    ${D}countQuery = ${D}pdo->query("SELECT COUNT(*) FROM users");
+                    ${D}userCount = ${D}countQuery ? (int)${D}countQuery->fetchColumn() : 0;
 
-                if (${D}userCount === 0) {
-                    ${D}hash = password_hash('admin', PASSWORD_DEFAULT);
-                    ${D}stmt = ${D}pdo->prepare("INSERT INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES (1, 'admin', 'Administrador', 'Administrador', ?, '👑', 4280391411, 'Cuenta administradora familiar')");
-                    ${D}stmt->execute([${D}hash]);
+                    if (${D}userCount === 0) {
+                        ${D}hash = password_hash('admin', PASSWORD_DEFAULT);
+                        ${D}stmt = ${D}pdo->prepare("INSERT INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES (1, 'admin', 'Administrador', 'Administrador', ?, '👑', 4280391411, 'Cuenta administradora familiar')");
+                        ${D}stmt->execute([${D}hash]);
+                    }
+                } catch (Exception ${D}eUser) {
+                    error_log("Error seeding default admin: " . ${D}eUser->getMessage());
                 }
+
+                // 4. ASEGURAR CARPETAS PARA ARCHIVOS MULTIMEDIA EN EL NAS
+                ${D}uploadDir = __DIR__ . '/uploads';
+                if (!is_dir(${D}uploadDir . '/originals')) @mkdir(${D}uploadDir . '/originals', 0777, true);
+                if (!is_dir(${D}uploadDir . '/thumbs')) @mkdir(${D}uploadDir . '/thumbs', 0777, true);
+                if (!is_dir(${D}uploadDir . '/chunks')) @mkdir(${D}uploadDir . '/chunks', 0777, true);
             } catch (Exception ${D}ex) {
                 error_log("Bootstrap DB error: " . ${D}ex->getMessage());
             }
@@ -300,6 +316,7 @@ object SynologyScripts {
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES   => false,
                     PDO::ATTR_TIMEOUT            => 5,
+                    PDO::MYSQL_ATTR_MULTI_STATEMENTS => true,
                 ];
 
                 try {
@@ -403,6 +420,34 @@ object SynologyScripts {
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["status" => "ERROR", "message" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 1.1. REPARACIÓN / INICIALIZACIÓN AUTOMÁTICA DE BASE DE DATOS Y TABLAS
+        if (matchRoute(${D}action, ${D}uri, 'repair_db') || matchRoute(${D}action, ${D}uri, 'repair') || matchRoute(${D}action, ${D}uri, 'init_schema') || matchRoute(${D}action, ${D}uri, 'setup_db')) {
+            try {
+                ${D}db = getDB();
+                autoBootstrapDatabase(${D}db);
+
+                ${D}uploadDir = __DIR__ . '/uploads';
+                if (!is_dir(${D}uploadDir . '/originals')) @mkdir(${D}uploadDir . '/originals', 0777, true);
+                if (!is_dir(${D}uploadDir . '/thumbs')) @mkdir(${D}uploadDir . '/thumbs', 0777, true);
+                if (!is_dir(${D}uploadDir . '/chunks')) @mkdir(${D}uploadDir . '/chunks', 0777, true);
+
+                ${D}tablesStmt = ${D}db->query("SHOW TABLES");
+                ${D}tables = ${D}tablesStmt ? ${D}tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
+
+                echo json_encode([
+                    "status" => "OK",
+                    "message" => "Tablas en MariaDB verificadas y reparadas exitosamente.",
+                    "database" => DB_NAME,
+                    "tables" => ${D}tables,
+                    "time" => date("Y-m-d H:i:s")
+                ]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["status" => "ERROR", "error" => ${D}e->getMessage()]);
             }
             exit;
         }
@@ -583,6 +628,33 @@ object SynologyScripts {
                 ${D}posts = ${D}stmt->fetchAll();
                 echo json_encode(["posts" => ${D}posts]);
             } catch (Exception ${D}e) {
+                if (str_contains(${D}e->getMessage(), "doesn't exist") || str_contains(${D}e->getMessage(), "Base table") || str_contains(${D}e->getMessage(), "Unknown column")) {
+                    try {
+                        autoBootstrapDatabase(${D}db);
+                        ${D}stmt = ${D}db->query("
+                            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                                   g.name as group_name,
+                                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                                   (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
+                                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                            FROM posts p
+                            JOIN users u ON p.user_id = u.id
+                            LEFT JOIN family_groups g ON g.id = p.group_id
+                            LEFT JOIN media m ON m.post_id = p.id
+                            WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                            ORDER BY p.is_pinned DESC, p.created_at DESC
+                            LIMIT 50
+                        ");
+                        ${D}posts = ${D}stmt->fetchAll();
+                        echo json_encode(["posts" => ${D}posts]);
+                        exit;
+                    } catch (Exception ${D}retryEx) {
+                        http_response_code(500);
+                        echo json_encode(["error" => ${D}retryEx->getMessage()]);
+                        exit;
+                    }
+                }
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
             }

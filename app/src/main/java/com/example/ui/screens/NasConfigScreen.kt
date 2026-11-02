@@ -37,6 +37,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -61,12 +62,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import com.example.data.SynologyScripts
@@ -81,6 +85,8 @@ fun NasConfigScreen(
     nasConfig: NasConfig,
     onSaveConfig: (NasConfig) -> Unit,
     onTestConnection: () -> Unit,
+    onRepairDatabase: (() -> Unit)? = null,
+    isRepairing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -212,19 +218,42 @@ fun NasConfigScreen(
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = nasConfig.lastError ?: "",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    color = Color(0xFFC62828),
-                                    fontWeight = FontWeight.Medium
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = nasConfig.lastError ?: "",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = Color(0xFFC62828),
+                                        fontWeight = FontWeight.Medium
+                                    )
                                 )
-                            )
+                            }
+                            if (onRepairDatabase != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                FilledTonalButton(
+                                    onClick = onRepairDatabase,
+                                    enabled = !isRepairing,
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = Color(0xFFC62828),
+                                        contentColor = Color.White
+                                    ),
+                                    modifier = Modifier.fillMaxWidth().testTag("repair_db_error_button")
+                                ) {
+                                    if (isRepairing) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Reparando y creando tablas...", fontSize = 12.sp)
+                                    } else {
+                                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Reparar y crear tablas en MariaDB automáticamente", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -446,6 +475,26 @@ fun NasConfigScreen(
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Guardar Parámetros y Credenciales BD", fontWeight = FontWeight.Bold)
+                }
+
+                if (onRepairDatabase != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = onRepairDatabase,
+                        enabled = !isRepairing,
+                        modifier = Modifier.fillMaxWidth().testTag("manual_repair_db_button"),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        if (isRepairing) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Verificando y reparando MariaDB...")
+                        } else {
+                            Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp), tint = FacebookBlue)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Verificar / Reparar Tablas MariaDB en Synology", color = FacebookBlue, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
             }
         }

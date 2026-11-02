@@ -19,6 +19,8 @@ import com.example.model.NotificationType
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
+import com.example.model.UploadStage
+import com.example.model.VideoUploadProgress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -793,6 +795,22 @@ class FamilyRepository(
     }
 
     /**
+     * Solicita al NAS la verificación y reparación/creación de todas las tablas en MariaDB.
+     */
+    suspend fun repairDatabase(): Result<String> = withContext(Dispatchers.IO) {
+        val config = _nasConfig.value
+        val result = apiClient.repairDatabase(config.ip, config.port, config.path)
+        if (result.isSuccess) {
+            _nasConfig.update { it.copy(isConnected = true, lastError = null) }
+            refreshFeed()
+        } else {
+            val err = result.exceptionOrNull()?.message ?: "Error al reparar tablas"
+            _nasConfig.update { it.copy(lastError = err) }
+        }
+        result
+    }
+
+    /**
      * Sincronización real con Synology Web Station y MariaDB 10.
      */
     suspend fun refreshFeed(): Result<List<Post>> {
@@ -960,7 +978,7 @@ class FamilyRepository(
 
     /**
      * Sube un vídeo fraccionándolo en partes pequeñas independientes (Zero-Transcoding) antes de subirlas al NAS,
-     * permitiendo subidas resilientes con reintento automático por fragmento y reproducción continua sin interrupción.
+     * emitiendo progreso dual en tiempo real (fragmentación y posterior subida por fragmentos).
      */
     suspend fun uploadChunkedVideoPost(
         contentText: String,
@@ -969,15 +987,54 @@ class FamilyRepository(
         location: String? = null,
         isShort: Boolean = false,
         groupId: Int? = null,
-        onProgress: (step: String, progressFraction: Float) -> Unit = { _, _ -> }
+        onProgress: (step: String, progressFraction: Float) -> Unit = { _, _ -> },
+        onDetailedProgress: (VideoUploadProgress) -> Unit = {}
     ): Result<Int> {
         val config = _nasConfig.value
         val author = _currentMember.value
 
         onProgress("Fragmentando vídeo...", 0.05f)
-        val sliceResult = com.example.util.VideoChunkingManager.sliceVideo(context, videoUri)
+        onDetailedProgress(
+            VideoUploadProgress(
+                stage = UploadStage.SLICING,
+                sliceProgress = 0.05f,
+                uploadProgress = 0f,
+                currentChunk = 1,
+                totalChunks = 1,
+                statusMessage = "Iniciando análisis y fragmentación..."
+            )
+        )
+
+        val sliceResult = com.example.util.VideoChunkingManager.sliceVideo(
+            context = context,
+            videoUri = videoUri,
+            onProgress = { sliceProg, cur, estTotal ->
+                onProgress("Fragmentando vídeo: ${(sliceProg * 100).toInt()}%...", sliceProg * 0.3f)
+                onDetailedProgress(
+                    VideoUploadProgress(
+                        stage = UploadStage.SLICING,
+                        sliceProgress = sliceProg,
+                        uploadProgress = 0f,
+                        currentChunk = cur,
+                        totalChunks = estTotal,
+                        statusMessage = "Fragmentando vídeo ${(sliceProg * 100).toInt()}% (Parte $cur de $estTotal)"
+                    )
+                )
+            }
+        )
+
         if (sliceResult.isFailure) {
             onProgress("Subiendo vídeo...", 0.2f)
+            onDetailedProgress(
+                VideoUploadProgress(
+                    stage = UploadStage.UPLOADING,
+                    sliceProgress = 1.0f,
+                    uploadProgress = 0.2f,
+                    currentChunk = 1,
+                    totalChunks = 1,
+                    statusMessage = "Subiendo archivo directo..."
+                )
+            )
             return addPost(
                 contentText = contentText,
                 mediaUri = videoUri,
@@ -990,10 +1047,32 @@ class FamilyRepository(
         val sliceData = sliceResult.getOrThrow()
         val totalChunks = sliceData.chunkFiles.size
 
+        onDetailedProgress(
+            VideoUploadProgress(
+                stage = UploadStage.UPLOADING,
+                sliceProgress = 1.0f,
+                uploadProgress = 0f,
+                currentChunk = 1,
+                totalChunks = totalChunks,
+                statusMessage = "Comenzando subida de $totalChunks fragmentos..."
+            )
+        )
+
         try {
             for ((index, chunkFile) in sliceData.chunkFiles.withIndex()) {
-                val baseProgress = 0.10f + (0.75f * (index.toFloat() / totalChunks.toFloat()))
+                val uploadFraction = index.toFloat() / totalChunks.toFloat()
+                val baseProgress = 0.10f + (0.75f * uploadFraction)
                 onProgress("Subiendo fragmento ${index + 1} de $totalChunks...", baseProgress)
+                onDetailedProgress(
+                    VideoUploadProgress(
+                        stage = UploadStage.UPLOADING,
+                        sliceProgress = 1.0f,
+                        uploadProgress = uploadFraction,
+                        currentChunk = index + 1,
+                        totalChunks = totalChunks,
+                        statusMessage = "Subiendo fragmento ${index + 1} de $totalChunks (${(uploadFraction * 100).toInt()}%)"
+                    )
+                )
 
                 var chunkSuccess = false
                 var lastChunkError: Throwable? = null
@@ -1018,11 +1097,33 @@ class FamilyRepository(
                 }
 
                 if (!chunkSuccess) {
-                    return Result.failure(Exception("Error subiendo fragmento ${index + 1}/$totalChunks: ${lastChunkError?.message}"))
+                    val errorMsg = "Error subiendo fragmento ${index + 1}/$totalChunks: ${lastChunkError?.message}"
+                    onDetailedProgress(
+                        VideoUploadProgress(
+                            stage = UploadStage.ERROR,
+                            sliceProgress = 1.0f,
+                            uploadProgress = uploadFraction,
+                            currentChunk = index + 1,
+                            totalChunks = totalChunks,
+                            statusMessage = errorMsg
+                        )
+                    )
+                    return Result.failure(Exception(errorMsg))
                 }
             }
 
             onProgress("Finalizando publicación...", 0.90f)
+            onDetailedProgress(
+                VideoUploadProgress(
+                    stage = UploadStage.FINALIZING,
+                    sliceProgress = 1.0f,
+                    uploadProgress = 1.0f,
+                    currentChunk = totalChunks,
+                    totalChunks = totalChunks,
+                    statusMessage = "Finalizando publicación en el servidor..."
+                )
+            )
+
             val finalizeResult = apiClient.finalizeChunkedVideo(
                 ip = config.ip,
                 port = config.port,
@@ -1041,6 +1142,16 @@ class FamilyRepository(
 
             finalizeResult.onSuccess { postId ->
                 onProgress("¡Completado!", 1.0f)
+                onDetailedProgress(
+                    VideoUploadProgress(
+                        stage = UploadStage.COMPLETED,
+                        sliceProgress = 1.0f,
+                        uploadProgress = 1.0f,
+                        currentChunk = totalChunks,
+                        totalChunks = totalChunks,
+                        statusMessage = "¡Vídeo publicado con éxito!"
+                    )
+                )
                 scope.launch {
                     refreshFeed()
                     refreshShorts()

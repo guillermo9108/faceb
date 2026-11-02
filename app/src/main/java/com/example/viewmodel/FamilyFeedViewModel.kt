@@ -12,6 +12,8 @@ import com.example.model.NasConfig
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
+import com.example.model.UploadStage
+import com.example.model.VideoUploadProgress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -87,6 +89,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedGroupForViewing = MutableStateFlow<FamilyGroup?>(null)
     val selectedGroupForViewing: StateFlow<FamilyGroup?> = _selectedGroupForViewing.asStateFlow()
 
+    private val _isRepairingDb = MutableStateFlow(false)
+    val isRepairingDb: StateFlow<Boolean> = _isRepairingDb.asStateFlow()
+
     private val _groupPosts = MutableStateFlow<List<Post>>(emptyList())
     val groupPosts: StateFlow<List<Post>> = _groupPosts.asStateFlow()
 
@@ -113,6 +118,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _uploadProgressFraction = MutableStateFlow(0f)
     val uploadProgressFraction: StateFlow<Float> = _uploadProgressFraction.asStateFlow()
+
+    private val _videoUploadProgress = MutableStateFlow<VideoUploadProgress?>(null)
+    val videoUploadProgress: StateFlow<VideoUploadProgress?> = _videoUploadProgress.asStateFlow()
 
     val isNasDetected = repository.isNasDetected
     val isAutoDetectingNas = repository.isAutoDetecting
@@ -362,6 +370,23 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun repairNasDatabase() {
+        viewModelScope.launch {
+            _isRepairingDb.value = true
+            showStatus("Reparando y creando tablas en MariaDB...")
+            val result = repository.repairDatabase()
+            _isRepairingDb.value = false
+            result.fold(
+                onSuccess = { msg ->
+                    showStatus("¡Éxito! $msg")
+                },
+                onFailure = { error ->
+                    showStatus("Fallo al reparar tablas: ${error.localizedMessage}")
+                }
+            )
+        }
+    }
+
     fun createPost(
         text: String,
         mediaUri: Uri? = null,
@@ -398,9 +423,16 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                         _uploadProgress.value = step
                         _uploadProgressFraction.value = fraction
                         showStatus(step)
+                    },
+                    onDetailedProgress = { detailed ->
+                        _videoUploadProgress.value = detailed
                     }
                 )
 
+                if (result.isSuccess) {
+                    kotlinx.coroutines.delay(1000)
+                }
+                _videoUploadProgress.value = null
                 _uploadProgress.value = null
                 _uploadProgressFraction.value = 0f
 

@@ -1,8 +1,8 @@
 package com.example.ui.components
 
-import android.media.MediaPlayer
-import android.net.Uri
-import android.widget.VideoView
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,15 +14,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
@@ -34,14 +31,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -49,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -56,10 +53,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.example.ui.theme.FacebookBlue
+import com.example.util.OfflineMediaManager
 import com.example.util.VideoHelper
 import kotlinx.coroutines.delay
 
+@OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerDialog(
     videoUrl: String,
@@ -69,33 +75,91 @@ fun VideoPlayerDialog(
     chunks: List<String> = emptyList(),
     onDismiss: () -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
-    var currentPositionMs by remember { mutableIntStateOf(0) }
-    var totalDurationMs by remember { mutableIntStateOf(0) }
+    var currentPositionMs by remember { mutableLongStateOf(0L) }
+    var totalDurationMs by remember { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
-    var currentChunkIndex by remember { mutableIntStateOf(0) }
+    var currentMediaItemIndex by remember { mutableStateOf(0) }
 
-    var videoViewRef by remember { mutableStateOf<VideoView?>(null) }
+    val exoPlayer = remember(context) {
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(1000, 30000, 500, 1000)
+            .build()
+
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
+                playWhenReady = true
+            }
+    }
+
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isBuffering = (playbackState == Player.STATE_BUFFERING)
+                if (playbackState == Player.STATE_READY) {
+                    val dur = exoPlayer.duration
+                    if (dur > 0) totalDurationMs = dur
+                }
+                if (playbackState == Player.STATE_ENDED) {
+                    isPlaying = false
+                    isEnded = true
+                    showControls = true
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                currentMediaItemIndex = exoPlayer.currentMediaItemIndex
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+                if (playing) {
+                    isEnded = false
+                    isBuffering = false
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.stop()
+            exoPlayer.release()
+        }
+    }
+
+    LaunchedEffect(videoUrl, chunks) {
+        exoPlayer.clearMediaItems()
+        if (chunks.isNotEmpty()) {
+            val items = chunks.map { cUrl ->
+                val pUri = OfflineMediaManager.getPlayableMediaUri(context, cUrl)
+                MediaItem.fromUri(pUri)
+            }
+            exoPlayer.setMediaItems(items)
+        } else if (videoUrl.isNotBlank()) {
+            val pUri = OfflineMediaManager.getPlayableMediaUri(context, videoUrl)
+            exoPlayer.setMediaItem(MediaItem.fromUri(pUri))
+        }
+        exoPlayer.prepare()
+        exoPlayer.play()
+    }
 
     // Actualizador periódico de posición de reproducción
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
-            videoViewRef?.let { vv ->
-                if (vv.isPlaying) {
-                    currentPositionMs = vv.currentPosition
-                    if (totalDurationMs == 0 && vv.duration > 0) {
-                        totalDurationMs = vv.duration
-                    }
-                }
-            }
+            currentPositionMs = exoPlayer.currentPosition
+            val dur = exoPlayer.duration
+            if (dur > 0) totalDurationMs = dur
             delay(250)
         }
     }
 
-    // Auto-ocultar controles tras 3 segundos
+    // Auto-ocultar controles tras 3.5 segundos
     LaunchedEffect(showControls, isPlaying) {
         if (showControls && isPlaying) {
             delay(3500)
@@ -119,51 +183,24 @@ fun VideoPlayerDialog(
                 }
                 .testTag("video_player_dialog")
         ) {
-            val initialUrl = if (chunks.isNotEmpty()) chunks.first() else videoUrl
-            val playableUri = remember(initialUrl) {
-                com.example.util.OfflineMediaManager.getPlayableMediaUri(context, initialUrl)
-            }
-
-            // Reproductor nativo VideoView optimizado para streaming LAN y reproducción continua de fragmentos
             AndroidView(
                 factory = { ctx ->
-                    VideoView(ctx).apply {
-                        videoViewRef = this
-                        setVideoURI(playableUri)
-                        setOnPreparedListener { mp ->
-                            mp.isLooping = false
-                            totalDurationMs = mp.duration
-                            isBuffering = false
-                            start()
-                            isPlaying = true
-                        }
-                        setOnCompletionListener {
-                            // Reproducción continua y sin interrupción al siguiente fragmento
-                            if (chunks.isNotEmpty() && currentChunkIndex < chunks.size - 1) {
-                                currentChunkIndex++
-                                val nextChunkUrl = chunks[currentChunkIndex]
-                                val nextChunkUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextChunkUrl)
-                                setVideoURI(nextChunkUri)
-                                start()
-                                isPlaying = true
-                            } else {
-                                isPlaying = false
-                                isEnded = true
-                                showControls = true
-                            }
-                        }
-                        setOnErrorListener { _, _, _ ->
-                            isBuffering = false
-                            false
-                        }
+                    PlayerView(ctx).apply {
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        useController = false
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        player = exoPlayer
                     }
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .align(Alignment.Center)
             )
 
-            // Indicador de carga / buffering inicial
+            // Indicador de buffering inicial
             if (isBuffering) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -177,7 +214,7 @@ fun VideoPlayerDialog(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Transmitiendo desde Synology NAS...",
+                            text = "Transmitiendo con ExoPlayer (LAN / Offline)...",
                             color = Color.White.copy(alpha = 0.85f),
                             style = MaterialTheme.typography.labelMedium
                         )
@@ -216,7 +253,7 @@ fun VideoPlayerDialog(
                             )
                             if (chunks.isNotEmpty()) {
                                 Text(
-                                    text = "⚡ Reproducción continua (Fragmento ${currentChunkIndex + 1} de ${chunks.size})",
+                                    text = "⚡ Reproducción continua (Fragmento ${currentMediaItemIndex + 1} de ${chunks.size})",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = FacebookBlue,
                                         fontWeight = FontWeight.Bold,
@@ -258,25 +295,14 @@ fun VideoPlayerDialog(
                             .clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.7f))
                             .clickable {
-                                videoViewRef?.let { vv ->
-                                    if (isEnded) {
-                                        currentChunkIndex = 0
-                                        if (chunks.isNotEmpty()) {
-                                            val firstUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, chunks.first())
-                                            vv.setVideoURI(firstUri)
-                                        } else {
-                                            vv.seekTo(0)
-                                        }
-                                        vv.start()
-                                        isPlaying = true
-                                        isEnded = false
-                                    } else if (vv.isPlaying) {
-                                        vv.pause()
-                                        isPlaying = false
-                                    } else {
-                                        vv.start()
-                                        isPlaying = true
-                                    }
+                                if (isEnded) {
+                                    exoPlayer.seekTo(0, 0)
+                                    exoPlayer.play()
+                                    isEnded = false
+                                } else if (isPlaying) {
+                                    exoPlayer.pause()
+                                } else {
+                                    exoPlayer.play()
                                 }
                             },
                         contentAlignment = Alignment.Center
@@ -308,9 +334,9 @@ fun VideoPlayerDialog(
                             value = progressFraction,
                             onValueChange = { fraction ->
                                 if (totalDurationMs > 0) {
-                                    val newPos = (fraction * totalDurationMs).toInt()
+                                    val newPos = (fraction * totalDurationMs).toLong()
                                     currentPositionMs = newPos
-                                    videoViewRef?.seekTo(newPos)
+                                    exoPlayer.seekTo(newPos)
                                 }
                             },
                             colors = SliderDefaults.colors(
@@ -326,14 +352,14 @@ fun VideoPlayerDialog(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = VideoHelper.formatDuration(currentPositionMs.toLong()),
+                                text = VideoHelper.formatDuration(currentPositionMs),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold
                                 )
                             )
                             Text(
-                                text = if (totalDurationMs > 0) VideoHelper.formatDuration(totalDurationMs.toLong()) else (durationLabel ?: "--:--"),
+                                text = if (totalDurationMs > 0) VideoHelper.formatDuration(totalDurationMs) else (durationLabel ?: "--:--"),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = Color.White.copy(alpha = 0.7f)
                                 )
@@ -342,12 +368,6 @@ fun VideoPlayerDialog(
                     }
                 }
             }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            videoViewRef?.stopPlayback()
         }
     }
 }

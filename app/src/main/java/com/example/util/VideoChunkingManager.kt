@@ -32,17 +32,20 @@ object VideoChunkingManager {
     /**
      * Divide un vídeo en fragmentos MP4 pequeños e independientes alineados por fotogramas clave (I-frames)
      * sin recodificación (Zero-Transcoding), lo que resulta extremadamente rápido y eficiente.
+     * Emite progreso en tiempo real para visualizar la fase de fragmentación antes de la subida.
      */
     suspend fun sliceVideo(
         context: Context,
         videoUri: Uri,
-        targetChunkDurationSec: Long = DEFAULT_TARGET_CHUNK_SEC
+        targetChunkDurationSec: Long = DEFAULT_TARGET_CHUNK_SEC,
+        onProgress: (progress: Float, currentChunk: Int, estimatedTotal: Int) -> Unit = { _, _, _ -> }
     ): Result<VideoChunkResult> = withContext(Dispatchers.IO) {
         val sessionId = UUID.randomUUID().toString().replace("-", "").take(16)
         val tempDir = File(context.cacheDir, "chunks_$sessionId").apply { mkdirs() }
 
         var tempSourceFile: File? = null
         try {
+            onProgress(0.05f, 1, 1)
             // 1. Obtener archivo local a partir del Uri
             tempSourceFile = File(tempDir, "source_temp.mp4")
             context.contentResolver.openInputStream(videoUri)?.use { input ->
@@ -75,6 +78,7 @@ object VideoChunkingManager {
             if (totalDurationMs <= targetChunkMs * 1.3f) {
                 val singleChunk = File(tempDir, "chunk_0000.mp4")
                 tempSourceFile.copyTo(singleChunk, overwrite = true)
+                onProgress(1.0f, 1, 1)
                 return@withContext Result.success(
                     VideoChunkResult(
                         sessionId = sessionId,
@@ -91,8 +95,11 @@ object VideoChunkingManager {
                 sourceFile = tempSourceFile,
                 outputDir = tempDir,
                 targetChunkMs = targetChunkMs,
-                totalDurationMs = totalDurationMs
+                totalDurationMs = totalDurationMs,
+                onProgress = onProgress
             )
+
+            onProgress(1.0f, chunkFiles.size.coerceAtLeast(1), chunkFiles.size.coerceAtLeast(1))
 
             // Si por compatibilidad de códec no se pudieron crear múltiples partes, usar el archivo completo
             val finalChunks = if (chunkFiles.isNotEmpty()) {
@@ -129,12 +136,14 @@ object VideoChunkingManager {
         sourceFile: File,
         outputDir: File,
         targetChunkMs: Long,
-        totalDurationMs: Long
+        totalDurationMs: Long,
+        onProgress: (progress: Float, currentChunk: Int, estimatedTotal: Int) -> Unit = { _, _, _ -> }
     ): List<File> {
         val resultFiles = mutableListOf<File>()
         val extractor = MediaExtractor()
         extractor.setDataSource(sourceFile.absolutePath)
 
+        val estimatedChunks = Math.max(1, (totalDurationMs / targetChunkMs.toFloat()).toInt())
         var videoTrackIndex = -1
         var audioTrackIndex = -1
         var videoFormat: MediaFormat? = null
@@ -168,7 +177,6 @@ object VideoChunkingManager {
         var muxerAudioTrack = -1
 
         var chunkStartPtsUs = 0L
-        var lastKeyFramePtsUs = 0L
         val targetChunkUs = targetChunkMs * 1000L
 
         fun startNewChunk() {
@@ -205,6 +213,7 @@ object VideoChunkingManager {
 
         startNewChunk()
 
+        var lastProgressEmitMs = 0L
         try {
             while (true) {
                 bufferInfo.size = extractor.readSampleData(buffer, 0)
@@ -231,6 +240,15 @@ object VideoChunkingManager {
                     if (elapsedInChunkUs >= targetChunkUs && isKeyFrame) {
                         startNewChunk()
                         chunkStartPtsUs = bufferInfo.presentationTimeUs
+                    }
+
+                    // Emitir progreso periódicamente
+                    val now = System.currentTimeMillis()
+                    if (now - lastProgressEmitMs > 100) {
+                        lastProgressEmitMs = now
+                        val currentPtsMs = bufferInfo.presentationTimeUs / 1000L
+                        val progress = if (totalDurationMs > 0) (currentPtsMs.toFloat() / totalDurationMs).coerceIn(0f, 0.99f) else 0.5f
+                        onProgress(progress, currentChunkIndex, Math.max(currentChunkIndex, estimatedChunks))
                     }
                 }
 

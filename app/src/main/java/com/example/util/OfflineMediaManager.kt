@@ -180,7 +180,9 @@ object OfflineMediaManager {
     }
 
     /**
-     * Precarga en segundo plano todas las fotos, vídeos y miniaturas de una lista de publicaciones.
+     * Precarga ligera en segundo plano protegida contra saturación de red.
+     * Siguiendo la política de optimización: SOLO descarga miniaturas y el primer fragmento (preview chunk)
+     * de los vídeos en publicaciones y grupos, permitiendo inicio instantáneo sin saturar la red ni la memoria.
      */
     fun prefetchPostsMedia(context: Context, baseUrl: String, posts: List<Post>) {
         val appContext = context.applicationContext
@@ -188,22 +190,56 @@ object OfflineMediaManager {
             val urls = mutableListOf<String>()
             posts.forEach { post ->
                 post.mediaItems.forEach { media ->
-                    val fullUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
-                        media.url
-                    } else if (media.url.isNotBlank() && baseUrl.isNotBlank()) {
-                        "$baseUrl/${media.url.trimStart('/')}"
-                    } else null
+                    val isVideo = media.type == com.example.model.MediaType.VIDEO
 
+                    // 1. Siempre precargar la miniatura
                     val thumbUrl = if (media.thumbnailUrl.startsWith("http://") || media.thumbnailUrl.startsWith("https://")) {
                         media.thumbnailUrl
                     } else if (media.thumbnailUrl.isNotBlank() && baseUrl.isNotBlank()) {
                         "$baseUrl/${media.thumbnailUrl.trimStart('/')}"
                     } else null
-
-                    fullUrl?.let { urls.add(it) }
                     thumbUrl?.let { urls.add(it) }
 
-                    // Si es un vídeo fraccionado, precargar también todos sus fragmentos para reproducción offline
+                    if (!isVideo) {
+                        // Para imágenes completas, precargar
+                        val imgUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
+                            media.url
+                        } else if (media.url.isNotBlank() && baseUrl.isNotBlank()) {
+                            "$baseUrl/${media.url.trimStart('/')}"
+                        } else null
+                        imgUrl?.let { urls.add(it) }
+                    } else {
+                        // Para VÍDEOS: Solo descargar el PRIMER FRAGMENTO para arranque instantáneo sin saturar la red
+                        val firstChunkUrl = media.chunks.firstOrNull() ?: media.url
+                        val fullFirstChunk = if (firstChunkUrl.startsWith("http://") || firstChunkUrl.startsWith("https://")) {
+                            firstChunkUrl
+                        } else if (firstChunkUrl.isNotBlank() && baseUrl.isNotBlank()) {
+                            "$baseUrl/${firstChunkUrl.trimStart('/')}"
+                        } else null
+                        fullFirstChunk?.let { urls.add(it) }
+                    }
+                }
+            }
+
+            // Descargar progresivamente sin saturar
+            urls.distinct().forEach { url ->
+                if (!isCached(appContext, url)) {
+                    downloadAndCache(appContext, url)
+                }
+            }
+        }
+    }
+
+    /**
+     * Descarga bajo demanda la totalidad de fragmentos de un vídeo cuando el usuario
+     * solicita explícitamente guardar la publicación completa para modo offline sin restricciones.
+     */
+    fun downloadFullPostMedia(context: Context, baseUrl: String, post: Post) {
+        val appContext = context.applicationContext
+        scope.launch {
+            val urls = mutableListOf<String>()
+            post.mediaItems.forEach { media ->
+                if (media.chunks.isNotEmpty()) {
                     media.chunks.forEach { chunkUrl ->
                         val fullChunk = if (chunkUrl.startsWith("http://") || chunkUrl.startsWith("https://")) {
                             chunkUrl
@@ -212,10 +248,16 @@ object OfflineMediaManager {
                         } else null
                         fullChunk?.let { urls.add(it) }
                     }
+                } else if (media.url.isNotBlank()) {
+                    val fullUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
+                        media.url
+                    } else if (baseUrl.isNotBlank()) {
+                        "$baseUrl/${media.url.trimStart('/')}"
+                    } else null
+                    fullUrl?.let { urls.add(it) }
                 }
             }
 
-            // Descargar progresivamente sin saturar
             urls.distinct().forEach { url ->
                 if (!isCached(appContext, url)) {
                     downloadAndCache(appContext, url)

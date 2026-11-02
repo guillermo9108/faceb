@@ -91,14 +91,6 @@ fun PostCard(
     var isPlayingInline by remember { mutableStateOf(false) }
     var isBuffering by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
-    var inlineVideoView by remember { mutableStateOf<VideoView?>(null) }
-
-    DisposableEffect(isPlayingInline) {
-        onDispose {
-            inlineVideoView?.stopPlayback()
-            inlineVideoView = null
-        }
-    }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -282,11 +274,6 @@ fun PostCard(
                     com.example.util.OfflineMediaManager.getDisplayModel(context, raw)
                 }
                 val isChunked = media.isChunked && media.chunks.isNotEmpty()
-                var inlineChunkIndex by remember { mutableIntStateOf(0) }
-                val initialVideoUrl = if (isChunked) media.chunks.first() else media.url
-                val playableVideoUri = remember(initialVideoUrl) {
-                    com.example.util.OfflineMediaManager.getPlayableMediaUri(context, initialVideoUrl)
-                }
 
                 Box(
                     modifier = Modifier
@@ -295,64 +282,21 @@ fun PostCard(
                         .background(Color.Black.copy(alpha = 0.08f))
                 ) {
                     if (isVideo && isPlayingInline) {
-                        // Reproducción directa en la misma tarjeta con soporte continuo para fragmentos
-                        AndroidView(
-                            factory = { ctx ->
-                                VideoView(ctx).apply {
-                                    setVideoURI(playableVideoUri)
-                                    setOnPreparedListener { mp ->
-                                        isBuffering = false
-                                        mp.isLooping = !isChunked
-                                        start()
-                                    }
-                                    setOnCompletionListener {
-                                        if (isChunked) {
-                                            inlineChunkIndex = (inlineChunkIndex + 1) % media.chunks.size
-                                            val nextUrl = media.chunks[inlineChunkIndex]
-                                            val nextUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, nextUrl)
-                                            setVideoURI(nextUri)
-                                            start()
-                                        }
-                                    }
-                                    setOnErrorListener { _, _, _ ->
-                                        isBuffering = false
-                                        isPlayingInline = false
-                                        false
-                                    }
-                                    inlineVideoView = this
-                                }
-                            },
-                            update = { vv ->
-                                inlineVideoView = vv
-                                if (isPaused) {
-                                    if (vv.isPlaying) vv.pause()
-                                } else {
-                                    if (!vv.isPlaying && !isBuffering) vv.start()
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clickable {
-                                    isPaused = !isPaused
-                                }
+                        // Reproducción ultra-fluida con ExoPlayer y concatenación continua de fragmentos
+                        FamilyVideoPlayer(
+                            videoUrl = media.url,
+                            chunks = media.chunks,
+                            isChunked = isChunked,
+                            autoPlay = !isPaused,
+                            isLooping = true,
+                            modifier = Modifier.fillMaxSize()
                         )
-
-                        // Indicador de carga / buffering
-                        if (isBuffering) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp)
-                            }
-                        }
 
                         // Overlay con botón para cerrar vídeo inline
                         IconButton(
                             onClick = {
                                 isPlayingInline = false
-                                inlineVideoView?.stopPlayback()
-                                inlineVideoView = null
+                                isPaused = false
                             },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
@@ -408,8 +352,6 @@ fun PostCard(
                                 onClick = {
                                     isPlayingInline = false
                                     isPaused = true
-                                    inlineVideoView?.stopPlayback()
-                                    inlineVideoView = null
                                     onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
                                 },
                                 modifier = Modifier.size(32.dp)
@@ -493,8 +435,6 @@ fun PostCard(
                                     onClick = {
                                         isPlayingInline = false
                                         isPaused = true
-                                        inlineVideoView?.stopPlayback()
-                                        inlineVideoView = null
                                         onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
                                     },
                                     modifier = Modifier

@@ -17,11 +17,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once __DIR__ . '/config.php';
 
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
+$action = trim($_GET['action'] ?? $_GET['route'] ?? '', '/');
 $method = $_SERVER['REQUEST_METHOD'];
 
+if (!function_exists('str_ends_with')) {
+    function str_ends_with($haystack, $needle) {
+        $length = strlen($needle);
+        return $length === 0 || (substr($haystack, -$length) === $needle);
+    }
+}
+if (!function_exists('str_contains')) {
+    function str_contains($haystack, $needle) {
+        return $needle === '' || strpos($haystack, $needle) !== false;
+    }
+}
+
+function matchRoute($action, $uri, $target) {
+    $t = trim($target, '/');
+    if (!empty($action)) {
+        return $action === $t || str_ends_with($action, '/' . $t);
+    }
+    return str_ends_with($uri, '/' . $t) || str_contains($uri, '/' . $t);
+}
+
 // 1. Health check / Ping
-if (str_ends_with($uri, '/ping') || str_ends_with($uri, '/health')) {
+if (matchRoute($action, $uri, 'ping') || matchRoute($action, $uri, 'health')) {
     try {
         $db = getDB();
         echo json_encode([
@@ -36,13 +57,49 @@ if (str_ends_with($uri, '/ping') || str_ends_with($uri, '/health')) {
     exit;
 }
 
+// 1.1. REPARACIÓN / INICIALIZACIÓN AUTOMÁTICA DE BASE DE DATOS Y TABLAS
+if (matchRoute($action, $uri, 'repair_db') || matchRoute($action, $uri, 'repair') || matchRoute($action, $uri, 'init_schema')) {
+    try {
+        $db = getDB();
+        autoBootstrapDatabase($db);
+
+        $uploadDir = __DIR__ . '/uploads';
+        if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
+        if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
+        if (!is_dir($uploadDir . '/chunks')) @mkdir($uploadDir . '/chunks', 0777, true);
+
+        $tablesStmt = $db->query("SHOW TABLES");
+        $tables = $tablesStmt ? $tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
+
+        echo json_encode([
+            "status" => "OK",
+            "message" => "Tablas en MariaDB verificadas y reparadas exitosamente.",
+            "database" => DB_NAME,
+            "tables" => $tables,
+            "time" => date("Y-m-d H:i:s")
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(["status" => "ERROR", "error" => $e->getMessage()]);
+    }
+    exit;
+}
+
 // 2. OBTENER USUARIOS
-if ($method === 'GET' && str_ends_with($uri, '/users')) {
+if ($method === 'GET' && (matchRoute($action, $uri, 'users') || str_ends_with($uri, '/users'))) {
     try {
         $db = getDB();
         $stmt = $db->query("SELECT id, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
         echo json_encode($stmt->fetchAll());
     } catch (Exception $e) {
+        if (str_contains($e->getMessage(), "doesn't exist")) {
+            try {
+                autoBootstrapDatabase($db);
+                $stmt = $db->query("SELECT id, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
+                echo json_encode($stmt->fetchAll());
+                exit;
+            } catch (Exception $retryEx) {}
+        }
         http_response_code(500);
         echo json_encode(["error" => $e->getMessage()]);
     }
@@ -50,7 +107,7 @@ if ($method === 'GET' && str_ends_with($uri, '/users')) {
 }
 
 // 3. OBTENER FEED COMPLETO
-if ($method === 'GET' && (str_ends_with($uri, '/feed') || str_ends_with($uri, '/posts'))) {
+if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($action, $uri, 'posts') || str_ends_with($uri, '/feed') || str_ends_with($uri, '/posts'))) {
     try {
         $db = getDB();
         $stmt = $db->query("
@@ -66,6 +123,24 @@ if ($method === 'GET' && (str_ends_with($uri, '/feed') || str_ends_with($uri, '/
         $posts = $stmt->fetchAll();
         echo json_encode(["posts" => $posts]);
     } catch (Exception $e) {
+        if (str_contains($e->getMessage(), "doesn't exist") || str_contains($e->getMessage(), "Base table")) {
+            try {
+                autoBootstrapDatabase($db);
+                $stmt = $db->query("
+                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
+                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count
+                    FROM posts p
+                    JOIN users u ON p.user_id = u.id
+                    LEFT JOIN media m ON m.post_id = p.id
+                    ORDER BY p.is_pinned DESC, p.created_at DESC
+                    LIMIT 50
+                ");
+                $posts = $stmt->fetchAll();
+                echo json_encode(["posts" => $posts]);
+                exit;
+            } catch (Exception $retryEx) {}
+        }
         http_response_code(500);
         echo json_encode(["error" => $e->getMessage()]);
     }

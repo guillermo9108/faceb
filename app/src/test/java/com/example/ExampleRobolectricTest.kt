@@ -422,6 +422,42 @@ class ExampleRobolectricTest {
         assertNotNull(repo.groups)
         assertEquals(0, repo.groups.value.size)
     }
+
+    @Test
+    fun `video upload progress records slicing and upload stages`() {
+        val slicingProgress = com.example.model.VideoUploadProgress(
+            stage = com.example.model.UploadStage.SLICING,
+            sliceProgress = 0.65f,
+            uploadProgress = 0f,
+            currentChunk = 2,
+            totalChunks = 4,
+            statusMessage = "Fragmentando vídeo 65% (Parte 2 de 4)"
+        )
+        assertEquals(com.example.model.UploadStage.SLICING, slicingProgress.stage)
+        assertEquals(0.65f, slicingProgress.sliceProgress, 0.01f)
+        assertEquals(0f, slicingProgress.uploadProgress, 0.01f)
+
+        val uploadProgress = com.example.model.VideoUploadProgress(
+            stage = com.example.model.UploadStage.UPLOADING,
+            sliceProgress = 1.0f,
+            uploadProgress = 0.75f,
+            currentChunk = 3,
+            totalChunks = 4,
+            statusMessage = "Subiendo fragmento 3 de 4 (75%)"
+        )
+        assertEquals(com.example.model.UploadStage.UPLOADING, uploadProgress.stage)
+        assertEquals(1.0f, uploadProgress.sliceProgress, 0.01f)
+        assertEquals(0.75f, uploadProgress.uploadProgress, 0.01f)
+    }
+
+    @Test
+    fun `offline media manager provides playable uri and local cache file resolution`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val remoteUrl = "http://192.168.1.100/web/family_api/uploads/video.mp4"
+        val playableUri = com.example.util.OfflineMediaManager.getPlayableMediaUri(context, remoteUrl)
+        assertNotNull(playableUri)
+        assertEquals(android.net.Uri.parse(remoteUrl), playableUri)
+    }
 }
 
 

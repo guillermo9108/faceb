@@ -53,7 +53,11 @@ class ExampleUnitTest {
         assertTrue(SynologyScripts.schemaSql.contains("CREATE TABLE IF NOT EXISTS posts"))
         assertTrue(SynologyScripts.schemaSql.contains("CREATE TABLE IF NOT EXISTS media"))
         assertTrue(SynologyScripts.configPhp.contains("DB_NAME"))
+        assertTrue(SynologyScripts.configPhp.contains("autoBootstrapDatabase"))
+        assertTrue(SynologyScripts.configPhp.contains("family_groups"))
+        assertTrue(SynologyScripts.configPhp.contains("media_chunks"))
         assertTrue(SynologyScripts.indexPhp.contains("Synology Web Station + MariaDB 10"))
         assertTrue(SynologyScripts.indexPhp.contains("uploads/originals"))
+        assertTrue(SynologyScripts.indexPhp.contains("repair_db"))
     }
 }
