@@ -86,6 +86,8 @@ fun NasConfigScreen(
     onSaveConfig: (NasConfig) -> Unit,
     onTestConnection: () -> Unit,
     onRepairDatabase: (() -> Unit)? = null,
+    onOpenErrorLogs: (() -> Unit)? = null,
+    errorCount: Int = 0,
     isRepairing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -252,6 +254,22 @@ fun NasConfigScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text("Reparar y crear tablas en MariaDB automáticamente", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
+                                }
+                            }
+                            if (onOpenErrorLogs != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                OutlinedButton(
+                                    onClick = onOpenErrorLogs,
+                                    modifier = Modifier.fillMaxWidth().testTag("view_error_logs_button"),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC62828))
+                                ) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (errorCount > 0) "Ver Registro de Errores ($errorCount)" else "Ver Registro de Errores",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -494,6 +512,22 @@ fun NasConfigScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Verificar / Reparar Tablas MariaDB en Synology", color = FacebookBlue, fontWeight = FontWeight.SemiBold)
                         }
+                    }
+                }
+
+                if (onOpenErrorLogs != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FilledTonalButton(
+                        onClick = onOpenErrorLogs,
+                        modifier = Modifier.fillMaxWidth().testTag("open_error_logs_settings_button"),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFC62828))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (errorCount > 0) "Registro de Errores y Diagnóstico ($errorCount)" else "Registro de Errores y Diagnóstico",
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }

@@ -60,4 +60,28 @@ class ExampleUnitTest {
         assertTrue(SynologyScripts.indexPhp.contains("uploads/originals"))
         assertTrue(SynologyScripts.indexPhp.contains("repair_db"))
     }
+
+    @Test
+    fun testAppErrorLogger() {
+        com.example.data.AppErrorLogger.log(
+            category = com.example.model.ErrorCategory.MARIADB,
+            title = "Prueba de error MariaDB 10",
+            message = "Table family_feed.posts doesn't exist",
+            httpCode = 500
+        )
+        val logs = com.example.data.AppErrorLogger.logs.value
+        assertTrue(logs.isNotEmpty())
+        assertEquals(com.example.model.ErrorCategory.MARIADB, logs.first().category)
+        assertTrue(com.example.data.AppErrorLogger.exportAsText(NasConfig()).contains("MariaDB"))
+    }
+
+    @Test
+    fun testPhp73CompatibilityInScripts() {
+        val sanitizedIndex = SynologyScripts.indexPhp.replace("preg_match", "")
+        assertFalse(sanitizedIndex.contains("match("))
+        assertFalse(SynologyScripts.configPhp.contains("match("))
+        assertTrue(SynologyScripts.indexPhp.contains("str_ends_with"))
+        assertTrue(SynologyScripts.indexPhp.contains("str_starts_with"))
+        assertTrue(SynologyScripts.indexPhp.contains("register_shutdown_function"))
+    }
 }

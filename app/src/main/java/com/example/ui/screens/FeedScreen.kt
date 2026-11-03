@@ -79,6 +79,7 @@ fun FeedScreen(
     onDeletePost: (Int) -> Unit,
     onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit,
     onOpenNasConfig: () -> Unit,
+    onOpenErrorLogs: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -135,6 +136,18 @@ fun FeedScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1
                                 )
+                                if (onOpenErrorLogs != null) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "🔍 Ver registro de errores",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            color = FacebookBlue,
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        modifier = Modifier.clickable { onOpenErrorLogs() }
+                                    )
+                                }
                             }
                         }
                     }

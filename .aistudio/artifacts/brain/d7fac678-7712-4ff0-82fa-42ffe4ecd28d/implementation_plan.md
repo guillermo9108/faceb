@@ -44,3 +44,38 @@ Este plan de trabajo implementó de forma unificada tres pilares críticos de la
 - [x] Fase 3: Política de descarga offline ligera (miniaturas + primer fragmento) en `OfflineMediaManager`.
 - [x] Fase 4: Progreso secuencial dual de fragmentación y subida en `VideoChunkingManager`, `FamilyRepository` y `VideoUploadProgressDialog`.
 - [x] Fase 5: Validación y compilación exitosa del proyecto con Gradle y `compile_applet`.
+
+---
+
+## 4. Diagnóstico en Profundidad: Compatibilidad PHP 7.3 & MariaDB 10 + Registro de Errores en la APK (Completado)
+
+### A. Diagnóstico de Incompatibilidades con PHP 7.3 en Synology Web Station
+1. **Ausencia de la expresión `match()`**:
+   - `match()` fue introducido en PHP 8.0+. En PHP 7.3 causaba un error fatal sintáctico (`Parse error: syntax error, unexpected 'match'`).
+   - Solución: Sustituido por `switch ($type)` y sentencias `if/else` estándar de PHP 7.3.
+2. **Funciones nativas de cadenas (`str_starts_with`, `str_ends_with`, `str_contains`)**:
+   - Funciones ausentes en PHP 7.3 (añadidas en PHP 8.0).
+   - Solución: Incorporados polyfills seguros basados en `substr`, `strlen` y `strpos`.
+3. **Manejo de Errores Fatales en PHP 7.3**:
+   - En PHP 7.3, ante un `E_ERROR` o `ParseError`, el servidor retornaba respuestas vacías o HTML 500 ininteligible para la APK.
+   - Solución: Añadido `register_shutdown_function` en `index.php` para interceptar `error_get_last()` y emitir siempre JSON con cabecera `Content-Type: application/json` y código HTTP 500.
+
+### B. Particularidades y Auto-reparación en MariaDB 10 (Synology DSM)
+1. **Puerto por defecto 3307**:
+   - Synology DSM reserva el puerto 3306 para MySQL/MariaDB 5 del sistema; MariaDB 10 se ejecuta en el **puerto 3307**. Documentado en `SynologyZipExporter` e instrucciones de conexión.
+2. **Ejecución aislada de sentencias DDL**:
+   - Múltiples sentencias `CREATE TABLE` en una sola llamada `PDO::exec()` fallan si `MYSQL_ATTR_MULTI_STATEMENTS` no está activo en el driver PDO de PHP 7.3.
+   - Solución: Función `autoBootstrapDatabase()` que ejecuta cada sentencia `CREATE TABLE IF NOT EXISTS` de forma individualizada y protegida con bloque `try/catch`.
+3. **Endpoint de Auto-Reparación y Regeneración de Esquema**:
+   - Creado endpoint dedicado `POST /index.php?action=repair_db` que reconstruye las tablas faltantes (`posts`, `users`, `reactions`, `comments`, `family_groups`, `media_chunks`, `stories`) e inserta usuarios iniciales si no existen.
+   - El cliente Android detecta respuestas 500 con mensajes de tablas faltantes e invoca automáticamente la auto-reparación antes de alertar al usuario.
+
+### C. Registro y Diagnóstico de Errores en la APK (`AppErrorLogger`)
+1. **Motor de Logging Centralizado (`AppErrorLogger.kt`)**:
+   - Almacenamiento persistente en JSON local (`app_error_logs.json`) de los últimos 200 eventos de error.
+   - Categorización automática (`MARIADB`, `SYNOLOGY_API`, `NETWORK`, `VIDEO_CHUNKING`, `AUTH`, `SYSTEM`).
+   - Detección heurística de soluciones recomendadas (ej. sugerir puerto 3307, activar extensión PDO MySQL, verificar tablas o firewall).
+2. **Interfaz de Diagnóstico Integrada (`ErrorLogsDialog.kt`)**:
+   - Acceso directo desde el banner de desconexión del Feed ("🔍 Ver registro de errores"), desde el menú lateral y desde la pantalla de configuración del NAS.
+   - Filtro por categoría, visualización del cuerpo crudo de la respuesta del servidor, fecha/hora exacta y botón para **Copiar Informe Completo al portapapeles**.
+   - Botón directo de **"Reparar MariaDB Ahora"** que ejecuta la sincronización de tablas en caliente.

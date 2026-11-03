@@ -169,10 +169,17 @@ class FamilyRepository(
     private val _stories = MutableStateFlow<List<FamilyStory>>(emptyList())
     val stories: StateFlow<List<FamilyStory>> = _stories.asStateFlow()
 
+    val errorLogs: StateFlow<List<com.example.model.AppErrorLog>> = AppErrorLogger.logs
+
+    fun clearErrorLogs() = AppErrorLogger.clearLogs()
+    fun exportErrorLogs(): String = AppErrorLogger.exportAsText(_nasConfig.value)
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     init {
+        AppErrorLogger.initialize(context)
+
         // Conectar callback de autorrecuperación de ruta si la API cambia o es detectada
         apiClient.onPathAutoDetected = { detectedPath ->
             if (detectedPath != _nasConfig.value.path) {

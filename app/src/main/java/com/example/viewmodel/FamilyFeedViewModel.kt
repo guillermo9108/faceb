@@ -107,6 +107,11 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _isImportingFolders = MutableStateFlow(false)
     val isImportingFolders: StateFlow<Boolean> = _isImportingFolders.asStateFlow()
 
+    val errorLogs = repository.errorLogs
+
+    private val _isErrorLogsDialogOpen = MutableStateFlow(false)
+    val isErrorLogsDialogOpen: StateFlow<Boolean> = _isErrorLogsDialogOpen.asStateFlow()
+
     private val _isProfileDialogOpen = MutableStateFlow(false)
     val isProfileDialogOpen: StateFlow<Boolean> = _isProfileDialogOpen.asStateFlow()
 
@@ -669,6 +674,23 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 showStatus(err)
             }
         }
+    }
+
+    fun openErrorLogsDialog() {
+        _isErrorLogsDialogOpen.value = true
+    }
+
+    fun closeErrorLogsDialog() {
+        _isErrorLogsDialogOpen.value = false
+    }
+
+    fun clearErrorLogs() {
+        repository.clearErrorLogs()
+        showStatus("Registro de errores limpiado.")
+    }
+
+    fun exportErrorLogs(): String {
+        return repository.exportErrorLogs()
     }
 
     fun clearStatus() {

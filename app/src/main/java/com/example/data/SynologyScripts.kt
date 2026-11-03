@@ -316,8 +316,10 @@ object SynologyScripts {
                     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                     PDO::ATTR_EMULATE_PREPARES   => false,
                     PDO::ATTR_TIMEOUT            => 5,
-                    PDO::MYSQL_ATTR_MULTI_STATEMENTS => true,
                 ];
+                if (defined('PDO::MYSQL_ATTR_MULTI_STATEMENTS')) {
+                    ${D}options[PDO::MYSQL_ATTR_MULTI_STATEMENTS] = true;
+                }
 
                 try {
                     // Conexión regular a la base de datos
@@ -347,7 +349,7 @@ object SynologyScripts {
         <?php
         /**
          * index.php - API REST para Muro Familiar LAN
-         * Compatible con Synology Web Station (PHP 7.0, 7.2, 7.3, 7.4 y PHP 8.x)
+         * Compatible con Synology Web Station (PHP 7.0, 7.2, 7.3, 7.4 y PHP 8.x) y MariaDB 10
          * Guardar en: /volume1/web/family_api/index.php
          * Servir vía Web Station en puerto dedicado (ej: 8085)
          */
@@ -363,7 +365,12 @@ object SynologyScripts {
         @ini_set('upload_max_filesize', '4096M');
         @ini_set('post_max_size', '4096M');
 
-        // Polyfills para compatibilidad total con PHP 7 en Synology NAS antiguos
+        // Polyfills para compatibilidad total con PHP 7.3 y anteriores en Synology NAS
+        if (!function_exists('str_starts_with')) {
+            function str_starts_with(${D}haystack, ${D}needle) {
+                return (string)${D}needle !== '' && strncmp(${D}haystack, ${D}needle, strlen(${D}needle)) === 0;
+            }
+        }
         if (!function_exists('str_ends_with')) {
             function str_ends_with(${D}haystack, ${D}needle) {
                 ${D}length = strlen(${D}needle);
@@ -381,10 +388,35 @@ object SynologyScripts {
         header("Access-Control-Allow-Headers: Content-Type, Authorization");
         header("Content-Type: application/json; charset=UTF-8");
 
+        // Manejador de excepciones compatible con PHP 7.3 (evita HTML en errores)
         set_exception_handler(function (${D}e) {
             http_response_code(500);
-            echo json_encode(["status" => "ERROR", "error" => ${D}e->getMessage()]);
+            echo json_encode([
+                "status" => "ERROR",
+                "error" => ${D}e->getMessage(),
+                "file" => basename(${D}e->getFile()),
+                "line" => ${D}e->getLine(),
+                "php_version" => PHP_VERSION
+            ]);
             exit;
+        });
+
+        // Captura de errores fatales en PHP 7.3 para que siempre devuelva JSON válido
+        register_shutdown_function(function() {
+            ${D}err = error_get_last();
+            if (${D}err && in_array(${D}err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+                if (!headers_sent()) {
+                    http_response_code(500);
+                    header("Content-Type: application/json; charset=UTF-8");
+                }
+                echo json_encode([
+                    "status" => "FATAL_ERROR",
+                    "error" => ${D}err['message'],
+                    "file" => basename(${D}err['file']),
+                    "line" => ${D}err['line'],
+                    "php_version" => PHP_VERSION
+                ]);
+            }
         });
 
         if (${D}_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -412,14 +444,26 @@ object SynologyScripts {
         if (matchRoute(${D}action, ${D}uri, 'ping') || matchRoute(${D}action, ${D}uri, 'health')) {
             try {
                 ${D}db = getDB();
+                ${D}serverVer = "";
+                try {
+                    ${D}serverVer = ${D}db->getAttribute(PDO::ATTR_SERVER_VERSION);
+                } catch (Exception ${D}eVer) {}
+
                 echo json_encode([
                     "status" => "ONLINE",
                     "server" => "Synology Web Station + MariaDB 10",
+                    "php_version" => PHP_VERSION,
+                    "mariadb_version" => ${D}serverVer,
+                    "database" => DB_NAME,
                     "time" => date("Y-m-d H:i:s")
                 ]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
-                echo json_encode(["status" => "ERROR", "message" => ${D}e->getMessage()]);
+                echo json_encode([
+                    "status" => "ERROR",
+                    "message" => ${D}e->getMessage(),
+                    "php_version" => PHP_VERSION
+                ]);
             }
             exit;
         }
@@ -438,16 +482,27 @@ object SynologyScripts {
                 ${D}tablesStmt = ${D}db->query("SHOW TABLES");
                 ${D}tables = ${D}tablesStmt ? ${D}tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
 
+                ${D}serverVer = "";
+                try {
+                    ${D}serverVer = ${D}db->getAttribute(PDO::ATTR_SERVER_VERSION);
+                } catch (Exception ${D}eVer) {}
+
                 echo json_encode([
                     "status" => "OK",
                     "message" => "Tablas en MariaDB verificadas y reparadas exitosamente.",
                     "database" => DB_NAME,
                     "tables" => ${D}tables,
+                    "php_version" => PHP_VERSION,
+                    "mariadb_version" => ${D}serverVer,
                     "time" => date("Y-m-d H:i:s")
                 ]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
-                echo json_encode(["status" => "ERROR", "error" => ${D}e->getMessage()]);
+                echo json_encode([
+                    "status" => "ERROR",
+                    "error" => ${D}e->getMessage(),
+                    "php_version" => PHP_VERSION
+                ]);
             }
             exit;
         }

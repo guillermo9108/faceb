@@ -2,7 +2,10 @@ package com.example.data.remote
 
 import android.content.Context
 import android.net.Uri
+import com.example.data.AppErrorLogger
+import com.example.model.AppErrorLog
 import com.example.model.Comment
+import com.example.model.ErrorCategory
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.MediaItem
@@ -1420,11 +1423,29 @@ class NasApiClient(
             .replace(Regex("\\s+"), " ")
             .trim()
 
-        return if (cleaned.isNotBlank()) {
-            "Error en Synology: ${cleaned.take(160)}"
-        } else {
-            "El servidor Synology devolvió una respuesta con formato inválido (HTML en vez de JSON)."
+        val finalMsg = when {
+            raw.contains("Access denied for user", ignoreCase = true) || raw.contains("1045", ignoreCase = true) ->
+                "Acceso denegado a MariaDB. Verifica el usuario y la contraseña de la base de datos en los ajustes."
+            raw.contains("Connection refused", ignoreCase = true) || raw.contains("2002", ignoreCase = true) ->
+                "Conexión rechazada por MariaDB. Verifica el puerto de la base de datos (puerto 3307 por defecto en Synology MariaDB 10) y que esté activo en DSM."
+            raw.contains("Unknown database", ignoreCase = true) || raw.contains("1049", ignoreCase = true) ->
+                "La base de datos 'family_feed' no existe en MariaDB. Se creará automáticamente al conectar o importa 'schema.sql'."
+            raw.contains("Table", ignoreCase = true) && raw.contains("doesn't exist", ignoreCase = true) ->
+                "Faltan tablas en MariaDB. Pulsa 'Reparar Tablas' para crearlas automáticamente o importa 'schema.sql'."
+            cleaned.isNotBlank() ->
+                "Error en Synology: ${cleaned.take(160)}"
+            else ->
+                "El servidor Synology devolvió una respuesta con formato inválido (HTML en vez de JSON)."
         }
+
+        AppErrorLogger.logFromHttp(
+            endpoint = if (path.isNotBlank()) path else "Synology API",
+            statusCode = statusCode,
+            rawBody = raw,
+            exceptionMsg = finalMsg
+        )
+
+        return finalMsg
     }
 
     private fun parseTimestamp(rawDate: String?): Long {

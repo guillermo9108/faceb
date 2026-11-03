@@ -27,6 +27,7 @@ import com.example.ui.components.AdminFolderScanDialog
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
+import com.example.ui.components.ErrorLogsDialog
 import com.example.ui.components.HeaderBar
 import com.example.ui.components.NasIpConfirmationDialog
 import com.example.ui.components.ProfileSettingsDialog
@@ -104,6 +105,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isImportingFolders by viewModel.isImportingFolders.collectAsState()
     val videoUploadProgress by viewModel.videoUploadProgress.collectAsState()
     val isRepairingDb by viewModel.isRepairingDb.collectAsState()
+    val errorLogs by viewModel.errorLogs.collectAsState()
+    val isErrorLogsDialogOpen by viewModel.isErrorLogsDialogOpen.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -199,7 +202,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onPlayVideo = { url, title, author, dur, chunks ->
                             activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
                         },
-                        onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) }
+                        onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
+                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() }
                     )
                 }
                 FeedTab.WATCH -> {
@@ -286,6 +290,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
                         onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
                         onNavigateToGroups = { viewModel.setSelectedTab(FeedTab.GROUPS) },
+                        onNavigateToErrorLogs = { viewModel.openErrorLogsDialog() },
+                        errorCount = errorLogs.size,
                         onOpenProfileSettings = { viewModel.openProfileDialog() },
                         onLogout = { viewModel.logout() }
                     )
@@ -299,6 +305,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onSaveConfig = { updatedConfig -> viewModel.updateNasSettings(updatedConfig) },
                         onTestConnection = { viewModel.testNasConnection() },
                         onRepairDatabase = { viewModel.repairNasDatabase() },
+                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
+                        errorCount = errorLogs.size,
                         isRepairing = isRepairingDb
                     )
                 }
@@ -406,5 +414,18 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     // Modal de Progreso Dual Secuencial (Fragmentación y Subida al NAS)
     videoUploadProgress?.let { prog ->
         com.example.ui.components.VideoUploadProgressDialog(progress = prog)
+    }
+
+    // Modal de Registro de Errores y Diagnóstico (PHP 7.3 y MariaDB 10)
+    if (isErrorLogsDialogOpen) {
+        ErrorLogsDialog(
+            logs = errorLogs,
+            nasConfig = nasConfig,
+            isRepairing = isRepairingDb,
+            onDismiss = { viewModel.closeErrorLogsDialog() },
+            onClearLogs = { viewModel.clearErrorLogs() },
+            onRepairDatabase = { viewModel.repairNasDatabase() },
+            onExportLogs = { viewModel.exportErrorLogs() }
+        )
     }
 }

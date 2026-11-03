@@ -121,8 +121,8 @@ object SynologyZipExporter {
                 1. Abre el Centro de Paquetes en tu Synology DSM.
                 2. Instala los siguientes paquetes:
                    - Web Station
-                   - PHP 8.2 (o PHP 8.0/8.1)
-                   - MariaDB 10
+                   - PHP 7.3 (o PHP 7.4 / 8.x)
+                   - MariaDB 10 (Puerto 3307 por defecto)
                    - phpMyAdmin (opcional, para gestionar la base de datos visualmente)
 
                 ----------------------------------------------------------------------

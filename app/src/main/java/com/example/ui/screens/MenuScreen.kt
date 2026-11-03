@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,6 +70,8 @@ fun MenuScreen(
     onNavigateToWatch: () -> Unit,
     onNavigateToShorts: () -> Unit,
     onNavigateToGroups: () -> Unit = {},
+    onNavigateToErrorLogs: () -> Unit = {},
+    errorCount: Int = 0,
     onOpenProfileSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier
@@ -283,6 +286,17 @@ fun MenuScreen(
                 title = "Privacidad LAN",
                 subtitle = "100% aislada de Internet",
                 onClick = onNavigateToNasConfig
+            )
+        }
+
+        // Shortcut Tile 7: Registro de Errores y Diagnóstico
+        item {
+            FacebookMenuTile(
+                icon = Icons.Default.Warning,
+                iconColor = Color(0xFFEF4444),
+                title = if (errorCount > 0) "Errores ($errorCount)" else "Registro Errores",
+                subtitle = "Diagnóstico PHP / MariaDB",
+                onClick = onNavigateToErrorLogs
             )
         }
 

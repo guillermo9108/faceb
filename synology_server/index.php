@@ -249,17 +249,29 @@ function createThumbnail($src, $dest, $maxW = 720) {
     $nw = min($w, $maxW);
     $nh = (int)($nw * $ratio);
 
-    $im = match($type) {
-        IMAGETYPE_JPEG => @imagecreatefromjpeg($src),
-        IMAGETYPE_PNG  => @imagecreatefrompng($src),
-        IMAGETYPE_WEBP => @imagecreatefromwebp($src),
-        default        => null
-    };
+    $im = null;
+    switch ($type) {
+        case IMAGETYPE_JPEG:
+            $im = @imagecreatefromjpeg($src);
+            break;
+        case IMAGETYPE_PNG:
+            $im = @imagecreatefrompng($src);
+            break;
+        default:
+            if (defined('IMAGETYPE_WEBP') && $type === IMAGETYPE_WEBP && function_exists('imagecreatefromwebp')) {
+                $im = @imagecreatefromwebp($src);
+            }
+            break;
+    }
     if (!$im) return;
 
     $thumb = imagecreatetruecolor($nw, $nh);
     imagecopyresampled($thumb, $im, 0, 0, 0, 0, $nw, $nh, $w, $h);
-    imagewebp($thumb, $dest, 80);
+    if (function_exists('imagewebp')) {
+        @imagewebp($thumb, $dest, 80);
+    } elseif (function_exists('imagejpeg')) {
+        @imagejpeg($thumb, $dest, 80);
+    }
     imagedestroy($im);
     imagedestroy($thumb);
 }
