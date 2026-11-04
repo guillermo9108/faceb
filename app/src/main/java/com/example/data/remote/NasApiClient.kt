@@ -76,15 +76,15 @@ class NasApiClient(
     }
 
     /**
-     * Prueba rápida en red LAN para verificar si el Synology NAS y los scripts PHP están en la IP y puerto dados.
-     * Retorna la ruta válida (ej: "/family_api" o "") si responde positivamente.
+     * Prueba en red LAN para verificar si el Synology NAS y los scripts PHP están en la IP y puerto dados.
+     * Retorna la ruta válida (ej: "/family_api" o "") si index.php responde positivamente.
      */
     suspend fun probeNasServer(ip: String, port: Int = 80, path: String = "/family_api"): Result<String> = withContext(Dispatchers.IO) {
         val cleanPath = path.trim().trimEnd('/')
-        val testPaths = listOf(cleanPath, "/family_api", "", "/family_feed").distinct()
+        val testPaths = listOf(cleanPath, "/family_api", "", "/family_feed", "/api").distinct()
         val fastClient = client.newBuilder()
-            .connectTimeout(1500, TimeUnit.MILLISECONDS)
-            .readTimeout(2000, TimeUnit.MILLISECONDS)
+            .connectTimeout(1000, TimeUnit.MILLISECONDS)
+            .readTimeout(1500, TimeUnit.MILLISECONDS)
             .build()
 
         for (p in testPaths) {
@@ -94,7 +94,7 @@ class NasApiClient(
                 val req = Request.Builder().url(urlParam).get().build()
                 val resp = fastClient.newCall(req).execute()
                 val body = resp.body?.string() ?: ""
-                if (resp.isSuccessful && (body.contains("ONLINE") || body.contains("Synology") || body.contains("server"))) {
+                if (resp.isSuccessful || body.contains("ONLINE") || body.contains("Synology") || body.contains("server") || body.contains("family_feed")) {
                     if (p != cleanPath) {
                         onPathAutoDetected?.invoke(p)
                     }
@@ -102,13 +102,13 @@ class NasApiClient(
                 }
             } catch (_: Exception) {}
 
-            // 2. Fallback probando también con /index.php/ping
-            val urlPath = if (port == 80) "http://$ip$p/index.php/ping" else "http://$ip:$port$p/index.php/ping"
+            // 2. Probar si responde index.php directo
+            val urlDirect = if (port == 80) "http://$ip$p/index.php" else "http://$ip:$port$p/index.php"
             try {
-                val req = Request.Builder().url(urlPath).get().build()
+                val req = Request.Builder().url(urlDirect).get().build()
                 val resp = fastClient.newCall(req).execute()
                 val body = resp.body?.string() ?: ""
-                if (resp.isSuccessful && (body.contains("ONLINE") || body.contains("Synology") || body.contains("server"))) {
+                if (resp.isSuccessful || body.contains("ONLINE") || body.contains("Synology") || body.contains("server") || body.contains("Endpoint no encontrado") || body.contains("family_feed")) {
                     if (p != cleanPath) {
                         onPathAutoDetected?.invoke(p)
                     }
@@ -117,6 +117,19 @@ class NasApiClient(
             } catch (_: Exception) {}
         }
         Result.failure(Exception("No responde Synology NAS en $ip:$port"))
+    }
+
+    /**
+     * Prueba simultánea en puertos 80 y 8080 para localizar automáticamente el servidor Synology / Web Station.
+     */
+    suspend fun probeNasServerOnPorts(ip: String, ports: List<Int> = listOf(80, 8080), path: String = "/family_api"): Pair<Int, String>? {
+        for (port in ports) {
+            val res = probeNasServer(ip, port, path)
+            if (res.isSuccess) {
+                return Pair(port, res.getOrNull() ?: path)
+            }
+        }
+        return null
     }
 
     /**

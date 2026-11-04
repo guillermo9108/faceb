@@ -650,34 +650,43 @@ class FamilyRepository(
     }
 
     /**
-     * Autodetección del Synology NAS en el puerto 80 tras instalar / abrir la app.
-     * Si no es detectado en la red, activa la solicitud de confirmación inicial de la IP.
+     * Autodetección del Synology NAS o servidor con index.php en los puertos 80 y 8080.
+     * Escanea las IPs de la red local (LAN) para encontrar automáticamente el host con index.php.
      */
-    suspend fun autoDetectNasOnPort80(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun autoDetectNasServer(): Result<String> = withContext(Dispatchers.IO) {
         _isAutoDetecting.value = true
         val config = _nasConfig.value
+        val portsToScan = listOf(80, 8080)
 
-        // 1. Probar primero la IP actual en el puerto 80
-        val probeCurrent = apiClient.probeNasServer(config.ip, 80, config.path)
-        if (probeCurrent.isSuccess) {
-            val detectedPath = probeCurrent.getOrNull() ?: config.path
-            val updated = config.copy(port = 80, path = detectedPath, isConnected = true, lastError = null)
-            updateNasConfig(updated)
-            _isNasDetected.value = true
-            _showNasIpConfirmation.value = false
-            _isAutoDetecting.value = false
-            return@withContext Result.success(config.ip)
+        // 1. Probar primero la IP actual en los puertos 80 y 8080
+        for (port in portsToScan) {
+            val probeCurrent = apiClient.probeNasServer(config.ip, port, config.path)
+            if (probeCurrent.isSuccess) {
+                val detectedPath = probeCurrent.getOrNull() ?: config.path
+                val updated = config.copy(port = port, path = detectedPath, isConnected = true, lastError = null)
+                updateNasConfig(updated)
+                _isNasDetected.value = true
+                _showNasIpConfirmation.value = false
+                _isAutoDetecting.value = false
+                return@withContext Result.success("${config.ip}:$port")
+            }
         }
 
         // 2. Construir lista de candidatos prioritarios en la red LAN
-        val prefixes = getLocalSubnetPrefixes()
+        val prefixes = getLocalSubnetPrefixes().toMutableList()
+        val configParts = config.ip.split(".")
+        if (configParts.size == 4) {
+            prefixes.add("${configParts[0]}.${configParts[1]}.${configParts[2]}")
+        }
+        val distinctPrefixes = prefixes.distinct()
+
         val candidateIps = mutableListOf<String>()
         candidateIps.add("synology.local")
         candidateIps.add("diskstation.local")
         candidateIps.add("synology")
         candidateIps.add("diskstation")
 
-        for (prefix in prefixes) {
+        for (prefix in distinctPrefixes) {
             candidateIps.add("$prefix.100")
             candidateIps.add("$prefix.200")
             candidateIps.add("$prefix.50")
@@ -688,35 +697,42 @@ class FamilyRepository(
             candidateIps.add("$prefix.250")
             candidateIps.add("$prefix.101")
             candidateIps.add("$prefix.102")
+            candidateIps.add("$prefix.20")
+            candidateIps.add("$prefix.30")
         }
 
         var detectedIp: String? = null
+        var detectedPort = 80
         var detectedPath = config.path
 
         for (candidate in candidateIps.distinct()) {
-            val probe = apiClient.probeNasServer(candidate, 80, config.path)
-            if (probe.isSuccess) {
+            val found = apiClient.probeNasServerOnPorts(candidate, portsToScan, config.path)
+            if (found != null) {
                 detectedIp = candidate
-                detectedPath = probe.getOrNull() ?: config.path
+                detectedPort = found.first
+                detectedPath = found.second
                 break
             }
         }
 
-        // 3. Si aún no fue hallado, escanear en paralelo el rango del primer prefijo
-        if (detectedIp == null && prefixes.isNotEmpty()) {
-            val prefix = prefixes.first()
-            val jobs = (2..254).map { hostNum ->
+        // 3. Si aún no fue hallado, escanear en paralelo el rango del prefijo en puertos 80 y 8080
+        if (detectedIp == null && distinctPrefixes.isNotEmpty()) {
+            val prefix = distinctPrefixes.first()
+            val jobs = (1..254).map { hostNum ->
                 async {
                     val ip = "$prefix.$hostNum"
-                    val p = apiClient.probeNasServer(ip, 80, config.path)
-                    if (p.isSuccess) Pair(ip, p.getOrNull() ?: config.path) else null
+                    val found = apiClient.probeNasServerOnPorts(ip, portsToScan, config.path)
+                    if (found != null) {
+                        Triple(ip, found.first, found.second)
+                    } else null
                 }
             }
             for (j in jobs) {
                 val found = j.await()
                 if (found != null) {
                     detectedIp = found.first
-                    detectedPath = found.second
+                    detectedPort = found.second
+                    detectedPath = found.third
                     break
                 }
             }
@@ -725,29 +741,45 @@ class FamilyRepository(
         _isAutoDetecting.value = false
 
         if (detectedIp != null) {
-            val updated = config.copy(ip = detectedIp, port = 80, path = detectedPath, isConnected = true, lastError = null)
+            val updated = config.copy(ip = detectedIp, port = detectedPort, path = detectedPath, isConnected = true, lastError = null)
             updateNasConfig(updated)
             _isNasDetected.value = true
             _showNasIpConfirmation.value = false
-            Result.success(detectedIp)
+            Result.success("$detectedIp:$detectedPort")
         } else {
             // No se detectó automáticamente: solicitar confirmación inicial del IP al usuario
             _isNasDetected.value = false
             _showNasIpConfirmation.value = true
-            Result.failure(Exception("No se detectó el Synology NAS en el puerto 80 en la red LAN."))
+            Result.failure(Exception("No se detectó el Synology NAS en los puertos 80 u 8080 en la red LAN."))
         }
     }
+
+    suspend fun autoDetectNasOnPort80(): Result<String> = autoDetectNasServer()
 
     /**
      * Prueba manual y confirmación de la IP del servidor Synology introducida por el usuario.
      */
     suspend fun testAndConfirmNasConfig(ip: String, port: Int = 80, path: String = "/family_api"): Result<Boolean> = withContext(Dispatchers.IO) {
-        val probe = apiClient.probeNasServer(ip.trim(), port, path.trim())
+        val cleanIp = ip.trim()
+        val cleanPath = path.trim()
+        var probe = apiClient.probeNasServer(cleanIp, port, cleanPath)
+        var confirmedPort = port
+
+        // Si falla en el puerto especificado (80 u 8080), probar automáticamente el alternativo
+        if (!probe.isSuccess && (port == 80 || port == 8080)) {
+            val altPort = if (port == 80) 8080 else 80
+            val altProbe = apiClient.probeNasServer(cleanIp, altPort, cleanPath)
+            if (altProbe.isSuccess) {
+                probe = altProbe
+                confirmedPort = altPort
+            }
+        }
+
         if (probe.isSuccess) {
-            val detectedPath = probe.getOrNull() ?: path.trim()
+            val detectedPath = probe.getOrNull() ?: cleanPath
             val updated = _nasConfig.value.copy(
-                ip = ip.trim(),
-                port = port,
+                ip = cleanIp,
+                port = confirmedPort,
                 path = detectedPath,
                 isConnected = true,
                 lastError = null
@@ -757,19 +789,19 @@ class FamilyRepository(
             _showNasIpConfirmation.value = false
             Result.success(true)
         } else {
-            val ping = apiClient.pingNas(ip.trim(), port)
+            val ping = apiClient.pingNas(cleanIp, confirmedPort)
             if (ping.isSuccess) {
                 val updated = _nasConfig.value.copy(
-                    ip = ip.trim(),
-                    port = port,
-                    path = path.trim(),
+                    ip = cleanIp,
+                    port = confirmedPort,
+                    path = cleanPath,
                     isConnected = true,
-                    lastError = "Puerto $port alcanzable, pero no se encontró 'index.php'. Verifica la carpeta en Web Station."
+                    lastError = "Puerto $confirmedPort alcanzable, pero no se encontró 'index.php'. Verifica la carpeta en Web Station."
                 )
                 updateNasConfig(updated)
-                Result.failure(Exception("Se detectó el NAS en el puerto $port, pero 'index.php' no responde en la ruta '${path.trim()}'. Comprueba que los archivos PHP estén en '/volume1/web' o '/volume1/web/family_api'."))
+                Result.failure(Exception("Se detectó el NAS en el puerto $confirmedPort, pero 'index.php' no responde en la ruta '$cleanPath'. Comprueba que los archivos PHP estén en '/volume1/web' o '/volume1/web/family_api'."))
             } else {
-                Result.failure(Exception("No se pudo conectar a $ip:$port. Comprueba que el Synology NAS esté encendido, Web Station activo y en la misma red LAN."))
+                Result.failure(Exception("No se pudo conectar a $cleanIp en los puertos 80 u 8080. Comprueba que el Synology NAS esté encendido, Web Station activo y en la misma red LAN."))
             }
         }
     }

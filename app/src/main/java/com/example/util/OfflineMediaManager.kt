@@ -98,8 +98,7 @@ object OfflineMediaManager {
         return if (cached != null) {
             Uri.fromFile(cached)
         } else {
-            // Disparar descarga en segundo plano para que la próxima vez esté disponible offline
-            cacheUrlAsync(context, url)
+            // Reproducir en streaming directo sin descargar archivos pesados automáticamente
             Uri.parse(url)
         }
     }
@@ -116,7 +115,7 @@ object OfflineMediaManager {
     /**
      * Descarga y almacena un archivo multimedia en la carpeta oculta del dispositivo.
      */
-    suspend fun downloadAndCache(context: Context, url: String): File? = withContext(Dispatchers.IO) {
+    suspend fun downloadAndCache(context: Context, url: String, maxBytesLimit: Long = 0L): File? = withContext(Dispatchers.IO) {
         if (url.isBlank() || url.startsWith("file://") || url.startsWith("content://")) {
             return@withContext null
         }
@@ -143,6 +142,12 @@ object OfflineMediaManager {
             }
 
             val body = response.body ?: return@withContext null
+            val contentLength = body.contentLength()
+            if (maxBytesLimit > 0 && contentLength > maxBytesLimit) {
+                // Abortar descarga: archivo demasiado pesado para el modo offline automático
+                body.close()
+                return@withContext null
+            }
             body.byteStream().use { input ->
                 FileOutputStream(partFile).use { output ->
                     input.copyTo(output)
@@ -201,7 +206,7 @@ object OfflineMediaManager {
                     thumbUrl?.let { urls.add(it) }
 
                     if (!isVideo) {
-                        // Para imágenes completas, precargar
+                        // Para fotos familiares normales: precargar imagen completa
                         val imgUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
                             media.url
                         } else if (media.url.isNotBlank() && baseUrl.isNotBlank()) {
@@ -209,22 +214,25 @@ object OfflineMediaManager {
                         } else null
                         imgUrl?.let { urls.add(it) }
                     } else {
-                        // Para VÍDEOS: Solo descargar el PRIMER FRAGMENTO para arranque instantáneo sin saturar la red
-                        val firstChunkUrl = media.chunks.firstOrNull() ?: media.url
-                        val fullFirstChunk = if (firstChunkUrl.startsWith("http://") || firstChunkUrl.startsWith("https://")) {
-                            firstChunkUrl
-                        } else if (firstChunkUrl.isNotBlank() && baseUrl.isNotBlank()) {
-                            "$baseUrl/${firstChunkUrl.trimStart('/')}"
-                        } else null
-                        fullFirstChunk?.let { urls.add(it) }
+                        // Para VÍDEOS: Solo descargar el PRIMER FRAGMENTO si está fragmentado (trozos ligeros de 2-4MB)
+                        // NUNCA descargar archivos de vídeo completos ni pesados no fragmentados en segundo plano
+                        if (media.isChunked && media.chunks.isNotEmpty()) {
+                            val firstChunkUrl = media.chunks.first()
+                            val fullFirstChunk = if (firstChunkUrl.startsWith("http://") || firstChunkUrl.startsWith("https://")) {
+                                firstChunkUrl
+                            } else if (baseUrl.isNotBlank()) {
+                                "$baseUrl/${firstChunkUrl.trimStart('/')}"
+                            } else null
+                            fullFirstChunk?.let { urls.add(it) }
+                        }
                     }
                 }
             }
 
-            // Descargar progresivamente sin saturar
+            // Descargar progresivamente solo estos elementos ligeros
             urls.distinct().forEach { url ->
                 if (!isCached(appContext, url)) {
-                    downloadAndCache(appContext, url)
+                    downloadAndCache(appContext, url, maxBytesLimit = 25 * 1024 * 1024L) // Límite de seguridad 25MB
                 }
             }
         }

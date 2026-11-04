@@ -133,7 +133,6 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         rememberSession = remember
                     )
                 },
-                onSkipLogin = { viewModel.skipLoginAsGuest() },
                 onOpenNasConfig = { viewModel.retryAutoDetectNas() }
             )
 

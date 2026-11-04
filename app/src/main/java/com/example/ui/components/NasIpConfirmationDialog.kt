@@ -90,7 +90,7 @@ fun NasIpConfirmationDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "No se detectó automáticamente el Synology NAS en el puerto 80 en tu red LAN. Por favor confirma o introduce la dirección IP del servidor donde subiste los archivos PHP y SQL:",
+                    text = "No se detectó automáticamente el Synology NAS en los puertos 80 u 8080 en tu red LAN. Por favor confirma o introduce la dirección IP del servidor donde subiste los archivos PHP y SQL:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp

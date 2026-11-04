@@ -310,35 +310,57 @@ object SynologyScripts {
 
         function getDB(): PDO {
             static ${D}pdo = null;
-            if (${D}pdo === null) {
-                ${D}options = [
-                    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES   => false,
-                    PDO::ATTR_TIMEOUT            => 5,
-                ];
-                if (defined('PDO::MYSQL_ATTR_MULTI_STATEMENTS')) {
-                    ${D}options[PDO::MYSQL_ATTR_MULTI_STATEMENTS] = true;
-                }
+            if (${D}pdo !== null) {
+                return ${D}pdo;
+            }
 
+            ${D}options = [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES   => false,
+                PDO::ATTR_TIMEOUT            => 5,
+            ];
+            if (defined('PDO::MYSQL_ATTR_MULTI_STATEMENTS')) {
+                ${D}options[PDO::MYSQL_ATTR_MULTI_STATEMENTS] = true;
+            }
+
+            ${D}dsnList = [
+                "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+                "mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+                "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+                "mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+                "mysql:unix_socket=/var/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+                "mysql:host=127.0.0.1;port=3306;dbname=" . DB_NAME . ";charset=utf8mb4"
+            ];
+
+            ${D}lastException = null;
+            foreach (${D}dsnList as ${D}dsn) {
                 try {
-                    // Conexión regular a la base de datos
-                    ${D}dsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
                     ${D}pdo = new PDO(${D}dsn, DB_USER, DB_PASS, ${D}options);
+                    break;
                 } catch (PDOException ${D}e) {
-                    // Si no existe la BD en MariaDB 10, conectarse al servidor y crearla automáticamente
+                    ${D}lastException = ${D}e;
                     if (${D}e->getCode() == 1049 || strpos(${D}e->getMessage(), 'Unknown database') !== false) {
-                        ${D}rootDsn = "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";charset=utf8mb4";
-                        ${D}serverPdo = new PDO(${D}rootDsn, DB_USER, DB_PASS, ${D}options);
-                        ${D}serverPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
-                        ${D}pdo = new PDO("mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS, ${D}options);
-                    } else {
-                        throw ${D}e;
+                        try {
+                            ${D}rootDsn = preg_replace('/;dbname=[^;]+/', '', ${D}dsn);
+                            ${D}serverPdo = new PDO(${D}rootDsn, DB_USER, DB_PASS, ${D}options);
+                            ${D}serverPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+                            ${D}pdo = new PDO(${D}dsn, DB_USER, DB_PASS, ${D}options);
+                            break;
+                        } catch (Exception ${D}eCreate) {
+                            ${D}lastException = ${D}eCreate;
+                        }
                     }
                 }
-
-                autoBootstrapDatabase(${D}pdo);
             }
+
+            if (${D}pdo === null) {
+                ${D}msg = "Error al conectar con MariaDB 10 en Synology (" . DB_HOST . ":" . DB_PORT . " ni por socket mysqld10.sock). ";
+                ${D}msg .= "Verifique en DSM -> MariaDB 10 que la casilla 'Habilitar conexión TCP/IP' esté marcada. Detalle: " . (${D}lastException ? ${D}lastException->getMessage() : 'Desconocido');
+                throw new Exception(${D}msg);
+            }
+
+            autoBootstrapDatabase(${D}pdo);
             return ${D}pdo;
         }
     """.trimIndent()
@@ -434,10 +456,94 @@ object SynologyScripts {
             function matchRoute(${D}action, ${D}uri, ${D}target) {
                 ${D}t = trim(${D}target, '/');
                 if (!empty(${D}action)) {
-                    return ${D}action === ${D}t || str_ends_with(${D}action, '/' . ${D}t);
+                    return ${D}action === ${D}t;
                 }
-                return str_ends_with(${D}uri, '/' . ${D}t) || str_contains(${D}uri, '/' . ${D}t);
+                ${D}pattern = '#/(?:index\\.php/)?' . preg_quote(${D}t, '#') . '(?:$|\\?)#';
+                return preg_match(${D}pattern, ${D}uri) === 1;
             }
+        }
+
+        function streamMediaFile(${D}filePath) {
+            if (!@file_exists(${D}filePath) || !@is_readable(${D}filePath)) {
+                http_response_code(404);
+                header('Content-Type: application/json; charset=UTF-8');
+                echo json_encode(["error" => "Archivo multimedia no encontrado o sin permisos en el NAS"]);
+                exit;
+            }
+
+            ${D}size = filesize(${D}filePath);
+            ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
+            ${D}mimes = [
+                'mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'mkv' => 'video/x-matroska',
+                'webm' => 'video/webm', 'avi' => 'video/x-msvideo', '3gp' => 'video/3gpp', 'm4v' => 'video/mp4',
+                'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
+                'webp' => 'image/webp', 'gif' => 'image/gif', 'bmp' => 'image/bmp'
+            ];
+            ${D}mime = ${D}mimes[${D}ext] ?? 'application/octet-stream';
+
+            while (ob_get_level()) {
+                @ob_end_clean();
+            }
+
+            ${D}start = 0;
+            ${D}end = ${D}size - 1;
+
+            if (isset(${D}_SERVER['HTTP_RANGE'])) {
+                ${D}c_start = ${D}start;
+                ${D}c_end = ${D}end;
+                list(, ${D}range) = explode('=', ${D}_SERVER['HTTP_RANGE'], 2);
+                if (strpos(${D}range, ',') !== false) {
+                    header('HTTP/1.1 416 Requested Range Not Satisfiable');
+                    header("Content-Range: bytes ${D}start-${D}end/${D}size");
+                    exit;
+                }
+                if (${D}range == '-') {
+                    ${D}c_start = ${D}size - substr(${D}range, 1);
+                } else {
+                    ${D}range = explode('-', ${D}range);
+                    ${D}c_start = ${D}range[0];
+                    ${D}c_end = (isset(${D}range[1]) && is_numeric(${D}range[1])) ? ${D}range[1] : ${D}size - 1;
+                }
+                ${D}c_end = (${D}c_end > ${D}end) ? ${D}end : ${D}c_end;
+                if (${D}c_start > ${D}c_end || ${D}c_start > ${D}size - 1 || ${D}c_end >= ${D}size) {
+                    header('HTTP/1.1 416 Requested Range Not Satisfiable');
+                    header("Content-Range: bytes ${D}start-${D}end/${D}size");
+                    exit;
+                }
+                ${D}start = ${D}c_start;
+                ${D}end = ${D}c_end;
+                ${D}length = ${D}end - ${D}start + 1;
+                header('HTTP/1.1 206 Partial Content');
+                header("Content-Range: bytes ${D}start-${D}end/${D}size");
+                header("Content-Length: " . ${D}length);
+            } else {
+                header('HTTP/1.1 200 OK');
+                header("Content-Length: " . ${D}size);
+            }
+
+            header("Content-Type: " . ${D}mime);
+            header('Accept-Ranges: bytes');
+            header('Cache-Control: public, max-age=86400');
+
+            ${D}fp = @fopen(${D}filePath, 'rb');
+            if (!${D}fp) {
+                http_response_code(500);
+                header('Content-Type: application/json; charset=UTF-8');
+                echo json_encode(["error" => "No se pudo abrir el archivo para lectura"]);
+                exit;
+            }
+
+            fseek(${D}fp, ${D}start);
+            ${D}buffer = 64 * 1024;
+            while (!feof(${D}fp) && (${D}pos = ftell(${D}fp)) <= ${D}end) {
+                if (${D}pos + ${D}buffer > ${D}end) {
+                    ${D}buffer = ${D}end - ${D}pos + 1;
+                }
+                echo fread(${D}fp, ${D}buffer);
+                flush();
+            }
+            fclose(${D}fp);
+            exit;
         }
 
         // 1. Health check / Ping
@@ -662,7 +768,7 @@ object SynologyScripts {
         }
 
         // 3. OBTENER FEED COMPLETO (Excluye vídeos subidos solo a Shorts)
-        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts') || str_ends_with(${D}uri, '/feed') || str_ends_with(${D}uri, '/posts'))) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts'))) {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
@@ -818,7 +924,7 @@ object SynologyScripts {
                     JOIN users u ON p.user_id = u.id
                     JOIN family_groups g ON g.id = p.group_id
                     LEFT JOIN media m ON m.post_id = p.id
-                    WHERE g.id = ?
+                    WHERE p.group_id = ?
                     ORDER BY p.created_at DESC
                     LIMIT 100
                 ");
@@ -999,28 +1105,12 @@ object SynologyScripts {
         }
 
         // 3.7. STREAMING/PROXY DE MEDIOS DESDE VOLUMEN DEL SYNOLOGY NAS
-        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'media_proxy') || str_ends_with(${D}uri, '/media_proxy'))) {
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'media_proxy') || matchRoute(${D}action, ${D}uri, 'stream') || str_ends_with(${D}uri, '/media_proxy'))) {
             ${D}filePath = ${D}_GET['path'] ?? '';
-            if (empty(${D}filePath) || !file_exists(${D}filePath)) {
-                http_response_code(404);
-                echo "Archivo multimedia no encontrado en NAS";
-                exit;
+            if (!empty(${D}filePath) && !str_starts_with(${D}filePath, '/')) {
+                ${D}filePath = __DIR__ . '/' . ltrim(${D}filePath, '/');
             }
-
-            ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
-            ${D}mimes = [
-                'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
-                'webp' => 'image/webp', 'gif' => 'image/gif',
-                'mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'mkv' => 'video/x-matroska',
-                'webm' => 'video/webm', 'avi' => 'video/x-msvideo', '3gp' => 'video/3gpp'
-            ];
-            ${D}mime = ${D}mimes[${D}ext] ?? 'application/octet-stream';
-
-            header('Content-Type: ' . ${D}mime);
-            header('Content-Length: ' . filesize(${D}filePath));
-            header('Accept-Ranges: bytes');
-            header('Cache-Control: public, max-age=86400');
-            @readfile(${D}filePath);
+            streamMediaFile(${D}filePath);
             exit;
         }
 

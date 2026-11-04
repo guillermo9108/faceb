@@ -152,10 +152,17 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun openGroup(group: FamilyGroup) {
         _selectedGroupForViewing.value = group
+        // Filtrar inmediatamente en memoria solo las publicaciones que pertenezcan a este grupo
+        val localForGroup = repository.posts.value.filter { it.groupId == group.id }
+        _groupPosts.value = localForGroup
+
         viewModelScope.launch {
             val res = repository.fetchGroupPosts(group.id)
             res.onSuccess { posts ->
-                _groupPosts.value = posts
+                // Garantizar que la lista pertenezca estrictamente al grupo abierto
+                val strictlyGroupPosts = posts.filter { it.groupId == null || it.groupId == group.id }
+                    .map { if (it.groupId == null) it.copy(groupId = group.id, groupName = group.name) else it }
+                _groupPosts.value = strictlyGroupPosts
             }
         }
     }

@@ -1,26 +1,27 @@
 <?php
 /**
  * index.php - API REST para Muro Familiar LAN
- * Servir vía Web Station en puerto dedicado (ej: 8085)
+ * Totalmente compatible con PHP 7.3 y MariaDB 10 en Synology DSM 6 y DSM 7
+ * Servir vía Web Station en puerto dedicado (ej: 8085 o puerto 80)
  * Ruta en NAS: /volume1/web/family_api/index.php
  */
 
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
-header("Content-Type: application/json; charset=UTF-8");
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit;
+@set_time_limit(0);
+@ini_set('max_execution_time', '0');
+@ini_set('max_input_time', '0');
+@ini_set('memory_limit', '2048M');
+@ini_set('upload_max_filesize', '4096M');
+@ini_set('post_max_size', '4096M');
+
+// Polyfills para compatibilidad estricta con PHP 7.3
+if (!function_exists('str_starts_with')) {
+    function str_starts_with($haystack, $needle) {
+        return (string)$needle !== '' && strncmp($haystack, $needle, strlen($needle)) === 0;
+    }
 }
-
-require_once __DIR__ . '/config.php';
-
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
-$action = trim($_GET['action'] ?? $_GET['route'] ?? '', '/');
-$method = $_SERVER['REQUEST_METHOD'];
-
 if (!function_exists('str_ends_with')) {
     function str_ends_with($haystack, $needle) {
         $length = strlen($needle);
@@ -33,25 +34,172 @@ if (!function_exists('str_contains')) {
     }
 }
 
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, Range");
+header("Access-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length");
+
+// Manejador global de excepciones (siempre devuelve JSON estructurado)
+set_exception_handler(function ($e) {
+    http_response_code(500);
+    header("Content-Type: application/json; charset=UTF-8");
+    echo json_encode([
+        "status" => "ERROR",
+        "error" => $e->getMessage(),
+        "file" => basename($e->getFile()),
+        "line" => $e->getLine(),
+        "php_version" => PHP_VERSION
+    ]);
+    exit;
+});
+
+// Captura de errores fatales de parseo o memoria en PHP 7.3
+register_shutdown_function(function() {
+    $err = error_get_last();
+    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        if (!headers_sent()) {
+            http_response_code(500);
+            header("Content-Type: application/json; charset=UTF-8");
+        }
+        echo json_encode([
+            "status" => "FATAL_ERROR",
+            "error" => $err['message'],
+            "file" => basename($err['file']),
+            "line" => $err['line'],
+            "php_version" => PHP_VERSION
+        ]);
+    }
+});
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
+
+require_once __DIR__ . '/config.php';
+
+$action = trim($_GET['action'] ?? $_GET['route'] ?? '', '/');
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '';
+$method = $_SERVER['REQUEST_METHOD'];
+
+// Función de enrutamiento estricta: evita que 'group/posts' coincida erróneamente con 'posts'
 function matchRoute($action, $uri, $target) {
     $t = trim($target, '/');
     if (!empty($action)) {
-        return $action === $t || str_ends_with($action, '/' . $t);
+        return $action === $t;
     }
-    return str_ends_with($uri, '/' . $t) || str_contains($uri, '/' . $t);
+    $pattern = '#/(?:index\\.php/)?' . preg_quote($t, '#') . '(?:$|\\?)#';
+    return preg_match($pattern, $uri) === 1;
+}
+
+/**
+ * Función de transmisión multimedia con soporte completo de HTTP Range (HTTP 206 Partial Content).
+ * Permite reproducción fluida en ExoPlayer, saltos temporales (seeking) y previene agotamiento de memoria en PHP 7.3.
+ */
+function streamMediaFile($filePath) {
+    if (!@file_exists($filePath) || !@is_readable($filePath)) {
+        http_response_code(404);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(["error" => "Archivo multimedia no encontrado o sin permisos en el NAS"]);
+        exit;
+    }
+
+    $size = filesize($filePath);
+    $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+    $mimes = [
+        'mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'mkv' => 'video/x-matroska',
+        'webm' => 'video/webm', 'avi' => 'video/x-msvideo', '3gp' => 'video/3gpp', 'm4v' => 'video/mp4',
+        'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png',
+        'webp' => 'image/webp', 'gif' => 'image/gif', 'bmp' => 'image/bmp'
+    ];
+    $mime = $mimes[$ext] ?? 'application/octet-stream';
+
+    // Limpiar buffers de salida previos para evitar consumo de memoria
+    while (ob_get_level()) {
+        @ob_end_clean();
+    }
+
+    $start = 0;
+    $end = $size - 1;
+
+    if (isset($_SERVER['HTTP_RANGE'])) {
+        $c_start = $start;
+        $c_end = $end;
+        list(, $range) = explode('=', $_SERVER['HTTP_RANGE'], 2);
+        if (strpos($range, ',') !== false) {
+            header('HTTP/1.1 416 Requested Range Not Satisfiable');
+            header("Content-Range: bytes $start-$end/$size");
+            exit;
+        }
+        if ($range == '-') {
+            $c_start = $size - substr($range, 1);
+        } else {
+            $range = explode('-', $range);
+            $c_start = $range[0];
+            $c_end = (isset($range[1]) && is_numeric($range[1])) ? $range[1] : $size - 1;
+        }
+        $c_end = ($c_end > $end) ? $end : $c_end;
+        if ($c_start > $c_end || $c_start > $size - 1 || $c_end >= $size) {
+            header('HTTP/1.1 416 Requested Range Not Satisfiable');
+            header("Content-Range: bytes $start-$end/$size");
+            exit;
+        }
+        $start = $c_start;
+        $end = $c_end;
+        $length = $end - $start + 1;
+        header('HTTP/1.1 206 Partial Content');
+        header("Content-Range: bytes $start-$end/$size");
+        header("Content-Length: $length");
+    } else {
+        header('HTTP/1.1 200 OK');
+        header("Content-Length: $size");
+    }
+
+    header("Content-Type: $mime");
+    header('Accept-Ranges: bytes');
+    header('Cache-Control: public, max-age=86400');
+
+    $fp = @fopen($filePath, 'rb');
+    if (!$fp) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(["error" => "No se pudo abrir el archivo para lectura"]);
+        exit;
+    }
+
+    fseek($fp, $start);
+    $buffer = 64 * 1024; // Transmisión en bloques de 64 KB
+    while (!feof($fp) && ($pos = ftell($fp)) <= $end) {
+        if ($pos + $buffer > $end) {
+            $buffer = $end - $pos + 1;
+        }
+        echo fread($fp, $buffer);
+        flush();
+    }
+    fclose($fp);
+    exit;
 }
 
 // 1. Health check / Ping
 if (matchRoute($action, $uri, 'ping') || matchRoute($action, $uri, 'health')) {
     try {
         $db = getDB();
+        $serverVer = "";
+        try {
+            $serverVer = $db->getAttribute(PDO::ATTR_SERVER_VERSION);
+        } catch (Exception $eVer) {}
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
             "status" => "ONLINE",
-            "server" => "Synology Web Station + MariaDB 10",
+            "server" => "Synology Web Station",
+            "php_version" => PHP_VERSION,
+            "database" => DB_NAME,
+            "database_version" => $serverVer,
             "time" => date("Y-m-d H:i:s")
         ]);
     } catch (Exception $e) {
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["status" => "ERROR", "message" => $e->getMessage()]);
     }
     exit;
@@ -63,25 +211,33 @@ if (matchRoute($action, $uri, 'repair_db') || matchRoute($action, $uri, 'repair'
         $db = getDB();
         autoBootstrapDatabase($db);
 
-        $uploadDir = __DIR__ . '/uploads';
-        if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
-        if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
-        if (!is_dir($uploadDir . '/chunks')) @mkdir($uploadDir . '/chunks', 0777, true);
-
         $tablesStmt = $db->query("SHOW TABLES");
         $tables = $tablesStmt ? $tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
 
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
             "status" => "OK",
-            "message" => "Tablas en MariaDB verificadas y reparadas exitosamente.",
+            "message" => "Tablas en MariaDB 10 verificadas y sincronizadas exitosamente.",
             "database" => DB_NAME,
             "tables" => $tables,
             "time" => date("Y-m-d H:i:s")
         ]);
     } catch (Exception $e) {
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["status" => "ERROR", "error" => $e->getMessage()]);
     }
+    exit;
+}
+
+// 1.2. STREAMING / PROXY DE ARCHIVOS MULTIMEDIA DEL NAS (Soporta Range para ExoPlayer)
+if ($method === 'GET' && (matchRoute($action, $uri, 'media_proxy') || matchRoute($action, $uri, 'stream') || str_ends_with($uri, '/media_proxy'))) {
+    $filePath = $_GET['path'] ?? '';
+    // Si la ruta es relativa dentro del servidor web
+    if (!empty($filePath) && !str_starts_with($filePath, '/')) {
+        $filePath = __DIR__ . '/' . ltrim($filePath, '/');
+    }
+    streamMediaFile($filePath);
     exit;
 }
 
@@ -90,82 +246,280 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'users') || str_ends_with($u
     try {
         $db = getDB();
         $stmt = $db->query("SELECT id, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode($stmt->fetchAll());
     } catch (Exception $e) {
-        if (str_contains($e->getMessage(), "doesn't exist")) {
-            try {
-                autoBootstrapDatabase($db);
-                $stmt = $db->query("SELECT id, display_name, role, avatar_emoji, avatar_color_hex, bio, pin_hash FROM users ORDER BY id ASC");
-                echo json_encode($stmt->fetchAll());
-                exit;
-            } catch (Exception $retryEx) {}
-        }
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
     }
     exit;
 }
 
-// 3. OBTENER FEED COMPLETO
+// 2.1. LOGIN DE USUARIOS
+if ($method === 'POST' && (matchRoute($action, $uri, 'auth/login') || str_ends_with($uri, '/auth/login'))) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $username = trim($input['username'] ?? '');
+    $pin = trim($input['pin'] ?? '');
+
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch();
+
+        if ($user && (password_verify($pin, $user['pin_hash']) || $user['pin_hash'] === $pin)) {
+            unset($user['pin_hash']);
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["status" => "OK", "user" => $user]);
+        } else {
+            http_response_code(401);
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["error" => "Nombre de usuario o PIN incorrecto"]);
+        }
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.1. OBTENER GRUPOS
+if ($method === 'GET' && (matchRoute($action, $uri, 'groups') || str_ends_with($uri, '/groups'))) {
+    try {
+        $db = getDB();
+        $stmt = $db->query("
+            SELECT g.*, 
+                   (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) as posts_count
+            FROM family_groups g
+            ORDER BY g.updated_at DESC
+        ");
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["groups" => $stmt->fetchAll()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.2. OBTENER PUBLICACIONES DE UN GRUPO ESPECÍFICO (COLOCADO ANTES DEL FEED GENÉRICO)
+if ($method === 'GET' && (matchRoute($action, $uri, 'group/posts') || str_ends_with($uri, '/group/posts'))) {
+    $groupId = (int)($_GET['group_id'] ?? 0);
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("
+            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                   g.name as group_name,
+                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                   (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
+                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            JOIN family_groups g ON g.id = p.group_id
+            LEFT JOIN media m ON m.post_id = p.id
+            WHERE p.group_id = ?
+            ORDER BY p.is_pinned DESC, p.created_at DESC
+            LIMIT 100
+        ");
+        $stmt->execute([$groupId]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["posts" => $stmt->fetchAll()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.3. OBTENER SHORTS DE VÍDEO
+if ($method === 'GET' && (matchRoute($action, $uri, 'shorts') || str_ends_with($uri, '/shorts'))) {
+    try {
+        $db = getDB();
+        $stmt = $db->query("
+            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                   g.name as group_name,
+                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                   (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
+                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            LEFT JOIN family_groups g ON g.id = p.group_id
+            JOIN media m ON m.post_id = p.id AND m.media_type = 'VIDEO'
+            WHERE p.is_short = 1
+            ORDER BY p.created_at DESC
+            LIMIT 50
+        ");
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["shorts" => $stmt->fetchAll()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.4. OBTENER FEED COMPLETO (MURO)
 if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($action, $uri, 'posts') || str_ends_with($uri, '/feed') || str_ends_with($uri, '/posts'))) {
     try {
         $db = getDB();
         $stmt = $db->query("
             SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
-                   m.media_type, m.file_path, m.thumb_path, m.duration_label,
-                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count
+                   g.name as group_name,
+                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
+                   (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
+                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
             JOIN users u ON p.user_id = u.id
+            LEFT JOIN family_groups g ON g.id = p.group_id
             LEFT JOIN media m ON m.post_id = p.id
             ORDER BY p.is_pinned DESC, p.created_at DESC
             LIMIT 50
         ");
-        $posts = $stmt->fetchAll();
-        echo json_encode(["posts" => $posts]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["posts" => $stmt->fetchAll()]);
     } catch (Exception $e) {
-        if (str_contains($e->getMessage(), "doesn't exist") || str_contains($e->getMessage(), "Base table")) {
-            try {
-                autoBootstrapDatabase($db);
-                $stmt = $db->query("
-                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label,
-                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count
-                    FROM posts p
-                    JOIN users u ON p.user_id = u.id
-                    LEFT JOIN media m ON m.post_id = p.id
-                    ORDER BY p.is_pinned DESC, p.created_at DESC
-                    LIMIT 50
-                ");
-                $posts = $stmt->fetchAll();
-                echo json_encode(["posts" => $posts]);
-                exit;
-            } catch (Exception $retryEx) {}
-        }
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
     }
     exit;
 }
 
-// 4. CREAR PUBLICACIÓN CON ARCHIVO REAL
-if ($method === 'POST' && (str_ends_with($uri, '/post') || str_ends_with($uri, '/posts'))) {
+// 3.5. SUBIDA DE FRAGMENTOS DE VÍDEO
+if ($method === 'POST' && (matchRoute($action, $uri, 'video/upload_chunk') || str_ends_with($uri, '/video/upload_chunk'))) {
+    $sessionId = preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST['session_id'] ?? '');
+    $chunkIndex = (int)($_POST['chunk_index'] ?? 0);
+    $totalChunks = (int)($_POST['total_chunks'] ?? 1);
+
+    $fileKey = isset($_FILES['chunk']) ? 'chunk' : (isset($_FILES['file']) ? 'file' : null);
+    if (empty($sessionId) || !$fileKey || !isset($_FILES[$fileKey])) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Falta session_id o archivo del fragmento"]);
+        exit;
+    }
+
+    if ($_FILES[$fileKey]['error'] !== UPLOAD_ERR_OK) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Error al recibir fragmento #{$chunkIndex}: código " . $_FILES[$fileKey]['error']]);
+        exit;
+    }
+
+    $chunkDir = __DIR__ . '/uploads/chunks/' . $sessionId;
+    if (!is_dir($chunkDir)) @mkdir($chunkDir, 0777, true);
+
+    $chunkName = sprintf("chunk_%04d.mp4", $chunkIndex);
+    $targetPath = $chunkDir . '/' . $chunkName;
+
+    move_uploaded_file($_FILES[$fileKey]['tmp_name'], $targetPath);
+
+    header("Content-Type: application/json; charset=UTF-8");
+    echo json_encode([
+        "status" => "OK",
+        "session_id" => $sessionId,
+        "chunk_index" => $chunkIndex,
+        "received" => true
+    ]);
+    exit;
+}
+
+// 3.6. FINALIZAR PUBLICACIÓN CON VÍDEO FRAGMENTADO
+if ($method === 'POST' && (matchRoute($action, $uri, 'video/finalize_chunks') || str_ends_with($uri, '/video/finalize_chunks'))) {
+    $sessionId = preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST['session_id'] ?? '');
     $userId = (int)($_POST['user_id'] ?? 1);
     $text = trim($_POST['content_text'] ?? '');
     $feeling = $_POST['feeling'] ?? null;
     $location = $_POST['location'] ?? null;
+    $durationLabel = trim($_POST['duration_label'] ?? '');
+    $isShort = (int)($_POST['is_short'] ?? 0);
+    $groupId = !empty($_POST['group_id']) ? (int)$_POST['group_id'] : null;
+    $totalChunks = (int)($_POST['total_chunks'] ?? 1);
+
+    $chunkDir = __DIR__ . '/uploads/chunks/' . $sessionId;
+    if (empty($sessionId) || !is_dir($chunkDir)) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "No se encontró el directorio de fragmentos para la sesión {$sessionId}"]);
+        exit;
+    }
 
     try {
         $db = getDB();
         $db->beginTransaction();
 
-        $stmt = $db->prepare("INSERT INTO posts (user_id, content_text, feeling, location) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$userId, $text, $feeling, $location]);
+        $stmt = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$userId, $groupId, $text, $feeling, $location, $isShort]);
+        $postId = (int)$db->lastInsertId();
+
+        $thumbRel = "uploads/chunks/{$sessionId}/poster.jpg";
+        $hasThumb = false;
+        if (isset($_FILES['thumbnail']) && $_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
+            move_uploaded_file($_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . $thumbRel);
+            $hasThumb = true;
+        }
+
+        $firstChunkRel = "uploads/chunks/{$sessionId}/chunk_0000.mp4";
+        if (!$hasThumb) {
+            $thumbRel = $firstChunkRel;
+        }
+
+        $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
+        $stmtMedia->execute([$postId, $firstChunkRel, $thumbRel, $durationLabel ?: null]);
+
+        $stmtChunk = $db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
+        for ($i = 0; $i < $totalChunks; $i++) {
+            $relPath = sprintf("uploads/chunks/%s/chunk_%04d.mp4", $sessionId, $i);
+            $stmtChunk->execute([$postId, $i, $totalChunks, $relPath]);
+        }
+
+        $db->commit();
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "success" => true,
+            "post_id" => $postId,
+            "total_chunks" => $totalChunks,
+            "is_chunked" => true
+        ]);
+    } catch (Exception $e) {
+        if (isset($db) && $db->inTransaction()) $db->rollBack();
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 4. CREAR PUBLICACIÓN CON ARCHIVO DIRECTO
+if ($method === 'POST' && (matchRoute($action, $uri, 'post') || matchRoute($action, $uri, 'posts') || str_ends_with($uri, '/post') || str_ends_with($uri, '/posts'))) {
+    $userId = (int)($_POST['user_id'] ?? 1);
+    $text = trim($_POST['content_text'] ?? '');
+    $feeling = $_POST['feeling'] ?? null;
+    $location = $_POST['location'] ?? null;
+    $durationLabel = trim($_POST['duration_label'] ?? '');
+    $isShort = (int)($_POST['is_short'] ?? 0);
+    $groupId = !empty($_POST['group_id']) ? (int)$_POST['group_id'] : null;
+
+    try {
+        $db = getDB();
+        $db->beginTransaction();
+
+        $stmt = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$userId, $groupId, $text, $feeling, $location, $isShort]);
         $postId = $db->lastInsertId();
 
         if (isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
             $uploadDir = __DIR__ . '/uploads';
-            if (!is_dir($uploadDir . '/originals')) mkdir($uploadDir . '/originals', 0777, true);
-            if (!is_dir($uploadDir . '/thumbs')) mkdir($uploadDir . '/thumbs', 0777, true);
+            if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
+            if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
 
             $ext = strtolower(pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION));
             $uuid = uniqid('media_', true);
@@ -174,30 +528,33 @@ if ($method === 'POST' && (str_ends_with($uri, '/post') || str_ends_with($uri, '
 
             move_uploaded_file($_FILES['photo']['tmp_name'], __DIR__ . '/' . $relOrig);
 
-            // Generar WebP thumbnail con GD si es imagen
-            if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
-                createThumbnail(__DIR__ . '/' . $relOrig, __DIR__ . '/' . $relThumb, 720);
+            $isVideo = in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
+            if (isset($_FILES['thumbnail']) && $_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
+                move_uploaded_file($_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . $relThumb);
+            } else if (!$isVideo) {
+                $relThumb = $relOrig;
             } else {
                 $relThumb = $relOrig;
             }
 
-            $isVideo = in_array($ext, ['mp4', 'mov', 'mkv', 'avi']);
-            $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
-            $stmtMedia->execute([$postId, $isVideo ? 'VIDEO' : 'IMAGE', $relOrig, $relThumb]);
+            $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label) VALUES (?, ?, ?, ?, ?)");
+            $stmtMedia->execute([$postId, $isVideo ? 'VIDEO' : 'IMAGE', $relOrig, $relThumb, $durationLabel ?: null]);
         }
 
         $db->commit();
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["success" => true, "post_id" => (int)$postId]);
     } catch (Exception $e) {
         if (isset($db) && $db->inTransaction()) $db->rollBack();
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
     }
     exit;
 }
 
-// 5. REACCIÓN REAL
-if ($method === 'POST' && str_ends_with($uri, '/reaction')) {
+// 5. REACCIONES
+if ($method === 'POST' && (matchRoute($action, $uri, 'reaction') || str_ends_with($uri, '/reaction'))) {
     $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
     $postId = (int)($input['post_id'] ?? 0);
     $userId = (int)($input['user_id'] ?? 0);
@@ -210,21 +567,24 @@ if ($method === 'POST' && str_ends_with($uri, '/reaction')) {
         if ($check->fetchColumn() > 0) {
             $del = $db->prepare("DELETE FROM reactions WHERE post_id = ? AND user_id = ?");
             $del->execute([$postId, $userId]);
+            header("Content-Type: application/json; charset=UTF-8");
             echo json_encode(["action" => "removed"]);
         } else {
             $ins = $db->prepare("INSERT INTO reactions (post_id, user_id, reaction_type) VALUES (?, ?, ?)");
             $ins->execute([$postId, $userId, $rxType]);
+            header("Content-Type: application/json; charset=UTF-8");
             echo json_encode(["action" => "added"]);
         }
     } catch (Exception $e) {
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
     }
     exit;
 }
 
-// 6. COMENTARIO REAL
-if ($method === 'POST' && str_ends_with($uri, '/comment')) {
+// 6. COMENTARIOS
+if ($method === 'POST' && (matchRoute($action, $uri, 'comment') || str_ends_with($uri, '/comment'))) {
     $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
     $postId = (int)($input['post_id'] ?? 0);
     $userId = (int)($input['user_id'] ?? 0);
@@ -234,46 +594,231 @@ if ($method === 'POST' && str_ends_with($uri, '/comment')) {
         $db = getDB();
         $stmt = $db->prepare("INSERT INTO comments (post_id, user_id, comment_text) VALUES (?, ?, ?)");
         $stmt->execute([$postId, $userId, $text]);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["success" => true, "comment_id" => $db->lastInsertId()]);
     } catch (Exception $e) {
         http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
     }
     exit;
 }
 
-function createThumbnail($src, $dest, $maxW = 720) {
-    list($w, $h, $type) = @getimagesize($src);
-    if (!$w) return;
-    $ratio = $h / $w;
-    $nw = min($w, $maxW);
-    $nh = (int)($nw * $ratio);
-
-    $im = null;
-    switch ($type) {
-        case IMAGETYPE_JPEG:
-            $im = @imagecreatefromjpeg($src);
-            break;
-        case IMAGETYPE_PNG:
-            $im = @imagecreatefrompng($src);
-            break;
-        default:
-            if (defined('IMAGETYPE_WEBP') && $type === IMAGETYPE_WEBP && function_exists('imagecreatefromwebp')) {
-                $im = @imagecreatefromwebp($src);
-            }
-            break;
+// 7. OBTENER COMENTARIOS DE UN POST
+if ($method === 'GET' && (matchRoute($action, $uri, 'comments') || str_ends_with($uri, '/comments'))) {
+    $postId = (int)($_GET['post_id'] ?? 0);
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("
+            SELECT c.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex
+            FROM comments c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.post_id = ?
+            ORDER BY c.created_at ASC
+        ");
+        $stmt->execute([$postId]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["comments" => $stmt->fetchAll()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
     }
-    if (!$im) return;
-
-    $thumb = imagecreatetruecolor($nw, $nh);
-    imagecopyresampled($thumb, $im, 0, 0, 0, 0, $nw, $nh, $w, $h);
-    if (function_exists('imagewebp')) {
-        @imagewebp($thumb, $dest, 80);
-    } elseif (function_exists('imagejpeg')) {
-        @imagejpeg($thumb, $dest, 80);
-    }
-    imagedestroy($im);
-    imagedestroy($thumb);
+    exit;
 }
 
+// 8. HISTORIAS (STORIES)
+if ($method === 'GET' && (matchRoute($action, $uri, 'stories') || str_ends_with($uri, '/stories'))) {
+    try {
+        $db = getDB();
+        $stmt = $db->query("
+            SELECT s.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex
+            FROM stories s
+            JOIN users u ON s.user_id = u.id
+            ORDER BY s.created_at DESC
+            LIMIT 30
+        ");
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["stories" => $stmt->fetchAll()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 9. ESCANEAR CARPETAS DEL NAS
+if (($method === 'GET' || $method === 'POST') && (matchRoute($action, $uri, 'admin/scan_folders') || str_ends_with($uri, '/admin/scan_folders'))) {
+    $basePath = trim($_GET['base_path'] ?? $_POST['base_path'] ?? '/volume1/photo');
+    if (empty($basePath)) $basePath = '/volume1/photo';
+
+    if (!@is_dir($basePath)) {
+        http_response_code(404);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "La ruta '{$basePath}' no existe o no tiene permisos de lectura"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $existingPaths = [];
+        try {
+            $stmtExisting = $db->query("SELECT folder_path FROM family_groups");
+            $existingPaths = $stmtExisting->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        } catch (Exception $ex) {}
+
+        $entries = @scandir($basePath);
+        $folders = [];
+
+        if ($entries !== false) {
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..' || $entry === '@eaDir' || $entry === '#recycle') continue;
+                $fullPath = rtrim($basePath, '/') . '/' . $entry;
+                if (@is_dir($fullPath)) {
+                    $subEntries = @scandir($fullPath);
+                    $photoCount = 0;
+                    $videoCount = 0;
+
+                    if ($subEntries !== false) {
+                        foreach ($subEntries as $sub) {
+                            if ($sub === '.' || $sub === '..' || $sub === '@eaDir') continue;
+                            $subPath = $fullPath . '/' . $sub;
+                            if (@is_file($subPath)) {
+                                $ext = strtolower(pathinfo($sub, PATHINFO_EXTENSION));
+                                if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'])) {
+                                    $photoCount++;
+                                } else if (in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'])) {
+                                    $videoCount++;
+                                }
+                            }
+                        }
+                    }
+
+                    $isImported = in_array($fullPath, $existingPaths);
+                    $folders[] = [
+                        "name" => $entry,
+                        "path" => $fullPath,
+                        "photos_count" => $photoCount,
+                        "videos_count" => $videoCount,
+                        "media_count" => ($photoCount + $videoCount),
+                        "already_imported" => $isImported
+                    ];
+                }
+            }
+        }
+
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["status" => "OK", "base_path" => $basePath, "folders" => $folders]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 10. IMPORTAR CARPETAS COMO GRUPOS
+if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || str_ends_with($uri, '/admin/import_groups'))) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $folderPaths = $input['folder_paths'] ?? [];
+    if (is_string($folderPaths)) {
+        $folderPaths = explode(',', $folderPaths);
+    }
+    $adminUserId = (int)($input['admin_user_id'] ?? 1);
+
+    if (empty($folderPaths) || !is_array($folderPaths)) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "No se recibieron carpetas para importar"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $db->beginTransaction();
+        $importedGroups = 0;
+        $importedPosts = 0;
+
+        foreach ($folderPaths as $fPath) {
+            $fPath = trim($fPath);
+            if (empty($fPath) || !@is_dir($fPath)) continue;
+
+            $groupName = basename($fPath);
+
+            $check = $db->prepare("SELECT id FROM family_groups WHERE folder_path = ? LIMIT 1");
+            $check->execute([$fPath]);
+            $existingId = $check->fetchColumn();
+
+            if ($existingId) {
+                $groupId = (int)$existingId;
+            } else {
+                $groupStmt = $db->prepare("INSERT INTO family_groups (name, folder_path, description) VALUES (?, ?, ?)");
+                $groupStmt->execute([$groupName, $fPath, "Grupo familiar sincronizado desde {$fPath}"]);
+                $groupId = (int)$db->lastInsertId();
+            }
+
+            $files = @scandir($fPath);
+            $coverSet = false;
+
+            if ($files !== false) {
+                foreach ($files as $file) {
+                    if ($file === '.' || $file === '..' || $file === '@eaDir') continue;
+                    $fullFile = $fPath . '/' . $file;
+                    if (!@is_file($fullFile)) continue;
+
+                    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+                    $isImg = in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic']);
+                    $isVid = in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
+
+                    if (!$isImg && !$isVid) continue;
+
+                    $proxyUrl = "index.php?action=media_proxy&path=" . urlencode($fullFile);
+
+                    $checkMedia = $db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
+                    $checkMedia->execute([$proxyUrl]);
+                    if ($checkMedia->fetchColumn()) continue;
+
+                    $caption = pathinfo($file, PATHINFO_FILENAME);
+                    $stmtPost = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
+                    $stmtPost->execute([$adminUserId, $groupId, $caption]);
+                    $newPostId = (int)$db->lastInsertId();
+
+                    $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
+                    $stmtMedia->execute([
+                        $newPostId,
+                        $isVid ? 'VIDEO' : 'IMAGE',
+                        $proxyUrl,
+                        $proxyUrl
+                    ]);
+
+                    $importedPosts++;
+
+                    if (!$coverSet && $isImg) {
+                        $db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([$proxyUrl, $groupId]);
+                        $coverSet = true;
+                    }
+                }
+            }
+
+            $importedGroups++;
+        }
+
+        $db->commit();
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "status" => "OK",
+            "imported_groups" => $importedGroups,
+            "imported_posts" => $importedPosts
+        ]);
+    } catch (Exception $e) {
+        if (isset($db) && $db->inTransaction()) $db->rollBack();
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+header("Content-Type: application/json; charset=UTF-8");
 echo json_encode(["message" => "Endpoint no encontrado"]);

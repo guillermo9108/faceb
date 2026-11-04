@@ -73,7 +73,7 @@ fun LoginRegisterScreen(
     nasIp: String,
     onLogin: (username: String, pass: String, remember: Boolean) -> Unit,
     onRegister: (username: String, nick: String, pass: String, emoji: String, colorHex: Long, remember: Boolean) -> Unit,
-    onSkipLogin: () -> Unit,
+    onSkipLogin: (() -> Unit)? = null,
     onOpenNasConfig: () -> Unit = {}
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Login, 1: Register
@@ -512,24 +512,6 @@ fun LoginRegisterScreen(
                         }
                     }
                 }
-            }
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // Guest / Quick LAN skip button
-            OutlinedButton(
-                onClick = onSkipLogin,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .testTag("skip_login_button")
-            ) {
-                Text(
-                    text = "Continuar como invitado (Acceso libre LAN)",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))

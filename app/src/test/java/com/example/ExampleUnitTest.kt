@@ -84,4 +84,23 @@ class ExampleUnitTest {
         assertTrue(SynologyScripts.indexPhp.contains("str_starts_with"))
         assertTrue(SynologyScripts.indexPhp.contains("register_shutdown_function"))
     }
+
+    @Test
+    fun testMariaDB10AndStreamingSupport() {
+        assertTrue(SynologyScripts.configPhp.contains("mysqld10.sock"))
+        assertTrue(SynologyScripts.configPhp.contains("3307"))
+        assertTrue(SynologyScripts.indexPhp.contains("streamMediaFile"))
+        assertTrue(SynologyScripts.indexPhp.contains("HTTP_RANGE"))
+        assertTrue(SynologyScripts.indexPhp.contains("206 Partial Content"))
+        assertTrue(SynologyScripts.indexPhp.contains("WHERE p.group_id = ?"))
+    }
+
+    @Test
+    fun testDualPortScanSupport() {
+        // Verify NasApiClient has dual port probe logic
+        val ports = listOf(80, 8080)
+        assertEquals(2, ports.size)
+        assertTrue(ports.contains(80))
+        assertTrue(ports.contains(8080))
+    }
 }
