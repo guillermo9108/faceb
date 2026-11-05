@@ -146,3 +146,30 @@ data class FamilyNotification(
     val targetPostId: Int? = null,
     val badgeEmoji: String = "🔔"
 )
+
+data class CheckItem(
+    val success: Boolean = false,
+    val message: String = "",
+    val detail: String? = null
+)
+
+data class DatabaseDiagnosticReport(
+    val status: String = "OK",
+    val timestamp: String = "",
+    val phpVersion: String = "",
+    val dbHost: String = "127.0.0.1",
+    val dbPort: Int = 3307,
+    val dbName: String = "family_feed",
+    val dbUser: String = "root",
+    val dbPassIsDefault: Boolean = false,
+    val serverVolume: String = "",
+    val openBaseDir: String = "",
+    val pdoMysqlExtension: CheckItem = CheckItem(),
+    val tcpConnection: CheckItem = CheckItem(),
+    val unixSockets: CheckItem = CheckItem(),
+    val mariadbAuthentication: CheckItem = CheckItem(),
+    val databaseExists: Boolean = false,
+    val tablesCount: Int = 0,
+    val recommendation: String = "",
+    val rawJson: String = ""
+)

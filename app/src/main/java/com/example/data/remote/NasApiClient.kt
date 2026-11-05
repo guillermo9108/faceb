@@ -4,7 +4,9 @@ import android.content.Context
 import android.net.Uri
 import com.example.data.AppErrorLogger
 import com.example.model.AppErrorLog
+import com.example.model.CheckItem
 import com.example.model.Comment
+import com.example.model.DatabaseDiagnosticReport
 import com.example.model.ErrorCategory
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
@@ -161,6 +163,102 @@ class NasApiClient(
             val json = parseJsonObjectSafely(body)
             val msg = json.optString("message", "Tablas y base de datos verificadas y reparadas correctamente.")
             Result.success(msg)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Ejecuta un diagnóstico exhaustivo en vivo en el servidor Synology NAS comprobando extensiones PHP,
+     * conectividad TCP en puerto 3307, sockets UNIX de MariaDB 10, autenticación y tablas.
+     */
+    suspend fun getDatabaseDiagnostics(ip: String, port: Int, path: String): Result<DatabaseDiagnosticReport> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "db_diagnostics")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "db_diagnostics")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful && body.isBlank()) {
+                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val status = json.optString("status", if (response.isSuccessful) "OK" else "ERROR")
+            val timestamp = json.optString("timestamp", "")
+            val phpVer = json.optString("php_version", "")
+            val recommendation = json.optString("recommendation", "")
+
+            val cfg = json.optJSONObject("config")
+            val dbHost = cfg?.optString("db_host", "127.0.0.1") ?: "127.0.0.1"
+            val dbPort = cfg?.optInt("db_port", 3307) ?: 3307
+            val dbName = cfg?.optString("db_name", "family_feed") ?: "family_feed"
+            val dbUser = cfg?.optString("db_user", "root") ?: "root"
+            val dbPassIsDefault = cfg?.optBoolean("db_pass_is_default", false) ?: false
+
+            val checks = json.optJSONObject("checks")
+
+            val extObj = checks?.optJSONObject("php_extensions")
+            val extItem = CheckItem(
+                success = extObj?.optBoolean("success", false) ?: false,
+                message = extObj?.optString("message", "Verificación de extensiones PHP") ?: "Verificación de extensiones PHP",
+                detail = "PDO: ${extObj?.optBoolean("pdo", false)}, pdo_mysql: ${extObj?.optBoolean("pdo_mysql", false)}"
+            )
+
+            val tcpObj = checks?.optJSONObject("tcp_connection")
+            val tcpItem = CheckItem(
+                success = tcpObj?.optBoolean("success", false) ?: false,
+                message = tcpObj?.optString("message", "Conexión TCP a MariaDB") ?: "Conexión TCP a MariaDB",
+                detail = if (tcpObj != null && tcpObj.has("error")) tcpObj.optString("error") else null
+            )
+
+            val sockObj = checks?.optJSONObject("unix_sockets")
+            val sockItem = CheckItem(
+                success = sockObj?.optBoolean("success", false) ?: false,
+                message = sockObj?.optString("message", "Verificación de sockets UNIX") ?: "Verificación de sockets UNIX",
+                detail = null
+            )
+
+            val authObj = checks?.optJSONObject("mariadb_authentication")
+            val authItem = CheckItem(
+                success = authObj?.optBoolean("success", false) ?: false,
+                message = authObj?.optString("message", "Autenticación MariaDB 10") ?: "Autenticación MariaDB 10",
+                detail = if (authObj != null && authObj.has("error")) authObj.optString("error") else null
+            )
+
+            val dbExists = authObj?.optBoolean("database_exists", false) ?: false
+            val tablesCount = authObj?.optInt("tables_count", 0) ?: 0
+
+            val report = DatabaseDiagnosticReport(
+                status = status,
+                timestamp = timestamp,
+                phpVersion = phpVer,
+                dbHost = dbHost,
+                dbPort = dbPort,
+                dbName = dbName,
+                dbUser = dbUser,
+                dbPassIsDefault = dbPassIsDefault,
+                pdoMysqlExtension = extItem,
+                tcpConnection = tcpItem,
+                unixSockets = sockItem,
+                mariadbAuthentication = authItem,
+                databaseExists = dbExists,
+                tablesCount = tablesCount,
+                recommendation = recommendation,
+                rawJson = body
+            )
+
+            Result.success(report)
         } catch (e: Exception) {
             Result.failure(e)
         }

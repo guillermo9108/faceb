@@ -107,6 +107,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isRepairingDb by viewModel.isRepairingDb.collectAsState()
     val errorLogs by viewModel.errorLogs.collectAsState()
     val isErrorLogsDialogOpen by viewModel.isErrorLogsDialogOpen.collectAsState()
+    val diagnosticReport by viewModel.diagnosticReport.collectAsState()
+    val isRunningDiagnostics by viewModel.isRunningDiagnostics.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -305,8 +307,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onTestConnection = { viewModel.testNasConnection() },
                         onRepairDatabase = { viewModel.repairNasDatabase() },
                         onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
+                        onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
                         errorCount = errorLogs.size,
-                        isRepairing = isRepairingDb
+                        isRepairing = isRepairingDb,
+                        isRunningDiagnostics = isRunningDiagnostics
                     )
                 }
             }
@@ -424,7 +428,18 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             onDismiss = { viewModel.closeErrorLogsDialog() },
             onClearLogs = { viewModel.clearErrorLogs() },
             onRepairDatabase = { viewModel.repairNasDatabase() },
+            onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
             onExportLogs = { viewModel.exportErrorLogs() }
+        )
+    }
+
+    // Modal de Diagnóstico Exhaustivo en Vivo de MariaDB 10
+    diagnosticReport?.let { report ->
+        com.example.ui.components.DatabaseDiagnosticDialog(
+            report = report,
+            isRunning = isRunningDiagnostics,
+            onRerunDiagnostics = { viewModel.runDatabaseDiagnostics() },
+            onDismiss = { viewModel.dismissDiagnosticReport() }
         )
     }
 }

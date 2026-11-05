@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
@@ -81,6 +82,7 @@ fun ErrorLogsDialog(
     onDismiss: () -> Unit,
     onClearLogs: () -> Unit,
     onRepairDatabase: () -> Unit,
+    onRunDiagnostics: (() -> Unit)? = null,
     onExportLogs: () -> String
 ) {
     val context = LocalContext.current
@@ -211,16 +213,33 @@ fun ErrorLogsDialog(
                                 Text("Copiar", fontSize = 11.sp)
                             }
 
+                            // Botón Diagnóstico en Vivo
+                            if (onRunDiagnostics != null) {
+                                Button(
+                                    onClick = onRunDiagnostics,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
+                                    modifier = Modifier
+                                        .weight(1.3f)
+                                        .height(36.dp)
+                                        .testTag("dialog_diagnose_db_button"),
+                                    contentPadding = PaddingValues(horizontal = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Diagnosticar", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
                             // Botón Reparar MariaDB
                             Button(
                                 onClick = onRepairDatabase,
                                 enabled = !isRepairing,
                                 colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
                                 modifier = Modifier
-                                    .weight(1.4f)
+                                    .weight(1.3f)
                                     .height(36.dp)
                                     .testTag("dialog_repair_db_button"),
-                                contentPadding = PaddingValues(horizontal = 8.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp)
                             ) {
                                 if (isRepairing) {
                                     CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)

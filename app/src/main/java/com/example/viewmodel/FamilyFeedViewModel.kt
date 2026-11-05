@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.FamilyRepository
+import com.example.model.DatabaseDiagnosticReport
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
@@ -111,6 +112,12 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _isErrorLogsDialogOpen = MutableStateFlow(false)
     val isErrorLogsDialogOpen: StateFlow<Boolean> = _isErrorLogsDialogOpen.asStateFlow()
+
+    private val _diagnosticReport = MutableStateFlow<DatabaseDiagnosticReport?>(null)
+    val diagnosticReport: StateFlow<DatabaseDiagnosticReport?> = _diagnosticReport.asStateFlow()
+
+    private val _isRunningDiagnostics = MutableStateFlow(false)
+    val isRunningDiagnostics: StateFlow<Boolean> = _isRunningDiagnostics.asStateFlow()
 
     private val _isProfileDialogOpen = MutableStateFlow(false)
     val isProfileDialogOpen: StateFlow<Boolean> = _isProfileDialogOpen.asStateFlow()
@@ -397,6 +404,39 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 }
             )
         }
+    }
+
+    fun runDatabaseDiagnostics(onComplete: ((DatabaseDiagnosticReport) -> Unit)? = null) {
+        viewModelScope.launch {
+            _isRunningDiagnostics.value = true
+            showStatus("Ejecutando diagnóstico en vivo de MariaDB 10...")
+            val result = repository.runDatabaseDiagnostics()
+            _isRunningDiagnostics.value = false
+            result.fold(
+                onSuccess = { report ->
+                    _diagnosticReport.value = report
+                    if (report.mariadbAuthentication.success) {
+                        showStatus("¡Conexión exitosa con MariaDB 10!")
+                    } else {
+                        showStatus("Diagnóstico completado: Se detectaron problemas de conexión.")
+                    }
+                    onComplete?.invoke(report)
+                },
+                onFailure = { err ->
+                    val fallback = DatabaseDiagnosticReport(
+                        status = "ERROR",
+                        recommendation = "No se pudo obtener el diagnóstico del servidor: ${err.message}. Comprueba la IP y que Web Station esté activo en el puerto 80 u 8080."
+                    )
+                    _diagnosticReport.value = fallback
+                    showStatus("Error al contactar el endpoint de diagnóstico.")
+                    onComplete?.invoke(fallback)
+                }
+            )
+        }
+    }
+
+    fun dismissDiagnosticReport() {
+        _diagnosticReport.value = null
     }
 
     fun createPost(

@@ -8,6 +8,8 @@ import com.example.data.local.PostEntity
 import com.example.data.local.toEntity
 import com.example.data.remote.NasApiClient
 import com.example.model.Comment
+import com.example.model.DatabaseDiagnosticReport
+import com.example.model.ErrorCategory
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyNotification
@@ -845,6 +847,29 @@ class FamilyRepository(
         } else {
             val err = result.exceptionOrNull()?.message ?: "Error al reparar tablas"
             _nasConfig.update { it.copy(lastError = err) }
+        }
+        result
+    }
+
+    /**
+     * Ejecuta el diagnóstico exhaustivo en vivo de MariaDB 10 en Synology NAS.
+     */
+    suspend fun runDatabaseDiagnostics(): Result<DatabaseDiagnosticReport> = withContext(Dispatchers.IO) {
+        val config = _nasConfig.value
+        val result = apiClient.getDatabaseDiagnostics(config.ip, config.port, config.path)
+        result.onSuccess { report ->
+            if (report.status == "DIAGNOSTIC_REPORT" && report.mariadbAuthentication.success) {
+                _nasConfig.update { it.copy(isConnected = true, lastError = null) }
+            } else if (!report.mariadbAuthentication.success) {
+                _nasConfig.update { it.copy(lastError = report.mariadbAuthentication.message) }
+            }
+        }.onFailure { err ->
+            AppErrorLogger.log(
+                category = ErrorCategory.MARIADB,
+                title = "Fallo al ejecutar diagnóstico MariaDB",
+                message = err.message ?: "Error desconocido al contactar db_diagnostics",
+                httpCode = 500
+            )
         }
         result
     }

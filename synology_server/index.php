@@ -200,8 +200,204 @@ if (matchRoute($action, $uri, 'ping') || matchRoute($action, $uri, 'health')) {
     } catch (Exception $e) {
         http_response_code(500);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["status" => "ERROR", "message" => $e->getMessage()]);
+        echo json_encode(["status" => "ERROR", "error" => $e->getMessage(), "message" => $e->getMessage()]);
     }
+    exit;
+}
+
+// 1.0. DIAGNÓSTICO EXHAUSTIVO DE CONEXIÓN CON MARIADB 10 (Nunca retorna 500; reporta estado detallado)
+if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'diagnostics')) {
+    header("Content-Type: application/json; charset=UTF-8");
+    // Detectar volumen y entorno actual
+    $currentDir = __DIR__;
+    preg_match('#/volume([0-9]+)/#', $currentDir, $volMatches);
+    $detectedVol = isset($volMatches[1]) ? "volume" . $volMatches[1] : "volumen del sistema";
+    $openBaseDir = ini_get('open_basedir') ?: 'Ninguno (sin restricciones)';
+
+    $report = [
+        "status" => "DIAGNOSTIC_REPORT",
+        "timestamp" => date("Y-m-d H:i:s"),
+        "php_version" => PHP_VERSION,
+        "environment" => [
+            "current_directory" => $currentDir,
+            "server_volume" => $detectedVol,
+            "open_basedir" => $openBaseDir,
+            "server_addr" => $_SERVER['SERVER_ADDR'] ?? '127.0.0.1'
+        ],
+        "config" => [
+            "db_host" => DB_HOST,
+            "db_port" => (int)DB_PORT,
+            "db_name" => DB_NAME,
+            "db_user" => DB_USER,
+            "db_pass_is_default" => (DB_PASS === 'TuClaveSynology123' || empty(DB_PASS))
+        ],
+        "checks" => []
+    ];
+
+    // Check 1: Extensiones PDO y MySQL
+    $pdoLoaded = extension_loaded('pdo');
+    $pdoMysqlLoaded = extension_loaded('pdo_mysql');
+    $mysqliLoaded = extension_loaded('mysqli');
+    $report["checks"]["php_extensions"] = [
+        "success" => ($pdoLoaded && $pdoMysqlLoaded),
+        "pdo" => $pdoLoaded,
+        "pdo_mysql" => $pdoMysqlLoaded,
+        "mysqli" => $mysqliLoaded,
+        "message" => ($pdoLoaded && $pdoMysqlLoaded) 
+            ? "Extensiones PDO y pdo_mysql activas en PHP 7.3." 
+            : "FALTA la extensión pdo_mysql. Ve a DSM -> Web Station -> Configuración de lenguaje de script -> PHP 7.3 -> Extensiones y marca 'pdo_mysql'."
+    ];
+
+    // Check 2: Conectividad TCP al puerto de MariaDB (3307)
+    $tcpOk = false;
+    $tcpErr = "";
+    $tcpSocket = @fsockopen(DB_HOST, (int)DB_PORT, $errno, $errstr, 2.0);
+    if ($tcpSocket) {
+        $tcpOk = true;
+        @fclose($tcpSocket);
+    } else {
+        $tcpErr = "$errstr ($errno)";
+    }
+    // Probar también si el socket responde en la IP local del propio NAS
+    $serverIpTcp = false;
+    if (!$tcpOk && !empty($_SERVER['SERVER_ADDR'])) {
+        $sSocket = @fsockopen($_SERVER['SERVER_ADDR'], (int)DB_PORT, $sErrno, $sErrstr, 1.5);
+        if ($sSocket) {
+            $serverIpTcp = true;
+            $tcpOk = true;
+            @fclose($sSocket);
+        }
+    }
+    $report["checks"]["tcp_connection"] = [
+        "success" => $tcpOk,
+        "target" => DB_HOST . ":" . DB_PORT,
+        "error" => $tcpErr,
+        "message" => $tcpOk 
+            ? "Puerto TCP " . DB_PORT . " respondiendo correctamente en MariaDB 10."
+            : "No se pudo conectar por TCP al puerto " . DB_PORT . ". Verifica que el paquete MariaDB 10 esté 'En ejecución' en el Centro de Paquetes de DSM."
+    ];
+
+    // Check 3: Sockets UNIX locales en Synology y en volúmenes
+    $knownSockets = [
+        "/run/mysqld/mysqld10.sock",
+        "/var/run/mysqld/mysqld10.sock",
+        "/run/mysqld/mysqld.sock",
+        "/var/run/mysqld/mysqld.sock",
+        "/tmp/mysql.sock"
+    ];
+    for ($v = 1; $v <= 8; $v++) {
+        $knownSockets[] = "/volume$v/@appdata/MariaDB10/mysqld.sock";
+        $knownSockets[] = "/volume$v/@appstore/MariaDB10/mysqld.sock";
+    }
+    $foundSockets = [];
+    foreach ($knownSockets as $sock) {
+        if (@file_exists($sock)) {
+            $foundSockets[] = $sock;
+        }
+    }
+    $report["checks"]["unix_sockets"] = [
+        "success" => (count($foundSockets) > 0),
+        "found" => $foundSockets,
+        "message" => (count($foundSockets) > 0)
+            ? "Socket(s) MariaDB detectado(s): " . implode(", ", $foundSockets)
+            : "No se detectaron sockets accesibles (normal si open_basedir está restringido o se conecta por TCP 3307)."
+    ];
+
+    // Check 4: Autenticación y ejecución de consultas en MariaDB
+    $authSuccess = false;
+    $authError = "";
+    $connectedDsn = "";
+    $serverVer = "";
+    $dbExists = false;
+    $tables = [];
+
+    $options = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_TIMEOUT => 4
+    ];
+
+    $testDsns = [
+        "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:host=localhost;port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:unix_socket=/tmp/mysql.sock;dbname=" . DB_NAME . ";charset=utf8mb4"
+    ];
+    if (!empty($_SERVER['SERVER_ADDR'])) {
+        $testDsns[] = "mysql:host=" . $_SERVER['SERVER_ADDR'] . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+    }
+    for ($v = 1; $v <= 8; $v++) {
+        $testDsns[] = "mysql:unix_socket=/volume$v/@appdata/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
+    }
+
+    $diagPdo = null;
+    foreach ($testDsns as $dsn) {
+        try {
+            $diagPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            $connectedDsn = $dsn;
+            $authSuccess = true;
+            $dbExists = true;
+            break;
+        } catch (PDOException $e) {
+            $authError = $e->getMessage();
+            if ($e->getCode() == 1049 || strpos($e->getMessage(), 'Unknown database') !== false) {
+                $authSuccess = true;
+                $dbExists = false;
+                try {
+                    $rootDsn = preg_replace('/;dbname=[^;]+/', '', $dsn);
+                    $srvPdo = new PDO($rootDsn, DB_USER, DB_PASS, $options);
+                    $srvPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+                    $diagPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+                    $connectedDsn = $dsn;
+                    $dbExists = true;
+                    break;
+                } catch (Exception $e2) {
+                    $authError = $e2->getMessage();
+                }
+            }
+        }
+    }
+
+    if ($authSuccess && $diagPdo) {
+        try {
+            $serverVer = $diagPdo->getAttribute(PDO::ATTR_SERVER_VERSION);
+            autoBootstrapDatabase($diagPdo);
+            $st = $diagPdo->query("SHOW TABLES");
+            if ($st) {
+                $tables = $st->fetchAll(PDO::FETCH_COLUMN);
+            }
+        } catch (Exception $ex) {}
+    }
+
+    $report["checks"]["mariadb_authentication"] = [
+        "success" => $authSuccess,
+        "connected_dsn" => $connectedDsn,
+        "server_version" => $serverVer,
+        "database_exists" => $dbExists,
+        "tables_count" => count($tables),
+        "tables" => $tables,
+        "error" => $authError,
+        "message" => $authSuccess 
+            ? "Conexión y autenticación exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables)
+            : "Fallo de autenticación o conexión. " . ($report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: $authError")
+    ];
+
+    // Recomendación general accionable adaptada a DSM 7 y cualquier volumen
+    if (!$report["checks"]["php_extensions"]["success"]) {
+        $report["recommendation"] = "Falta pdo_mysql: Ve a DSM -> Web Station -> Configuración de lenguaje de script -> PHP 7.3 -> Extensiones y marca 'pdo_mysql'.";
+    } elseif ($report["config"]["db_pass_is_default"]) {
+        $report["recommendation"] = "Contraseña por defecto en $currentDir/config.php: En DSM 7 MariaDB 10 siempre escucha en el puerto 3307; abre config.php y cambia 'TuClaveSynology123' por la clave que pusiste en MariaDB.";
+    } elseif (!$authSuccess && (strpos($authError, 'Access denied') !== false || strpos($authError, '1045') !== false)) {
+        $report["recommendation"] = "Contraseña incorrecta (Error 1045): Edita DB_PASS en $currentDir/config.php con la clave de root de MariaDB 10. Si la olvidaste, puedes restablecerla en DSM -> MariaDB 10.";
+    } elseif (!$tcpOk && count($foundSockets) === 0) {
+        $report["recommendation"] = "MariaDB no responde: 1) Verifica en el Centro de Paquetes que 'MariaDB 10' esté 'En ejecución'. 2) En Web Station -> PHP 7.3 añade ':/run/mysqld' a la directiva open_basedir.";
+    } else {
+        $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están sincronizados al 100%.";
+    }
+
+    echo json_encode($report);
     exit;
 }
 

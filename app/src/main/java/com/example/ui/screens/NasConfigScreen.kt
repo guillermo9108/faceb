@@ -87,8 +87,10 @@ fun NasConfigScreen(
     onTestConnection: () -> Unit,
     onRepairDatabase: (() -> Unit)? = null,
     onOpenErrorLogs: (() -> Unit)? = null,
+    onRunDiagnostics: (() -> Unit)? = null,
     errorCount: Int = 0,
     isRepairing: Boolean = false,
+    isRunningDiagnostics: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -256,6 +258,26 @@ fun NasConfigScreen(
                                     }
                                 }
                             }
+                            if (onRunDiagnostics != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = onRunDiagnostics,
+                                    enabled = !isRunningDiagnostics,
+                                    modifier = Modifier.fillMaxWidth().testTag("banner_diagnostics_button"),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
+                                ) {
+                                    if (isRunningDiagnostics) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Ejecutando diagnóstico...", fontSize = 12.sp)
+                                    } else {
+                                        Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Diagnosticar Conexión MariaDB en Vivo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                             if (onOpenErrorLogs != null) {
                                 Spacer(modifier = Modifier.height(6.dp))
                                 OutlinedButton(
@@ -291,7 +313,7 @@ fun NasConfigScreen(
                     }
                     Column {
                         Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("MariaDB (${currentConfig.dbUser}@:${currentConfig.dbPort})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        Text("MariaDB (${currentConfig.dbUser}@${currentConfig.dbHost}:${currentConfig.dbPort})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                 }
 
@@ -511,6 +533,27 @@ fun NasConfigScreen(
                             Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp), tint = FacebookBlue)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Verificar / Reparar Tablas MariaDB en Synology", color = FacebookBlue, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                if (onRunDiagnostics != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = onRunDiagnostics,
+                        enabled = !isRunningDiagnostics,
+                        modifier = Modifier.fillMaxWidth().testTag("manual_diagnostics_button"),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
+                    ) {
+                        if (isRunningDiagnostics) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Ejecutando diagnóstico MariaDB...")
+                        } else {
+                            Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Diagnóstico Exhaustivo de MariaDB en Vivo", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

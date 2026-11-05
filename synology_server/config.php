@@ -6,11 +6,19 @@
  * Ruta típica: /volume1/web/family_api/config.php
  */
 
-define('DB_HOST', '127.0.0.1');
-define('DB_PORT', '3307'); // Puerto por defecto de MariaDB 10 en Synology
-define('DB_NAME', 'family_feed');
-define('DB_USER', 'root'); // O usuario creado en phpMyAdmin
-define('DB_PASS', 'TuClaveSynology123'); // Cambia por tu contraseña de MariaDB
+/**
+ * INSTRUCCIONES CLAVE PARA SYNOLOGY DSM 7 / DSM 6 (Cualquier volumen):
+ * 1. En DSM 7, MariaDB 10 tiene TCP/IP SIEMPRE ACTIVO en el puerto 3307 por defecto (no tiene casilla de activar/desactivar).
+ * 2. Si el sistema o la carpeta web están en volume2 u otro volumen, las rutas y uploads se resuelven de forma 100% automática con __DIR__.
+ * 3. En Web Station -> Configuración de lenguaje de script -> PHP 7.3 -> Extensiones: MARCA 'pdo_mysql' y 'mysqli'.
+ * 4. Si conectas por socket UNIX, añade ':/run/mysqld' a la directiva open_basedir en Web Station.
+ * 5. En la línea DB_PASS abajo, coloca la contraseña que asignaste a MariaDB 10 en DSM.
+ */
+if (!defined('DB_HOST')) define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');
+if (!defined('DB_PORT')) define('DB_PORT', getenv('DB_PORT') ?: '3307'); // Puerto por defecto MariaDB 10
+if (!defined('DB_NAME')) define('DB_NAME', getenv('DB_NAME') ?: 'family_feed');
+if (!defined('DB_USER')) define('DB_USER', getenv('DB_USER') ?: (ini_get('mysqli.default_user') ?: 'root'));
+if (!defined('DB_PASS')) define('DB_PASS', getenv('DB_PASS') ?: (ini_get('mysqli.default_pw') ?: 'TuClaveSynology123')); // <--- EDITA ESTA CONTRASEÑA CON TU CLAVE REAL DE MARIADB 10
 
 function autoBootstrapDatabase(PDO $pdo) {
     try {
@@ -184,14 +192,29 @@ function getDB(): PDO {
     }
 
     // Lista de candidatos de conexión (TCP/IP en 3307 y sockets UNIX típicos de Synology DSM)
+    // Lista de candidatos de conexión (TCP/IP en 3307, IP LAN del propio NAS, localhost y sockets en cualquier volumen)
     $dsnList = [
         "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+        "mysql:host=localhost;port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
         "mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
         "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
         "mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
         "mysql:unix_socket=/var/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:host=127.0.0.1;port=3306;dbname=" . DB_NAME . ";charset=utf8mb4"
+        "mysql:unix_socket=/tmp/mysql.sock;dbname=" . DB_NAME . ";charset=utf8mb4"
     ];
+
+    if (!empty($_SERVER['SERVER_ADDR'])) {
+        $dsnList[] = "mysql:host=" . $_SERVER['SERVER_ADDR'] . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+    }
+    $dsnList[] = "mysql:host=[::1];port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+
+    // Detectar sockets en cualquier volumen de Synology (/volume1 .. /volume8)
+    for ($v = 1; $v <= 8; $v++) {
+        $dsnList[] = "mysql:unix_socket=/volume$v/@appdata/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
+        $dsnList[] = "mysql:unix_socket=/volume$v/@appstore/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
+    }
+
+    $dsnList[] = "mysql:host=" . DB_HOST . ";port=3306;dbname=" . DB_NAME . ";charset=utf8mb4";
 
     $lastException = null;
     foreach ($dsnList as $dsn) {
@@ -216,9 +239,16 @@ function getDB(): PDO {
     }
 
     if ($pdo === null) {
-        $msg = "Error al conectar con MariaDB 10 en Synology (" . DB_HOST . ":" . DB_PORT . " ni por socket mysqld10.sock). ";
-        $msg .= "Verifique en DSM -> MariaDB 10 que la casilla 'Habilitar conexión TCP/IP' esté marcada y que el usuario/contraseña sean correctos. ";
-        $msg .= "Detalle: " . ($lastException ? $lastException->getMessage() : 'Desconocido');
+        $lastCode = $lastException ? $lastException->getCode() : 0;
+        $lastErr = $lastException ? $lastException->getMessage() : 'Desconocido';
+        $openBaseDir = ini_get('open_basedir') ?: 'No configurado';
+        if ($lastCode == 1045 || strpos($lastErr, 'Access denied') !== false) {
+            $msg = "Error 1045 de autenticación con MariaDB 10: Usuario '" . DB_USER . "' o contraseña incorrectos. Abre 'config.php' en el NAS y actualiza la constante DB_PASS con la contraseña real que asignaste a MariaDB 10 en Synology DSM. Detalle: $lastErr";
+        } elseif ($lastCode == 2002 || strpos($lastErr, 'Connection refused') !== false || strpos($lastErr, 'No such file') !== false) {
+            $msg = "Error 2002 de conexión con MariaDB 10 (" . DB_HOST . ":" . DB_PORT . " / sockets). En Synology DSM 7, MariaDB 10 tiene TCP/IP siempre activo en el puerto 3307 por defecto. Verifica: 1) Que el paquete 'MariaDB 10' esté 'En ejecución' en el Centro de Paquetes. 2) Si conectas por socket, que la directiva 'open_basedir' en Web Station incluya ':/run/mysqld'. 3) open_basedir actual: $openBaseDir. Detalle: $lastErr";
+        } else {
+            $msg = "Error al conectar con MariaDB 10 en Synology (" . DB_HOST . ":" . DB_PORT . " ni por sockets UNIX). Verifica que MariaDB 10 esté ejecutándose en DSM y que la contraseña en config.php sea la correcta. open_basedir actual: $openBaseDir. Detalle: $lastErr";
+        }
         throw new Exception($msg);
     }
 

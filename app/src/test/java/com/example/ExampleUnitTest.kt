@@ -89,10 +89,15 @@ class ExampleUnitTest {
     fun testMariaDB10AndStreamingSupport() {
         assertTrue(SynologyScripts.configPhp.contains("mysqld10.sock"))
         assertTrue(SynologyScripts.configPhp.contains("3307"))
+        assertTrue(SynologyScripts.configPhp.contains("1045"))
+        assertTrue(SynologyScripts.configPhp.contains("2002"))
+        assertTrue(SynologyScripts.configPhp.contains("localhost"))
         assertTrue(SynologyScripts.indexPhp.contains("streamMediaFile"))
         assertTrue(SynologyScripts.indexPhp.contains("HTTP_RANGE"))
         assertTrue(SynologyScripts.indexPhp.contains("206 Partial Content"))
         assertTrue(SynologyScripts.indexPhp.contains("WHERE p.group_id = ?"))
+        assertTrue(SynologyScripts.indexPhp.contains("db_diagnostics"))
+        assertTrue(SynologyScripts.indexPhp.contains("DIAGNOSTIC_REPORT"))
     }
 
     @Test
@@ -102,5 +107,25 @@ class ExampleUnitTest {
         assertEquals(2, ports.size)
         assertTrue(ports.contains(80))
         assertTrue(ports.contains(8080))
+    }
+
+    @Test
+    fun testDatabaseDiagnosticReportModel() {
+        val report = com.example.model.DatabaseDiagnosticReport(
+            status = "DIAGNOSTIC_REPORT",
+            phpVersion = "7.3.33",
+            dbHost = "127.0.0.1",
+            dbPort = 3307,
+            dbName = "family_feed",
+            dbUser = "root",
+            databaseExists = true,
+            tablesCount = 8,
+            recommendation = "Conexión perfecta"
+        )
+        assertEquals("DIAGNOSTIC_REPORT", report.status)
+        assertEquals("root", report.dbUser)
+        assertEquals("127.0.0.1", report.dbHost)
+        assertEquals(3307, report.dbPort)
+        assertEquals(8, report.tablesCount)
     }
 }
