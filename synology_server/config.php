@@ -185,71 +185,81 @@ function getDB(): PDO {
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
-        PDO::ATTR_TIMEOUT            => 5,
+        PDO::ATTR_TIMEOUT            => 4,
     ];
     if (defined('PDO::MYSQL_ATTR_MULTI_STATEMENTS')) {
         $options[PDO::MYSQL_ATTR_MULTI_STATEMENTS] = true;
     }
 
-    // Lista de candidatos de conexión (TCP/IP en 3307 y sockets UNIX típicos de Synology DSM)
-    // Lista de candidatos de conexión (TCP/IP en 3307, IP LAN del propio NAS, localhost y sockets en cualquier volumen)
-    $dsnList = [
-        "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:host=localhost;port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/var/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/tmp/mysql.sock;dbname=" . DB_NAME . ";charset=utf8mb4"
+    // Candidatos de conexión en orden de fiabilidad en Synology DSM 7:
+    // 1. TCP 127.0.0.1:3307 (Inmune a restricciones de open_basedir)
+    // 2. TCP en la IP local del NAS en 3307
+    // 3. Socket /run/mysqld/mysqld10.sock (Requiere :/run/mysqld en open_basedir)
+    // 4. Socket /var/run/mysqld/mysqld10.sock
+    $targets = [
+        ["type" => "tcp", "host" => DB_HOST, "port" => (int)DB_PORT],
     ];
-
-    if (!empty($_SERVER['SERVER_ADDR'])) {
-        $dsnList[] = "mysql:host=" . $_SERVER['SERVER_ADDR'] . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+    if (DB_HOST !== '127.0.0.1') {
+        $targets[] = ["type" => "tcp", "host" => "127.0.0.1", "port" => (int)DB_PORT];
     }
-    $dsnList[] = "mysql:host=[::1];port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
-
-    // Detectar sockets en cualquier volumen de Synology (/volume1 .. /volume8)
-    for ($v = 1; $v <= 8; $v++) {
-        $dsnList[] = "mysql:unix_socket=/volume$v/@appdata/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
-        $dsnList[] = "mysql:unix_socket=/volume$v/@appstore/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
+    if (DB_HOST !== 'localhost') {
+        $targets[] = ["type" => "tcp", "host" => "localhost", "port" => (int)DB_PORT];
     }
+    if (!empty($_SERVER['SERVER_ADDR']) && $_SERVER['SERVER_ADDR'] !== DB_HOST) {
+        $targets[] = ["type" => "tcp", "host" => $_SERVER['SERVER_ADDR'], "port" => (int)DB_PORT];
+    }
+    $targets[] = ["type" => "socket", "path" => "/run/mysqld/mysqld10.sock"];
+    $targets[] = ["type" => "socket", "path" => "/var/run/mysqld/mysqld10.sock"];
+    $targets[] = ["type" => "socket", "path" => "/run/mysqld/mysqld.sock"];
 
-    $dsnList[] = "mysql:host=" . DB_HOST . ";port=3306;dbname=" . DB_NAME . ";charset=utf8mb4";
+    $primaryException = null;
+    $allAttemptErrors = [];
 
-    $lastException = null;
-    foreach ($dsnList as $dsn) {
+    foreach ($targets as $idx => $t) {
+        $dsn = ($t["type"] === "tcp")
+            ? "mysql:host=" . $t["host"] . ";port=" . $t["port"] . ";charset=utf8mb4"
+            : "mysql:unix_socket=" . $t["path"] . ";charset=utf8mb4";
+
         try {
-            $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            // Conectar al servidor MariaDB sin forzar dbname para que jamás falle si la BD aún no ha sido creada
+            $tempPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            // Crear la base de datos si no existe y seleccionarla
+            $tempPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+            $tempPdo->exec("USE `" . DB_NAME . "`;");
+            $pdo = $tempPdo;
             break;
         } catch (PDOException $e) {
-            $lastException = $e;
-            // Si la base de datos aún no existe (código 1049), crearla automáticamente
-            if ($e->getCode() == 1049 || strpos($e->getMessage(), 'Unknown database') !== false) {
-                try {
-                    $rootDsn = preg_replace('/;dbname=[^;]+/', '', $dsn);
-                    $serverPdo = new PDO($rootDsn, DB_USER, DB_PASS, $options);
-                    $serverPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
-                    $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
-                    break;
-                } catch (Exception $eCreate) {
-                    $lastException = $eCreate;
-                }
+            $allAttemptErrors[] = "$dsn -> " . $e->getMessage();
+            if ($primaryException === null) {
+                // Guardar la excepción del objetivo principal (TCP DB_HOST:DB_PORT)
+                $primaryException = $e;
             }
         }
     }
 
     if ($pdo === null) {
-        $lastCode = $lastException ? $lastException->getCode() : 0;
-        $lastErr = $lastException ? $lastException->getMessage() : 'Desconocido';
+        $errObj = $primaryException ?? new Exception("Sin conexión");
+        $code = (int)$errObj->getCode();
+        $msg = $errObj->getMessage();
         $openBaseDir = ini_get('open_basedir') ?: 'No configurado';
-        if ($lastCode == 1045 || strpos($lastErr, 'Access denied') !== false) {
-            $msg = "Error 1045 de autenticación con MariaDB 10: Usuario '" . DB_USER . "' o contraseña incorrectos. Abre 'config.php' en el NAS y actualiza la constante DB_PASS con la contraseña real que asignaste a MariaDB 10 en Synology DSM. Detalle: $lastErr";
-        } elseif ($lastCode == 2002 || strpos($lastErr, 'Connection refused') !== false || strpos($lastErr, 'No such file') !== false) {
-            $msg = "Error 2002 de conexión con MariaDB 10 (" . DB_HOST . ":" . DB_PORT . " / sockets). En Synology DSM 7, MariaDB 10 tiene TCP/IP siempre activo en el puerto 3307 por defecto. Verifica: 1) Que el paquete 'MariaDB 10' esté 'En ejecución' en el Centro de Paquetes. 2) Si conectas por socket, que la directiva 'open_basedir' en Web Station incluya ':/run/mysqld'. 3) open_basedir actual: $openBaseDir. Detalle: $lastErr";
+
+        // Comprobar error 1045 de credenciales (Access denied)
+        $isAuthError = ($code === 1045 || 
+            (isset($errObj->errorInfo[1]) && $errObj->errorInfo[1] === 1045) ||
+            stripos($msg, 'Access denied') !== false || 
+            stripos($msg, 'Acceso denegado') !== false ||
+            stripos($msg, 'using password') !== false);
+
+        if ($isAuthError) {
+            $errDetail = "Error 1045 de autenticación con MariaDB 10: Usuario '" . DB_USER . "' o contraseña incorrectos en " . DB_HOST . ":" . DB_PORT . ". Abre config.php en el NAS y coloca en DB_PASS la contraseña real de MariaDB 10. Si la olvidaste, cámbiala en DSM -> MariaDB 10. Detalle: $msg";
+        } elseif ($code === 2002 || stripos($msg, 'Connection refused') !== false) {
+            $errDetail = "Error 2002 de conexión con MariaDB 10 (" . DB_HOST . ":" . DB_PORT . "): Conexión rechazada. Verifica en el Centro de Paquetes de DSM que MariaDB 10 esté 'En ejecución'. Detalle: $msg";
+        } elseif (stripos($msg, 'open_basedir') !== false || stripos($msg, 'No such file') !== false) {
+            $errDetail = "Error al conectar con MariaDB 10: Los sockets UNIX requieren ':/run/mysqld' en la directiva open_basedir de Web Station -> PHP 7.3. Se recomienda usar TCP (127.0.0.1:3307). Detalle: $msg";
         } else {
-            $msg = "Error al conectar con MariaDB 10 en Synology (" . DB_HOST . ":" . DB_PORT . " ni por sockets UNIX). Verifica que MariaDB 10 esté ejecutándose en DSM y que la contraseña en config.php sea la correcta. open_basedir actual: $openBaseDir. Detalle: $lastErr";
+            $errDetail = "Error de conexión con MariaDB 10 (" . DB_HOST . ":" . DB_PORT . "): $msg";
         }
-        throw new Exception($msg);
+        throw new Exception($errDetail);
     }
 
     autoBootstrapDatabase($pdo);

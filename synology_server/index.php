@@ -306,10 +306,12 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
     // Check 4: Autenticación y ejecución de consultas en MariaDB
     $authSuccess = false;
     $authError = "";
+    $primaryError = "";
     $connectedDsn = "";
     $serverVer = "";
     $dbExists = false;
     $tables = [];
+    $attempts = [];
 
     $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -317,46 +319,38 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         PDO::ATTR_TIMEOUT => 4
     ];
 
-    $testDsns = [
-        "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:host=localhost;port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4",
-        "mysql:unix_socket=/tmp/mysql.sock;dbname=" . DB_NAME . ";charset=utf8mb4"
+    $testTargets = [
+        ["label" => "TCP " . DB_HOST . ":" . DB_PORT, "dsn" => "mysql:host=" . DB_HOST . ";port=" . DB_PORT . ";charset=utf8mb4"],
     ];
-    if (!empty($_SERVER['SERVER_ADDR'])) {
-        $testDsns[] = "mysql:host=" . $_SERVER['SERVER_ADDR'] . ";port=" . DB_PORT . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+    if (!empty($_SERVER['SERVER_ADDR']) && $_SERVER['SERVER_ADDR'] !== DB_HOST) {
+        $testTargets[] = ["label" => "TCP " . $_SERVER['SERVER_ADDR'] . ":" . DB_PORT, "dsn" => "mysql:host=" . $_SERVER['SERVER_ADDR'] . ";port=" . DB_PORT . ";charset=utf8mb4"];
     }
-    for ($v = 1; $v <= 8; $v++) {
-        $testDsns[] = "mysql:unix_socket=/volume$v/@appdata/MariaDB10/mysqld.sock;dbname=" . DB_NAME . ";charset=utf8mb4";
-    }
+    $testTargets[] = ["label" => "Socket mysqld10.sock", "dsn" => "mysql:unix_socket=/run/mysqld/mysqld10.sock;charset=utf8mb4"];
+    $testTargets[] = ["label" => "Socket var mysqld10.sock", "dsn" => "mysql:unix_socket=/var/run/mysqld/mysqld10.sock;charset=utf8mb4"];
 
     $diagPdo = null;
-    foreach ($testDsns as $dsn) {
+    foreach ($testTargets as $idx => $tgt) {
+        $dsn = $tgt["dsn"];
+        $label = $tgt["label"];
         try {
-            $diagPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            $tempPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            // Si conecta al servidor, asegurar la base de datos y seleccionarla
+            $tempPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+            $tempPdo->exec("USE `" . DB_NAME . "`;");
+
+            $diagPdo = $tempPdo;
             $connectedDsn = $dsn;
             $authSuccess = true;
             $dbExists = true;
+            $attempts[] = ["target" => $label, "success" => true, "detail" => "Conexión y base de datos seleccionadas con éxito"];
             break;
         } catch (PDOException $e) {
-            $authError = $e->getMessage();
-            if ($e->getCode() == 1049 || strpos($e->getMessage(), 'Unknown database') !== false) {
-                $authSuccess = true;
-                $dbExists = false;
-                try {
-                    $rootDsn = preg_replace('/;dbname=[^;]+/', '', $dsn);
-                    $srvPdo = new PDO($rootDsn, DB_USER, DB_PASS, $options);
-                    $srvPdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
-                    $diagPdo = new PDO($dsn, DB_USER, DB_PASS, $options);
-                    $connectedDsn = $dsn;
-                    $dbExists = true;
-                    break;
-                } catch (Exception $e2) {
-                    $authError = $e2->getMessage();
-                }
+            $errMsg = $e->getMessage();
+            $attempts[] = ["target" => $label, "success" => false, "detail" => $errMsg];
+            if ($primaryError === "") {
+                $primaryError = $errMsg;
             }
+            $authError = $errMsg;
         }
     }
 
@@ -371,6 +365,8 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         } catch (Exception $ex) {}
     }
 
+    $effectiveError = !empty($primaryError) ? $primaryError : $authError;
+
     $report["checks"]["mariadb_authentication"] = [
         "success" => $authSuccess,
         "connected_dsn" => $connectedDsn,
@@ -378,10 +374,11 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         "database_exists" => $dbExists,
         "tables_count" => count($tables),
         "tables" => $tables,
-        "error" => $authError,
+        "attempts" => $attempts,
+        "error" => $effectiveError,
         "message" => $authSuccess 
             ? "Conexión y autenticación exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables)
-            : "Fallo de autenticación o conexión. " . ($report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: $authError")
+            : "Fallo de autenticación o conexión. " . ($report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: $effectiveError")
     ];
 
     // Recomendación general accionable adaptada a DSM 7 y cualquier volumen
@@ -389,10 +386,16 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         $report["recommendation"] = "Falta pdo_mysql: Ve a DSM -> Web Station -> Configuración de lenguaje de script -> PHP 7.3 -> Extensiones y marca 'pdo_mysql'.";
     } elseif ($report["config"]["db_pass_is_default"]) {
         $report["recommendation"] = "Contraseña por defecto en $currentDir/config.php: En DSM 7 MariaDB 10 siempre escucha en el puerto 3307; abre config.php y cambia 'TuClaveSynology123' por la clave que pusiste en MariaDB.";
-    } elseif (!$authSuccess && (strpos($authError, 'Access denied') !== false || strpos($authError, '1045') !== false)) {
-        $report["recommendation"] = "Contraseña incorrecta (Error 1045): Edita DB_PASS en $currentDir/config.php con la clave de root de MariaDB 10. Si la olvidaste, puedes restablecerla en DSM -> MariaDB 10.";
-    } elseif (!$tcpOk && count($foundSockets) === 0) {
-        $report["recommendation"] = "MariaDB no responde: 1) Verifica en el Centro de Paquetes que 'MariaDB 10' esté 'En ejecución'. 2) En Web Station -> PHP 7.3 añade ':/run/mysqld' a la directiva open_basedir.";
+    } elseif (!$authSuccess) {
+        if (stripos($effectiveError, 'Access denied') !== false || stripos($effectiveError, 'Acceso denegado') !== false || stripos($effectiveError, '1045') !== false || stripos($effectiveError, 'using password') !== false) {
+            $report["recommendation"] = "Contraseña incorrecta (Error 1045): MariaDB 10 rechazó al usuario '" . DB_USER . "' en " . DB_HOST . ":" . DB_PORT . ". Abre $currentDir/config.php y actualiza la variable DB_PASS con la contraseña exacta de MariaDB 10. Si la olvidaste, puedes cambiarla en DSM -> MariaDB 10.";
+        } elseif (stripos($effectiveError, 'Connection refused') !== false) {
+            $report["recommendation"] = "Conexión TCP rechazada (Error 2002): Verifica en DSM -> Centro de Paquetes que 'MariaDB 10' esté 'En ejecución'.";
+        } elseif (stripos($effectiveError, 'open_basedir') !== false || stripos($effectiveError, 'No such file') !== false) {
+            $report["recommendation"] = "Socket inaccesible por directiva open_basedir: En tu perfil PHP 7.3 de Web Station, la directiva open_basedir bloquea el socket UNIX. La solución es conectar por TCP usando DB_HOST='127.0.0.1' y DB_PORT=3307 en config.php.";
+        } else {
+            $report["recommendation"] = "Error al autenticar con MariaDB: $effectiveError. Verifica usuario y clave en $currentDir/config.php.";
+        }
     } else {
         $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están sincronizados al 100%.";
     }
