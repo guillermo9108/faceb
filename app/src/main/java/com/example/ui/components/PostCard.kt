@@ -271,7 +271,7 @@ fun PostCard(
                 val isVideo = media.type == MediaType.VIDEO
                 val imageModel = remember(media.thumbnailUrl, media.url) {
                     val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
-                    com.example.util.OfflineMediaManager.getDisplayModel(context, raw)
+                    com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
                 }
                 val isChunked = media.isChunked && media.chunks.isNotEmpty()
 

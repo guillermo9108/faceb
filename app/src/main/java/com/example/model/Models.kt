@@ -153,6 +153,14 @@ data class CheckItem(
     val detail: String? = null
 )
 
+data class NasImportProgress(
+    val processedFiles: Int = 0,
+    val totalFiles: Int = 0,
+    val currentBatch: Int = 0,
+    val isComplete: Boolean = false,
+    val statusMessage: String = ""
+)
+
 data class DatabaseDiagnosticReport(
     val status: String = "OK",
     val timestamp: String = "",
@@ -170,6 +178,9 @@ data class DatabaseDiagnosticReport(
     val mariadbAuthentication: CheckItem = CheckItem(),
     val databaseExists: Boolean = false,
     val tablesCount: Int = 0,
+    val expectedTablesCount: Int = 8,
+    val tables: List<String> = emptyList(),
+    val missingTables: List<String> = emptyList(),
     val recommendation: String = "",
     val rawJson: String = ""
 )

@@ -1008,14 +1008,18 @@ object SynologyScripts {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
-                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                    SELECT p.*, 
+                           COALESCE(u.display_name, 'Familiar') as display_name,
+                           COALESCE(u.role, 'Familiar') as role,
+                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
                            m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                            (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
-                    JOIN users u ON p.user_id = u.id
+                    LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
                     LEFT JOIN media m ON m.post_id = p.id
                     WHERE (p.is_short = 0 OR p.is_short IS NULL)
@@ -1029,14 +1033,18 @@ object SynologyScripts {
                     try {
                         autoBootstrapDatabase(${D}db);
                         ${D}stmt = ${D}db->query("
-                            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                            SELECT p.*, 
+                                   COALESCE(u.display_name, 'Familiar') as display_name,
+                                   COALESCE(u.role, 'Familiar') as role,
+                                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                                    g.name as group_name,
                                    m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                                    (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                             FROM posts p
-                            JOIN users u ON p.user_id = u.id
+                            LEFT JOIN users u ON p.user_id = u.id
                             LEFT JOIN family_groups g ON g.id = p.group_id
                             LEFT JOIN media m ON m.post_id = p.id
                             WHERE (p.is_short = 0 OR p.is_short IS NULL)
@@ -1063,16 +1071,20 @@ object SynologyScripts {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->query("
-                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                    SELECT p.*, 
+                           COALESCE(u.display_name, 'Familiar') as display_name,
+                           COALESCE(u.role, 'Familiar') as role,
+                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
                            m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                            (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
-                    JOIN users u ON p.user_id = u.id
+                    LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    JOIN media m ON m.post_id = p.id
+                    LEFT JOIN media m ON m.post_id = p.id
                     WHERE p.is_short = 1
                     ORDER BY p.created_at DESC
                     LIMIT 100
@@ -1150,15 +1162,19 @@ object SynologyScripts {
             try {
                 ${D}db = getDB();
                 ${D}stmt = ${D}db->prepare("
-                    SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+                    SELECT p.*, 
+                           COALESCE(u.display_name, 'Familiar') as display_name,
+                           COALESCE(u.role, 'Familiar') as role,
+                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
                            m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                            (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
-                    JOIN users u ON p.user_id = u.id
-                    JOIN family_groups g ON g.id = p.group_id
+                    LEFT JOIN users u ON p.user_id = u.id
+                    LEFT JOIN family_groups g ON g.id = p.group_id
                     LEFT JOIN media m ON m.post_id = p.id
                     WHERE p.group_id = ?
                     ORDER BY p.created_at DESC
@@ -1173,7 +1189,81 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.5. ESCANEAR CARPETAS DEL ALMACENAMIENTO DEL NAS (SOLO ADMIN)
+        // Función auxiliar para escanear recursivamente todas las subcarpetas omitiendo carpetas del sistema
+        function collectFolderMediaRecursive(${D}dir) {
+            ${D}results = [];
+            if (!@is_dir(${D}dir)) return ${D}results;
+
+            ${D}imgExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'];
+            ${D}vidExts = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'];
+
+            try {
+                ${D}iterator = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator(${D}dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                    RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach (${D}iterator as ${D}item) {
+                    ${D}name = ${D}item->getFilename();
+                    if (${D}name === '@eaDir' || ${D}name === '#recycle' || strpos(${D}name, '.') === 0) continue;
+                    ${D}path = ${D}item->getPathname();
+                    if (strpos(${D}path, '/@eaDir') !== false || strpos(${D}path, '/#recycle') !== false) continue;
+                    if (${D}item->isFile()) {
+                        ${D}ext = strtolower(${D}item->getExtension());
+                        if (in_array(${D}ext, ${D}imgExts)) {
+                            ${D}subDir = dirname(substr(${D}path, strlen(${D}dir) + 1));
+                            ${D}results[] = [
+                                "path" => ${D}path,
+                                "type" => "IMAGE",
+                                "name" => pathinfo(${D}item->getFilename(), PATHINFO_FILENAME),
+                                "rel_subfolder" => (${D}subDir !== '.' && ${D}subDir !== '') ? str_replace('\\\\', '/', ${D}subDir) : ''
+                            ];
+                        } else if (in_array(${D}ext, ${D}vidExts)) {
+                            ${D}subDir = dirname(substr(${D}path, strlen(${D}dir) + 1));
+                            ${D}results[] = [
+                                "path" => ${D}path,
+                                "type" => "VIDEO",
+                                "name" => pathinfo(${D}item->getFilename(), PATHINFO_FILENAME),
+                                "rel_subfolder" => (${D}subDir !== '.' && ${D}subDir !== '') ? str_replace('\\\\', '/', ${D}subDir) : ''
+                            ];
+                        }
+                    }
+                }
+            } catch (Exception ${D}e) {
+                ${D}scan = function(${D}curDir) use (&$scan, &${D}results, ${D}imgExts, ${D}vidExts, ${D}dir) {
+                    ${D}files = @scandir(${D}curDir);
+                    if (${D}files === false) return;
+                    foreach (${D}files as ${D}f) {
+                        if (${D}f === '.' || ${D}f === '..' || ${D}f === '@eaDir' || ${D}f === '#recycle' || strpos(${D}f, '.') === 0) continue;
+                        ${D}full = ${D}curDir . '/' . ${D}f;
+                        if (@is_dir(${D}full)) {
+                            ${D}scan(${D}full);
+                        } elseif (@is_file(${D}full)) {
+                            ${D}ext = strtolower(pathinfo(${D}f, PATHINFO_EXTENSION));
+                            ${D}subDir = dirname(substr(${D}full, strlen(${D}dir) + 1));
+                            if (in_array(${D}ext, ${D}imgExts)) {
+                                ${D}results[] = [
+                                    "path" => ${D}full, 
+                                    "type" => "IMAGE", 
+                                    "name" => pathinfo(${D}f, PATHINFO_FILENAME),
+                                    "rel_subfolder" => (${D}subDir !== '.' && ${D}subDir !== '') ? str_replace('\\\\', '/', ${D}subDir) : ''
+                                ];
+                            } elseif (in_array(${D}ext, ${D}vidExts)) {
+                                ${D}results[] = [
+                                    "path" => ${D}full, 
+                                    "type" => "VIDEO", 
+                                    "name" => pathinfo(${D}f, PATHINFO_FILENAME),
+                                    "rel_subfolder" => (${D}subDir !== '.' && ${D}subDir !== '') ? str_replace('\\\\', '/', ${D}subDir) : ''
+                                ];
+                            }
+                        }
+                    }
+                };
+                ${D}scan(${D}dir);
+            }
+            return ${D}results;
+        }
+
+        // 3.5. ESCANEAR CARPETAS DEL ALMACENAMIENTO DEL NAS (SOLO ADMIN, RECURSIVO)
         if ((${D}method === 'GET' || ${D}method === 'POST') && (matchRoute(${D}action, ${D}uri, 'admin/scan_folders') || str_ends_with(${D}uri, '/admin/scan_folders'))) {
             ${D}basePath = trim(${D}_GET['base_path'] ?? ${D}_POST['base_path'] ?? '/volume1/photo');
             if (empty(${D}basePath)) ${D}basePath = '/volume1/photo';
@@ -1200,23 +1290,12 @@ object SynologyScripts {
                         if (${D}entry === '.' || ${D}entry === '..' || ${D}entry === '@eaDir' || ${D}entry === '#recycle') continue;
                         ${D}fullPath = rtrim(${D}basePath, '/') . '/' . ${D}entry;
                         if (is_dir(${D}fullPath)) {
-                            ${D}subEntries = @scandir(${D}fullPath);
+                            ${D}mediaList = collectFolderMediaRecursive(${D}fullPath);
                             ${D}photoCount = 0;
                             ${D}videoCount = 0;
-
-                            if (${D}subEntries !== false) {
-                                foreach (${D}subEntries as ${D}sub) {
-                                    if (${D}sub === '.' || ${D}sub === '..' || ${D}sub === '@eaDir') continue;
-                                    ${D}subPath = ${D}fullPath . '/' . ${D}sub;
-                                    if (is_file(${D}subPath)) {
-                                        ${D}ext = strtolower(pathinfo(${D}sub, PATHINFO_EXTENSION));
-                                        if (in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'])) {
-                                            ${D}photoCount++;
-                                        } else if (in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'])) {
-                                            ${D}videoCount++;
-                                        }
-                                    }
-                                }
+                            foreach (${D}mediaList as ${D}mItem) {
+                                if (${D}mItem['type'] === 'IMAGE') ${D}photoCount++;
+                                else if (${D}mItem['type'] === 'VIDEO') ${D}videoCount++;
                             }
 
                             ${D}isImported = in_array(${D}fullPath, ${D}existingPaths);
@@ -1226,6 +1305,7 @@ object SynologyScripts {
                                 "photos_count" => ${D}photoCount,
                                 "videos_count" => ${D}videoCount,
                                 "media_count" => (${D}photoCount + ${D}videoCount),
+                                "has_subfolders" => true,
                                 "already_imported" => ${D}isImported
                             ];
                         }
@@ -1240,7 +1320,7 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.6. IMPORTAR CARPETAS COMO GRUPOS Y PUBLICAR CONTENIDO MULTIMEDIA (SOLO ADMIN)
+        // 3.6. IMPORTAR CARPETAS COMO GRUPOS Y PUBLICAR CONTENIDO MULTIMEDIA (SOLO ADMIN, CON SUBCARPETAS Y LOTES)
         if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'admin/import_groups') || str_ends_with(${D}uri, '/admin/import_groups'))) {
             ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
             ${D}folderPaths = ${D}input['folder_paths'] ?? [];
@@ -1248,6 +1328,9 @@ object SynologyScripts {
                 ${D}folderPaths = explode(',', ${D}folderPaths);
             }
             ${D}adminUserId = (int)(${D}input['admin_user_id'] ?? 1);
+            ${D}batchOffset = (int)(${D}input['batch_offset'] ?? 0);
+            ${D}batchLimit = (int)(${D}input['batch_limit'] ?? 50);
+            ${D}isBatch = !empty(${D}input['is_batch']) || isset(${D}input['batch_offset']);
 
             if (empty(${D}folderPaths) || !is_array(${D}folderPaths)) {
                 http_response_code(400);
@@ -1260,6 +1343,9 @@ object SynologyScripts {
                 ${D}db->beginTransaction();
                 ${D}importedGroups = 0;
                 ${D}importedPosts = 0;
+                ${D}totalFiles = 0;
+                ${D}hasMore = false;
+                ${D}nextOffset = 0;
 
                 foreach (${D}folderPaths as ${D}fPath) {
                     ${D}fPath = trim(${D}fPath);
@@ -1275,53 +1361,66 @@ object SynologyScripts {
                         ${D}groupId = (int)${D}existingId;
                     } else {
                         ${D}groupStmt = ${D}db->prepare("INSERT INTO family_groups (name, folder_path, description) VALUES (?, ?, ?)");
-                        ${D}groupStmt->execute([${D}groupName, ${D}fPath, "Grupo familiar sincronizado desde {${D}fPath}"]);
+                        ${D}groupStmt->execute([${D}groupName, ${D}fPath, "Grupo familiar sincronizado con subcarpetas desde {${D}fPath}"]);
                         ${D}groupId = (int)${D}db->lastInsertId();
                     }
 
-                    ${D}files = @scandir(${D}fPath);
+                    // Recolectar todos los archivos de fotos y vídeos de la carpeta y todas sus subcarpetas
+                    ${D}allMedia = collectFolderMediaRecursive(${D}fPath);
+                    ${D}totalInFolder = count(${D}allMedia);
+                    ${D}totalFiles += ${D}totalInFolder;
+
+                    // Procesar por lote progresivo o completo
+                    ${D}slice = ${D}isBatch ? array_slice(${D}allMedia, ${D}batchOffset, ${D}batchLimit) : ${D}allMedia;
                     ${D}coverSet = false;
 
-                    if (${D}files !== false) {
-                        foreach (${D}files as ${D}file) {
-                            if (${D}file === '.' || ${D}file === '..' || ${D}file === '@eaDir') continue;
-                            ${D}fullFile = ${D}fPath . '/' . ${D}file;
-                            if (!is_file(${D}fullFile)) continue;
+                    foreach (${D}slice as ${D}mediaInfo) {
+                        ${D}fullFile = ${D}mediaInfo['path'];
+                        ${D}isVid = (${D}mediaInfo['type'] === 'VIDEO');
+                        ${D}isImg = (${D}mediaInfo['type'] === 'IMAGE');
 
-                            ${D}ext = strtolower(pathinfo(${D}file, PATHINFO_EXTENSION));
-                            ${D}isImg = in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic']);
-                            ${D}isVid = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
+                        ${D}proxyUrl = "index.php?action=media_proxy&path=" . urlencode(${D}fullFile);
 
-                            if (!${D}isImg && !${D}isVid) continue;
+                        // Verificar si el archivo ya fue importado
+                        ${D}checkMedia = ${D}db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
+                        ${D}checkMedia->execute([${D}proxyUrl]);
+                        if (${D}checkMedia->fetchColumn()) continue;
 
-                            ${D}proxyUrl = "index.php?action=media_proxy&path=" . urlencode(${D}fullFile);
+                        ${D}caption = ${D}mediaInfo['name'];
+                        if (!empty(${D}mediaInfo['rel_subfolder'])) {
+                            ${D}caption .= " (" . ${D}mediaInfo['rel_subfolder'] . ")";
+                        }
 
-                            // Verificar si el archivo ya fue importado
-                            ${D}checkMedia = ${D}db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
-                            ${D}checkMedia->execute([${D}proxyUrl]);
-                            if (${D}checkMedia->fetchColumn()) continue;
+                        ${D}stmtPost = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
+                        ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
+                        ${D}newPostId = (int)${D}db->lastInsertId();
 
-                            ${D}caption = pathinfo(${D}file, PATHINFO_FILENAME);
-                            ${D}stmtPost = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
-                            ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
-                            ${D}newPostId = (int)${D}db->lastInsertId();
+                        ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
+                        ${D}stmtMedia->execute([
+                            ${D}newPostId,
+                            ${D}isVid ? 'VIDEO' : 'IMAGE',
+                            ${D}proxyUrl,
+                            ${D}proxyUrl
+                        ]);
 
-                            ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
-                            ${D}stmtMedia->execute([
-                                ${D}newPostId,
-                                ${D}isVid ? 'VIDEO' : 'IMAGE',
-                                ${D}proxyUrl,
-                                ${D}proxyUrl
-                            ]);
+                        ${D}importedPosts++;
 
-                            ${D}importedPosts++;
-
-                            if (!${D}coverSet && ${D}isImg) {
-                                ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}proxyUrl, ${D}groupId]);
-                                ${D}coverSet = true;
-                            }
+                        if (!${D}coverSet && ${D}isImg) {
+                            ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}proxyUrl, ${D}groupId]);
+                            ${D}coverSet = true;
                         }
                     }
+
+                    if (${D}isBatch) {
+                        ${D}currentProcessed = ${D}batchOffset + count(${D}slice);
+                        if (${D}currentProcessed < ${D}totalInFolder) {
+                            ${D}hasMore = true;
+                            ${D}nextOffset = ${D}currentProcessed;
+                        }
+                    }
+
+                    // Actualizar contador total de publicaciones del grupo
+                    ${D}db->prepare("UPDATE family_groups SET posts_count = (SELECT COUNT(*) FROM posts WHERE group_id = ?) WHERE id = ?")->execute([${D}groupId, ${D}groupId]);
 
                     ${D}importedGroups++;
                 }
@@ -1330,7 +1429,12 @@ object SynologyScripts {
                 echo json_encode([
                     "status" => "OK",
                     "imported_groups" => ${D}importedGroups,
-                    "imported_posts" => ${D}importedPosts
+                    "imported_posts" => ${D}importedPosts,
+                    "batch_offset" => ${D}batchOffset,
+                    "batch_imported" => ${D}importedPosts,
+                    "total_files" => ${D}totalFiles,
+                    "has_more" => ${D}hasMore,
+                    "next_offset" => ${D}nextOffset
                 ]);
             } catch (Exception ${D}e) {
                 if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();

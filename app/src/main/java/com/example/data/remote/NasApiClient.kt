@@ -238,6 +238,23 @@ class NasApiClient(
 
             val dbExists = authObj?.optBoolean("database_exists", false) ?: false
             val tablesCount = authObj?.optInt("tables_count", 0) ?: 0
+            val expectedTablesCount = authObj?.optInt("expected_tables_count", 8) ?: 8
+
+            val tablesList = mutableListOf<String>()
+            val tablesArray = authObj?.optJSONArray("tables")
+            if (tablesArray != null) {
+                for (ti in 0 until tablesArray.length()) {
+                    tablesList.add(tablesArray.optString(ti))
+                }
+            }
+
+            val missingList = mutableListOf<String>()
+            val missingArray = authObj?.optJSONArray("missing_tables")
+            if (missingArray != null) {
+                for (mi in 0 until missingArray.length()) {
+                    missingList.add(missingArray.optString(mi))
+                }
+            }
 
             val report = DatabaseDiagnosticReport(
                 status = status,
@@ -254,6 +271,9 @@ class NasApiClient(
                 mariadbAuthentication = authItem,
                 databaseExists = dbExists,
                 tablesCount = tablesCount,
+                expectedTablesCount = expectedTablesCount,
+                tables = tablesList,
+                missingTables = missingList,
                 recommendation = recommendation,
                 rawJson = body
             )
@@ -609,9 +629,9 @@ class NasApiClient(
     }
 
     private fun parsePostFromJson(p: JSONObject, baseUrl: String): Post {
-        val postId = p.getInt("id")
+        val postId = p.optInt("id", (1..99999).random())
         val author = FamilyMember(
-            id = p.getInt("user_id"),
+            id = p.optInt("user_id", 1),
             name = p.optString("display_name", "Familiar"),
             role = p.optString("role", "Familiar"),
             avatarEmoji = p.optString("avatar_emoji", "👤"),
@@ -672,10 +692,10 @@ class NasApiClient(
                 val cObj = commentsArray.getJSONObject(cIdx)
                 commentsList.add(
                     Comment(
-                        id = cObj.getInt("id"),
+                        id = cObj.optInt("id", (1..99999).random()),
                         postId = postId,
                         author = FamilyMember(
-                            id = cObj.getInt("user_id"),
+                            id = cObj.optInt("user_id", 1),
                             name = cObj.optString("display_name", "Familiar"),
                             role = cObj.optString("role", "Familiar"),
                             avatarEmoji = cObj.optString("avatar_emoji", "👤"),
@@ -688,7 +708,7 @@ class NasApiClient(
             }
         }
 
-        val groupId = if (p.has("group_id") && !p.isNull("group_id")) p.getInt("group_id") else null
+        val groupId = if (p.has("group_id") && !p.isNull("group_id")) p.optInt("group_id") else null
         val groupName = p.optString("group_name").takeIf { it.isNotBlank() }
 
         return Post(
@@ -865,16 +885,34 @@ class NasApiClient(
         }
     }
 
-    /**
-     * Importa las carpetas seleccionadas del NAS como grupos y publica sus fotos/vídeos (solo Administrador).
-     */
-    suspend fun importNasGroups(ip: String, port: Int, path: String, folderPaths: List<String>, adminUserId: Int): Result<Int> = withContext(Dispatchers.IO) {
+    data class NasBatchImportResponse(
+        val importedGroups: Int,
+        val importedPosts: Int,
+        val batchOffset: Int,
+        val batchImported: Int,
+        val totalFiles: Int,
+        val hasMore: Boolean,
+        val nextOffset: Int
+    )
+
+    suspend fun importNasGroupsBatch(
+        ip: String,
+        port: Int,
+        path: String,
+        folderPaths: List<String>,
+        adminUserId: Int,
+        batchOffset: Int,
+        batchLimit: Int = 50
+    ): Result<NasBatchImportResponse> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
             var url = buildEndpointUrl(ip, port, currentPath, "admin/import_groups")
             val jsonBody = JSONObject().apply {
                 put("admin_user_id", adminUserId)
                 put("folder_paths", JSONArray(folderPaths))
+                put("batch_offset", batchOffset)
+                put("batch_limit", batchLimit)
+                put("is_batch", 1)
             }
 
             val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
@@ -897,11 +935,63 @@ class NasApiClient(
             }
 
             val jsonObject = parseJsonObjectSafely(body)
-            val imported = jsonObject.optInt("imported_groups", folderPaths.size)
-            Result.success(imported)
+            val res = NasBatchImportResponse(
+                importedGroups = jsonObject.optInt("imported_groups", folderPaths.size),
+                importedPosts = jsonObject.optInt("imported_posts", 0),
+                batchOffset = jsonObject.optInt("batch_offset", batchOffset),
+                batchImported = jsonObject.optInt("batch_imported", 0),
+                totalFiles = jsonObject.optInt("total_files", 0),
+                hasMore = jsonObject.optBoolean("has_more", false),
+                nextOffset = jsonObject.optInt("next_offset", batchOffset)
+            )
+            Result.success(res)
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Importa las carpetas seleccionadas del NAS como grupos y publica progresivamente sus fotos/vídeos en segundo plano.
+     * Soporta miles de archivos en carpetas y subcarpetas sin caídas ni timeouts por HTTP.
+     */
+    suspend fun importNasGroups(
+        ip: String,
+        port: Int,
+        path: String,
+        folderPaths: List<String>,
+        adminUserId: Int,
+        onProgress: ((processed: Int, total: Int) -> Unit)? = null
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        var currentOffset = 0
+        var totalProcessed = 0
+        var totalFiles = 0
+        var totalGroups = folderPaths.size
+        var keepGoing = true
+        var batchCount = 0
+
+        while (keepGoing && batchCount < 200) { // Límite de seguridad de 200 lotes (10,000 archivos)
+            batchCount++
+            val batchRes = importNasGroupsBatch(ip, port, path, folderPaths, adminUserId, currentOffset, 50)
+            if (batchRes.isFailure) {
+                return@withContext if (totalProcessed > 0) {
+                    Result.success(totalGroups)
+                } else {
+                    Result.failure(batchRes.exceptionOrNull() ?: Exception("Error en lote $batchCount"))
+                }
+            }
+            val data = batchRes.getOrThrow()
+            totalGroups = data.importedGroups
+            totalProcessed += data.batchImported
+            totalFiles = data.totalFiles
+            onProgress?.invoke(totalProcessed, totalFiles)
+
+            if (!data.hasMore || data.nextOffset <= currentOffset || data.batchImported == 0) {
+                keepGoing = false
+            } else {
+                currentOffset = data.nextOffset
+            }
+        }
+        Result.success(totalGroups)
     }
 
     /**

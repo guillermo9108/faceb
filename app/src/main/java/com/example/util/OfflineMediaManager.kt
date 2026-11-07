@@ -103,11 +103,90 @@ object OfflineMediaManager {
         }
     }
 
+    fun getThumbsDir(context: Context): File {
+        val dir = File(getOfflineDir(context), "thumbs")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     /**
-     * Retorna el objeto adecuado para Coil (File si está en caché offline, String si no).
+     * Retorna el archivo de miniatura local generado para un vídeo si ya existe en .offline_media/thumbs.
      */
-    fun getDisplayModel(context: Context, url: String?): Any? {
+    fun getVideoThumbnailFile(context: Context, videoUrl: String?): File? {
+        if (videoUrl.isNullOrBlank()) return null
+        val key = hashUrl(videoUrl)
+        val thumbFile = File(getThumbsDir(context), "vthumb_$key.jpg")
+        return if (thumbFile.exists() && thumbFile.length() > 0) thumbFile else null
+    }
+
+    /**
+     * Genera bajo demanda una miniatura ligera a partir del vídeo local o remoto usando MediaMetadataRetriever
+     * y la guarda en la carpeta oculta (.offline_media/thumbs).
+     */
+    fun getOrGenerateVideoThumbnail(context: Context, videoUrl: String?): File? {
+        if (videoUrl.isNullOrBlank()) return null
+        val existing = getVideoThumbnailFile(context, videoUrl)
+        if (existing != null) return existing
+
+        val key = hashUrl(videoUrl)
+        val thumbsDir = getThumbsDir(context)
+        val thumbFile = File(thumbsDir, "vthumb_$key.jpg")
+        val partFile = File(thumbsDir, "vthumb_$key.jpg.part")
+
+        val localVideo = getLocalCacheFile(context, videoUrl)
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            if (localVideo != null && localVideo.exists()) {
+                retriever.setDataSource(localVideo.absolutePath)
+            } else if (videoUrl.startsWith("http://") || videoUrl.startsWith("https://")) {
+                retriever.setDataSource(videoUrl, mapOf("User-Agent" to "FamilyFeed/1.0"))
+            } else if (videoUrl.startsWith("content://") || videoUrl.startsWith("file://")) {
+                retriever.setDataSource(context, Uri.parse(videoUrl))
+            } else {
+                return null
+            }
+
+            val bitmap = retriever.getFrameAtTime(1_000_000, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(0)
+
+            if (bitmap != null) {
+                FileOutputStream(partFile).use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                }
+                if (partFile.exists() && partFile.length() > 0) {
+                    if (thumbFile.exists()) thumbFile.delete()
+                    partFile.renameTo(thumbFile)
+                    return thumbFile
+                }
+            }
+        } catch (_: Exception) {
+            if (partFile.exists()) partFile.delete()
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    /**
+     * Retorna el objeto adecuado para Coil (File si está en caché offline local, String si es remoto).
+     * Si es un vídeo sin miniatura previa, prioriza la miniatura local generada o desencadena su extracción perezosa en segundo plano.
+     */
+    fun getDisplayModel(context: Context, url: String?, isVideo: Boolean = false): Any? {
         if (url.isNullOrBlank()) return null
+
+        // 1. Si es vídeo, comprobar primero si ya existe la miniatura local generada en .offline_media/thumbs
+        if (isVideo) {
+            val vThumb = getVideoThumbnailFile(context, url)
+            if (vThumb != null) return vThumb
+
+            // Desencadenar la extracción perezosa en segundo plano a medida que el usuario hace scroll
+            val appContext = context.applicationContext
+            scope.launch {
+                getOrGenerateVideoThumbnail(appContext, url)
+            }
+        }
+
+        // 2. Si es imagen o miniatura descargada previamente en la carpeta oculta (.offline_media)
         val cached = getLocalCacheFile(context, url)
         return cached ?: url
     }

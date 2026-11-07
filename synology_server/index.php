@@ -354,6 +354,7 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         }
     }
 
+    $expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
     if ($authSuccess && $diagPdo) {
         try {
             $serverVer = $diagPdo->getAttribute(PDO::ATTR_SERVER_VERSION);
@@ -365,6 +366,7 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         } catch (Exception $ex) {}
     }
 
+    $missingTables = array_values(array_diff($expectedTables, $tables));
     $effectiveError = !empty($primaryError) ? $primaryError : $authError;
 
     $report["checks"]["mariadb_authentication"] = [
@@ -373,11 +375,13 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         "server_version" => $serverVer,
         "database_exists" => $dbExists,
         "tables_count" => count($tables),
+        "expected_tables_count" => 8,
         "tables" => $tables,
+        "missing_tables" => $missingTables,
         "attempts" => $attempts,
         "error" => $effectiveError,
         "message" => $authSuccess 
-            ? "Conexión y autenticación exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables)
+            ? "Conexión y autenticación exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables) . "/8 (" . implode(', ', $tables) . ")"
             : "Fallo de autenticación o conexión. " . ($report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: $effectiveError")
     ];
 
@@ -397,7 +401,8 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
             $report["recommendation"] = "Error al autenticar con MariaDB: $effectiveError. Verifica usuario y clave en $currentDir/config.php.";
         }
     } else {
-        $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están sincronizados al 100%.";
+        $tableStatus = count($missingTables) === 0 ? "Las 8 tablas del sistema están 100% verificadas." : "Faltan tablas: " . implode(', ', $missingTables) . ". Pulsa 'Verificar / Reparar' en la app.";
+        $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están sincronizados. $tableStatus";
     }
 
     echo json_encode($report);
@@ -412,13 +417,17 @@ if (matchRoute($action, $uri, 'repair_db') || matchRoute($action, $uri, 'repair'
 
         $tablesStmt = $db->query("SHOW TABLES");
         $tables = $tablesStmt ? $tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
+        $expected = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
+        $missing = array_values(array_diff($expected, $tables));
 
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
             "status" => "OK",
-            "message" => "Tablas en MariaDB 10 verificadas y sincronizadas exitosamente.",
+            "message" => "Tablas en MariaDB 10 verificadas y sincronizadas exitosamente: " . count($tables) . "/8 (" . implode(', ', $tables) . ")",
             "database" => DB_NAME,
             "tables" => $tables,
+            "expected_count" => 8,
+            "missing_tables" => $missing,
             "time" => date("Y-m-d H:i:s")
         ]);
     } catch (Exception $e) {
@@ -484,6 +493,50 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'auth/login') || str_ends_w
     exit;
 }
 
+// 2.2. REGISTRO REAL DE USUARIOS EN MARIADB 10
+if ($method === 'POST' && (matchRoute($action, $uri, 'auth/register') || str_ends_with($uri, '/auth/register'))) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $username = trim($input['username'] ?? '');
+    $pin = trim($input['pin'] ?? '');
+    $displayName = trim($input['display_name'] ?? $username);
+    $role = trim($input['role'] ?? 'Familiar');
+    $avatarEmoji = $input['avatar_emoji'] ?? '👤';
+    $avatarColor = (int)($input['avatar_color_hex'] ?? 4280391411);
+
+    if (empty($username) || empty($pin)) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "El usuario y el PIN son obligatorios"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $hash = password_hash($pin, PASSWORD_DEFAULT);
+        $stmt = $db->prepare("INSERT INTO users (username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$username, $displayName, $role, $hash, $avatarEmoji, $avatarColor]);
+        $newId = (int)$db->lastInsertId();
+
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "status" => "OK",
+            "user" => [
+                "id" => $newId,
+                "username" => $username,
+                "display_name" => $displayName,
+                "role" => $role,
+                "avatar_emoji" => $avatarEmoji,
+                "avatar_color_hex" => $avatarColor
+            ]
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
 // 3.1. OBTENER GRUPOS
 if ($method === 'GET' && (matchRoute($action, $uri, 'groups') || str_ends_with($uri, '/groups'))) {
     try {
@@ -510,14 +563,18 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'group/posts') || str_ends_w
     try {
         $db = getDB();
         $stmt = $db->prepare("
-            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+            SELECT p.*, 
+                   COALESCE(u.display_name, 'Familiar') as display_name,
+                   COALESCE(u.role, 'Familiar') as role,
+                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
                    m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
-            JOIN users u ON p.user_id = u.id
+            LEFT JOIN users u ON p.user_id = u.id
             JOIN family_groups g ON g.id = p.group_id
             LEFT JOIN media m ON m.post_id = p.id
             WHERE p.group_id = ?
@@ -540,16 +597,20 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'shorts') || str_ends_with($
     try {
         $db = getDB();
         $stmt = $db->query("
-            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+            SELECT p.*, 
+                   COALESCE(u.display_name, 'Familiar') as display_name,
+                   COALESCE(u.role, 'Familiar') as role,
+                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
                    m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
-            JOIN users u ON p.user_id = u.id
+            LEFT JOIN users u ON p.user_id = u.id
             LEFT JOIN family_groups g ON g.id = p.group_id
-            JOIN media m ON m.post_id = p.id AND m.media_type = 'VIDEO'
+            LEFT JOIN media m ON m.post_id = p.id
             WHERE p.is_short = 1
             ORDER BY p.created_at DESC
             LIMIT 50
@@ -569,14 +630,18 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($actio
     try {
         $db = getDB();
         $stmt = $db->query("
-            SELECT p.*, u.display_name, u.role, u.avatar_emoji, u.avatar_color_hex,
+            SELECT p.*, 
+                   COALESCE(u.display_name, 'Familiar') as display_name,
+                   COALESCE(u.role, 'Familiar') as role,
+                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
                    m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
-            JOIN users u ON p.user_id = u.id
+            LEFT JOIN users u ON p.user_id = u.id
             LEFT JOIN family_groups g ON g.id = p.group_id
             LEFT JOIN media m ON m.post_id = p.id
             ORDER BY p.is_pinned DESC, p.created_at DESC
@@ -847,7 +912,81 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'stories') || str_ends_with(
     exit;
 }
 
-// 9. ESCANEAR CARPETAS DEL NAS
+// Función auxiliar para escanear recursivamente todas las subcarpetas omitiendo carpetas del sistema (@eaDir, #recycle, etc.)
+function collectFolderMediaRecursive($dir) {
+    $results = [];
+    if (!@is_dir($dir)) return $results;
+
+    $imgExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'];
+    $vidExts = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'];
+
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($iterator as $item) {
+            $name = $item->getFilename();
+            if ($name === '@eaDir' || $name === '#recycle' || strpos($name, '.') === 0) continue;
+            $path = $item->getPathname();
+            if (strpos($path, '/@eaDir') !== false || strpos($path, '/#recycle') !== false) continue;
+            if ($item->isFile()) {
+                $ext = strtolower($item->getExtension());
+                if (in_array($ext, $imgExts)) {
+                    $subDir = dirname(substr($path, strlen($dir) + 1));
+                    $results[] = [
+                        "path" => $path,
+                        "type" => "IMAGE",
+                        "name" => pathinfo($item->getFilename(), PATHINFO_FILENAME),
+                        "rel_subfolder" => ($subDir !== '.' && $subDir !== '') ? str_replace('\\', '/', $subDir) : ''
+                    ];
+                } else if (in_array($ext, $vidExts)) {
+                    $subDir = dirname(substr($path, strlen($dir) + 1));
+                    $results[] = [
+                        "path" => $path,
+                        "type" => "VIDEO",
+                        "name" => pathinfo($item->getFilename(), PATHINFO_FILENAME),
+                        "rel_subfolder" => ($subDir !== '.' && $subDir !== '') ? str_replace('\\', '/', $subDir) : ''
+                    ];
+                }
+            }
+        }
+    } catch (Exception $e) {
+        $scan = function($curDir) use (&$scan, &$results, $imgExts, $vidExts, $dir) {
+            $files = @scandir($curDir);
+            if ($files === false) return;
+            foreach ($files as $f) {
+                if ($f === '.' || $f === '..' || $f === '@eaDir' || $f === '#recycle' || strpos($f, '.') === 0) continue;
+                $full = $curDir . '/' . $f;
+                if (@is_dir($full)) {
+                    $scan($full);
+                } elseif (@is_file($full)) {
+                    $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+                    $subDir = dirname(substr($full, strlen($dir) + 1));
+                    if (in_array($ext, $imgExts)) {
+                        $results[] = [
+                            "path" => $full, 
+                            "type" => "IMAGE", 
+                            "name" => pathinfo($f, PATHINFO_FILENAME),
+                            "rel_subfolder" => ($subDir !== '.' && $subDir !== '') ? str_replace('\\', '/', $subDir) : ''
+                        ];
+                    } elseif (in_array($ext, $vidExts)) {
+                        $results[] = [
+                            "path" => $full, 
+                            "type" => "VIDEO", 
+                            "name" => pathinfo($f, PATHINFO_FILENAME),
+                            "rel_subfolder" => ($subDir !== '.' && $subDir !== '') ? str_replace('\\', '/', $subDir) : ''
+                        ];
+                    }
+                }
+            }
+        };
+        $scan($dir);
+    }
+    return $results;
+}
+
+// 9. ESCANEAR CARPETAS DEL NAS (CON SOPORTE RECURSIVO DE SUBCARPETAS)
 if (($method === 'GET' || $method === 'POST') && (matchRoute($action, $uri, 'admin/scan_folders') || str_ends_with($uri, '/admin/scan_folders'))) {
     $basePath = trim($_GET['base_path'] ?? $_POST['base_path'] ?? '/volume1/photo');
     if (empty($basePath)) $basePath = '/volume1/photo';
@@ -875,23 +1014,12 @@ if (($method === 'GET' || $method === 'POST') && (matchRoute($action, $uri, 'adm
                 if ($entry === '.' || $entry === '..' || $entry === '@eaDir' || $entry === '#recycle') continue;
                 $fullPath = rtrim($basePath, '/') . '/' . $entry;
                 if (@is_dir($fullPath)) {
-                    $subEntries = @scandir($fullPath);
+                    $mediaList = collectFolderMediaRecursive($fullPath);
                     $photoCount = 0;
                     $videoCount = 0;
-
-                    if ($subEntries !== false) {
-                        foreach ($subEntries as $sub) {
-                            if ($sub === '.' || $sub === '..' || $sub === '@eaDir') continue;
-                            $subPath = $fullPath . '/' . $sub;
-                            if (@is_file($subPath)) {
-                                $ext = strtolower(pathinfo($sub, PATHINFO_EXTENSION));
-                                if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic'])) {
-                                    $photoCount++;
-                                } else if (in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v'])) {
-                                    $videoCount++;
-                                }
-                            }
-                        }
+                    foreach ($mediaList as $mItem) {
+                        if ($mItem['type'] === 'IMAGE') $photoCount++;
+                        else if ($mItem['type'] === 'VIDEO') $videoCount++;
                     }
 
                     $isImported = in_array($fullPath, $existingPaths);
@@ -901,6 +1029,7 @@ if (($method === 'GET' || $method === 'POST') && (matchRoute($action, $uri, 'adm
                         "photos_count" => $photoCount,
                         "videos_count" => $videoCount,
                         "media_count" => ($photoCount + $videoCount),
+                        "has_subfolders" => true,
                         "already_imported" => $isImported
                     ];
                 }
@@ -917,7 +1046,7 @@ if (($method === 'GET' || $method === 'POST') && (matchRoute($action, $uri, 'adm
     exit;
 }
 
-// 10. IMPORTAR CARPETAS COMO GRUPOS
+// 10. IMPORTAR CARPETAS COMO GRUPOS (RECURSIVO EN SUBCARPETAS Y PUBLICACIÓN PROGRESIVA EN SEGUNDO PLANO)
 if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || str_ends_with($uri, '/admin/import_groups'))) {
     $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
     $folderPaths = $input['folder_paths'] ?? [];
@@ -925,6 +1054,9 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || s
         $folderPaths = explode(',', $folderPaths);
     }
     $adminUserId = (int)($input['admin_user_id'] ?? 1);
+    $batchOffset = (int)($input['batch_offset'] ?? 0);
+    $batchLimit = (int)($input['batch_limit'] ?? 50);
+    $isBatch = !empty($input['is_batch']) || isset($input['batch_offset']);
 
     if (empty($folderPaths) || !is_array($folderPaths)) {
         http_response_code(400);
@@ -938,6 +1070,9 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || s
         $db->beginTransaction();
         $importedGroups = 0;
         $importedPosts = 0;
+        $totalFiles = 0;
+        $hasMore = false;
+        $nextOffset = 0;
 
         foreach ($folderPaths as $fPath) {
             $fPath = trim($fPath);
@@ -953,52 +1088,65 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || s
                 $groupId = (int)$existingId;
             } else {
                 $groupStmt = $db->prepare("INSERT INTO family_groups (name, folder_path, description) VALUES (?, ?, ?)");
-                $groupStmt->execute([$groupName, $fPath, "Grupo familiar sincronizado desde {$fPath}"]);
+                $groupStmt->execute([$groupName, $fPath, "Grupo familiar sincronizado con subcarpetas desde {$fPath}"]);
                 $groupId = (int)$db->lastInsertId();
             }
 
-            $files = @scandir($fPath);
+            // Recolectar todos los archivos de fotos y vídeos de la carpeta y todas sus subcarpetas
+            $allMedia = collectFolderMediaRecursive($fPath);
+            $totalInFolder = count($allMedia);
+            $totalFiles += $totalInFolder;
+
+            // Procesar por lote progresivo o completo
+            $slice = $isBatch ? array_slice($allMedia, $batchOffset, $batchLimit) : $allMedia;
             $coverSet = false;
 
-            if ($files !== false) {
-                foreach ($files as $file) {
-                    if ($file === '.' || $file === '..' || $file === '@eaDir') continue;
-                    $fullFile = $fPath . '/' . $file;
-                    if (!@is_file($fullFile)) continue;
+            foreach ($slice as $mediaInfo) {
+                $fullFile = $mediaInfo['path'];
+                $isVid = ($mediaInfo['type'] === 'VIDEO');
+                $isImg = ($mediaInfo['type'] === 'IMAGE');
 
-                    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-                    $isImg = in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'heic']);
-                    $isVid = in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
+                $proxyUrl = "index.php?action=media_proxy&path=" . urlencode($fullFile);
 
-                    if (!$isImg && !$isVid) continue;
+                $checkMedia = $db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
+                $checkMedia->execute([$proxyUrl]);
+                if ($checkMedia->fetchColumn()) continue;
 
-                    $proxyUrl = "index.php?action=media_proxy&path=" . urlencode($fullFile);
+                $caption = $mediaInfo['name'];
+                if (!empty($mediaInfo['rel_subfolder'])) {
+                    $caption .= " (" . $mediaInfo['rel_subfolder'] . ")";
+                }
 
-                    $checkMedia = $db->prepare("SELECT id FROM media WHERE file_path = ? LIMIT 1");
-                    $checkMedia->execute([$proxyUrl]);
-                    if ($checkMedia->fetchColumn()) continue;
+                $stmtPost = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
+                $stmtPost->execute([$adminUserId, $groupId, $caption]);
+                $newPostId = (int)$db->lastInsertId();
 
-                    $caption = pathinfo($file, PATHINFO_FILENAME);
-                    $stmtPost = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
-                    $stmtPost->execute([$adminUserId, $groupId, $caption]);
-                    $newPostId = (int)$db->lastInsertId();
+                $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
+                $stmtMedia->execute([
+                    $newPostId,
+                    $isVid ? 'VIDEO' : 'IMAGE',
+                    $proxyUrl,
+                    $proxyUrl
+                ]);
 
-                    $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
-                    $stmtMedia->execute([
-                        $newPostId,
-                        $isVid ? 'VIDEO' : 'IMAGE',
-                        $proxyUrl,
-                        $proxyUrl
-                    ]);
+                $importedPosts++;
 
-                    $importedPosts++;
-
-                    if (!$coverSet && $isImg) {
-                        $db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([$proxyUrl, $groupId]);
-                        $coverSet = true;
-                    }
+                if (!$coverSet && $isImg) {
+                    $db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([$proxyUrl, $groupId]);
+                    $coverSet = true;
                 }
             }
+
+            if ($isBatch) {
+                $currentProcessed = $batchOffset + count($slice);
+                if ($currentProcessed < $totalInFolder) {
+                    $hasMore = true;
+                    $nextOffset = $currentProcessed;
+                }
+            }
+
+            // Actualizar contador total de publicaciones del grupo
+            $db->prepare("UPDATE family_groups SET posts_count = (SELECT COUNT(*) FROM posts WHERE group_id = ?) WHERE id = ?")->execute([$groupId, $groupId]);
 
             $importedGroups++;
         }
@@ -1008,7 +1156,12 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'admin/import_groups') || s
         echo json_encode([
             "status" => "OK",
             "imported_groups" => $importedGroups,
-            "imported_posts" => $importedPosts
+            "imported_posts" => $importedPosts,
+            "batch_offset" => $batchOffset,
+            "batch_imported" => $importedPosts,
+            "total_files" => $totalFiles,
+            "has_more" => $hasMore,
+            "next_offset" => $nextOffset
         ]);
     } catch (Exception $e) {
         if (isset($db) && $db->inTransaction()) $db->rollBack();

@@ -405,9 +405,6 @@ class FamilyRepository(
                 val entities = list.map { it.toEntity() }
                 database.postDao().insertPosts(entities)
             }
-            // Precargar vídeos y miniaturas de Shorts en la carpeta oculta (.offline_media)
-            val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
-            com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, list)
         }
         result.onFailure {
             // Modo offline: cargar los shorts guardados previamente en Room
@@ -450,8 +447,6 @@ class FamilyRepository(
             scope.launch {
                 database.postDao().insertPosts(list.map { it.toEntity() })
             }
-            val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
-            com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, list)
         }
         result.onFailure {
             scope.launch {
@@ -937,10 +932,6 @@ class FamilyRepository(
                     _stories.value = fallbackStories
                 }
 
-                // Precargar fotos, vídeos y miniaturas en la carpeta oculta (.offline_media)
-                val base = if (config.port == 80) "http://${config.ip}${config.path}" else "http://${config.ip}:${config.port}${config.path}"
-                com.example.util.OfflineMediaManager.prefetchPostsMedia(context, base, mergedPosts)
-
                 Result.success(mergedPosts)
             },
             onFailure = { error ->
@@ -1027,6 +1018,40 @@ class FamilyRepository(
 
         return result.fold(
             onSuccess = { postId ->
+                // Actualizar optimista local inmediatamente en memoria
+                val mediaItems = if (mediaUri != null) {
+                    val isVideo = context.contentResolver.getType(mediaUri)?.startsWith("video") == true || durationLabel != null
+                    listOf(
+                        MediaItem(
+                            id = "m_$postId",
+                            type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
+                            url = mediaUri.toString(),
+                            thumbnailUrl = finalThumb?.absolutePath ?: mediaUri.toString(),
+                            durationLabel = finalDur
+                        )
+                    )
+                } else emptyList()
+
+                val newPost = Post(
+                    id = postId,
+                    author = author,
+                    contentText = contentText,
+                    createdAt = System.currentTimeMillis(),
+                    mediaItems = mediaItems,
+                    reactions = emptyMap(),
+                    comments = emptyList(),
+                    feeling = feeling,
+                    location = location,
+                    isShort = isShort,
+                    groupId = null
+                )
+
+                if (isShort) {
+                    _shorts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                } else {
+                    _posts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                }
+
                 // Refrescar feed y shorts inmediatamente desde el NAS
                 scope.launch {
                     refreshFeed()
@@ -1205,6 +1230,37 @@ class FamilyRepository(
             )
 
             finalizeResult.onSuccess { postId ->
+                val mediaItems = listOf(
+                    MediaItem(
+                        id = "m_$postId",
+                        type = MediaType.VIDEO,
+                        url = videoUri.toString(),
+                        thumbnailUrl = sliceData.thumbnailFile?.absolutePath ?: videoUri.toString(),
+                        durationLabel = sliceData.durationLabel,
+                        isChunked = true
+                    )
+                )
+
+                val newPost = Post(
+                    id = postId,
+                    author = author,
+                    contentText = contentText,
+                    createdAt = System.currentTimeMillis(),
+                    mediaItems = mediaItems,
+                    reactions = emptyMap(),
+                    comments = emptyList(),
+                    feeling = feeling,
+                    location = location,
+                    isShort = isShort,
+                    groupId = groupId
+                )
+
+                if (isShort) {
+                    _shorts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                } else {
+                    _posts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                }
+
                 onProgress("¡Completado!", 1.0f)
                 onDetailedProgress(
                     VideoUploadProgress(
