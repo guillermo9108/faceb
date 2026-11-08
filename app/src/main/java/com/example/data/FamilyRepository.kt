@@ -463,10 +463,13 @@ class FamilyRepository(
         return apiClient.scanNasFolders(config.ip, config.port, config.path, basePath)
     }
 
-    suspend fun importNasFolders(folderPaths: List<String>): Result<Int> {
+    suspend fun importNasFolders(
+        folderPaths: List<String>,
+        onProgress: ((processed: Int, total: Int) -> Unit)? = null
+    ): Result<Int> {
         val config = _nasConfig.value
         val adminId = _currentMember.value.id
-        val result = apiClient.importNasGroups(config.ip, config.port, config.path, folderPaths, adminId)
+        val result = apiClient.importNasGroups(config.ip, config.port, config.path, folderPaths, adminId, onProgress)
         result.onSuccess {
             refreshGroups()
             refreshFeed()

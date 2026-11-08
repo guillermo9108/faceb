@@ -1229,7 +1229,7 @@ object SynologyScripts {
                     }
                 }
             } catch (Exception ${D}e) {
-                ${D}scan = function(${D}curDir) use (&$scan, &${D}results, ${D}imgExts, ${D}vidExts, ${D}dir) {
+                ${D}scan = function(${D}curDir) use (&${D}scan, &${D}results, ${D}imgExts, ${D}vidExts, ${D}dir) {
                     ${D}files = @scandir(${D}curDir);
                     if (${D}files === false) return;
                     foreach (${D}files as ${D}f) {

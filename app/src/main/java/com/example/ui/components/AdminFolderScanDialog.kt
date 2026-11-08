@@ -63,6 +63,7 @@ fun AdminFolderScanDialog(
     scannedFolders: List<ScannedFolder>,
     isScanning: Boolean,
     isImporting: Boolean,
+    importProgress: com.example.model.NasImportProgress? = null,
     onScanPath: (String) -> Unit,
     onToggleFolder: (String) -> Unit,
     onSelectAll: (Boolean) -> Unit,
@@ -288,6 +289,47 @@ fun AdminFolderScanDialog(
                     }
                 }
 
+                if (isImporting && importProgress != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = FacebookBlue.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = importProgress.statusMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = FacebookBlue
+                                )
+                                if (importProgress.totalFiles > 0) {
+                                    val pct = ((importProgress.processedFiles.toFloat() / importProgress.totalFiles) * 100).toInt().coerceIn(0, 100)
+                                    Text(
+                                        text = "$pct%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = FacebookBlue
+                                    )
+                                }
+                            }
+                            if (importProgress.totalFiles > 0) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                androidx.compose.material3.LinearProgressIndicator(
+                                    progress = { (importProgress.processedFiles.toFloat() / importProgress.totalFiles).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                    color = FacebookBlue
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(14.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 Spacer(modifier = Modifier.height(12.dp))
@@ -322,7 +364,10 @@ fun AdminFolderScanDialog(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Sincronizando...")
+                            val btnText = if (importProgress != null && importProgress.totalFiles > 0) {
+                                "${importProgress.processedFiles}/${importProgress.totalFiles}"
+                            } else "Publicando..."
+                            Text(btnText)
                         } else {
                             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -451,6 +496,14 @@ private fun FolderItemCard(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+                    if (folder.photosCount > 0 || folder.videosCount > 0) {
+                        Text(
+                            text = "• Incluye subcarpetas",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = FacebookBlue,
+                            fontSize = 10.sp
+                        )
                     }
                     if (folder.photosCount == 0 && folder.videosCount == 0) {
                         Text(

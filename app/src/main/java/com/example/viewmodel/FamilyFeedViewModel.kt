@@ -108,6 +108,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _isImportingFolders = MutableStateFlow(false)
     val isImportingFolders: StateFlow<Boolean> = _isImportingFolders.asStateFlow()
 
+    private val _importProgress = MutableStateFlow<com.example.model.NasImportProgress?>(null)
+    val importProgress: StateFlow<com.example.model.NasImportProgress?> = _importProgress.asStateFlow()
+
     val errorLogs = repository.errorLogs
 
     private val _isErrorLogsDialogOpen = MutableStateFlow(false)
@@ -234,13 +237,26 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             _isImportingFolders.value = true
-            val res = repository.importNasFolders(selected)
+            _importProgress.value = com.example.model.NasImportProgress(
+                processedFiles = 0,
+                totalFiles = 0,
+                statusMessage = "Iniciando escaneo y publicación de subcarpetas en segundo plano..."
+            )
+            val res = repository.importNasFolders(selected) { processed, total ->
+                _importProgress.value = com.example.model.NasImportProgress(
+                    processedFiles = processed,
+                    totalFiles = total,
+                    statusMessage = if (total > 0) "Publicando en segundo plano: $processed de $total archivos..." else "Publicando archivos: $processed..."
+                )
+            }
             _isImportingFolders.value = false
+            _importProgress.value = null
             res.fold(
                 onSuccess = { count ->
-                    showStatus("¡Se importaron $count grupos familiares con sus fotos!")
+                    showStatus("¡Se importaron $count grupos familiares con todo su contenido y subcarpetas!")
                     closeScanFoldersDialog()
                     refreshGroups()
+                    refreshFeed()
                 },
                 onFailure = { err ->
                     showStatus("Error al importar grupos: ${err.message}")

@@ -103,6 +103,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val scannedFolders by viewModel.scannedFolders.collectAsState()
     val isScanningFolders by viewModel.isScanningFolders.collectAsState()
     val isImportingFolders by viewModel.isImportingFolders.collectAsState()
+    val importProgress by viewModel.importProgress.collectAsState()
     val videoUploadProgress by viewModel.videoUploadProgress.collectAsState()
     val isRepairingDb by viewModel.isRepairingDb.collectAsState()
     val errorLogs by viewModel.errorLogs.collectAsState()
@@ -406,6 +407,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             scannedFolders = scannedFolders,
             isScanning = isScanningFolders,
             isImporting = isImportingFolders,
+            importProgress = importProgress,
             onScanPath = { path -> viewModel.scanFolders(path) },
             onToggleFolder = { path -> viewModel.toggleFolderSelection(path) },
             onSelectAll = { select -> viewModel.selectAllFolders(select) },

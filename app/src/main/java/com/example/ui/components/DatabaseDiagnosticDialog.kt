@@ -244,11 +244,16 @@ fun DatabaseDiagnosticDialog(
 
                     if (report.databaseExists) {
                         item {
+                            val isComplete = report.tablesCount >= report.expectedTablesCount && report.expectedTablesCount > 0
                             DiagnosticCheckRow(
-                                title = "5. Base de Datos '${report.dbName}' y Tablas",
+                                title = "5. Base de Datos '${report.dbName}' y Tablas (${report.tablesCount}/${report.expectedTablesCount})",
                                 item = CheckItem(
-                                    success = report.tablesCount > 0,
-                                    message = "Base de datos sincronizada. Tablas listas: ${report.tablesCount}"
+                                    success = isComplete,
+                                    message = if (isComplete) {
+                                        "Todas las 8 tablas verificadas y operativas: ${report.tables.joinToString(", ")}"
+                                    } else {
+                                        "Tablas detectadas: ${report.tablesCount}/${report.expectedTablesCount}. ${if (report.missingTables.isNotEmpty()) "Faltan: ${report.missingTables.joinToString(", ")}. Usa 'Reparar BD' para crearlas automáticamente." else ""}"
+                                    }
                                 ),
                                 successColor = LanOnlineGreen
                             )
