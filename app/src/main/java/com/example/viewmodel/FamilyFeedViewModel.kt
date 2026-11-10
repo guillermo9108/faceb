@@ -182,9 +182,30 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _groupPosts.value = emptyList()
     }
 
+    val detectedVolumes = repository.detectedVolumes
+
+    fun detectVolumes(autoScan: Boolean = true) {
+        viewModelScope.launch {
+            val res = repository.detectNasVolumes()
+            if (autoScan) {
+                res.onSuccess { volumes ->
+                    val preferred = volumes.find { it.volumeName == "volume3" }
+                        ?: volumes.firstOrNull { it.mediaFolders.isNotEmpty() }
+                        ?: volumes.firstOrNull()
+                    val suggested = preferred?.mediaFolders?.firstOrNull()
+                        ?: preferred?.path
+                        ?: "/volume3/photo"
+                    scanFolders(suggested)
+                }.onFailure {
+                    scanFolders("/volume3/photo")
+                }
+            }
+        }
+    }
+
     fun openScanFoldersDialog() {
         _isScanFoldersDialogOpen.value = true
-        scanFolders("/volume1/photo")
+        detectVolumes(autoScan = true)
     }
 
     fun closeScanFoldersDialog() {

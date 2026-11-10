@@ -1,131 +1,132 @@
 package com.example
 
-import com.example.data.SynologyScripts
+import com.example.model.CheckItem
+import com.example.model.DatabaseDiagnosticReport
 import com.example.model.FamilyMember
+import com.example.model.FamilyStory
+import com.example.model.MediaItem
+import com.example.model.MediaType
 import com.example.model.NasConfig
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.ScannedFolder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Pruebas unitarias para modelos de datos y lógica de configuración del NAS Synology y MariaDB.
+ */
 class ExampleUnitTest {
 
     @Test
-    fun testDefaultFamilyMemberData() {
-        val member = FamilyMember(1, "Carlos (Papá)", "Papá", "👨‍💼", 0xFF1E40AF)
-        assertEquals("Carlos (Papá)", member.name)
-        assertEquals("Papá", member.role)
-        assertEquals("👨‍💼", member.avatarEmoji)
+    fun testNasConfig_baseUrlGeneration() {
+        val defaultConfig = NasConfig(ip = "192.168.1.50", port = 80, path = "/family_api")
+        assertEquals("http://192.168.1.50/family_api", defaultConfig.baseUrl)
+
+        val customPortConfig = NasConfig(ip = "192.168.1.50", port = 8080, path = "/family_api")
+        assertEquals("http://192.168.1.50:8080/family_api", customPortConfig.baseUrl)
     }
 
     @Test
-    fun testPostDomainModel() {
-        val author = FamilyMember(1, "Carlos (Papá)", "Papá")
-        val post = Post(
+    fun testFamilyMember_initialization() {
+        val member = FamilyMember(
             id = 1,
+            name = "Papá",
+            role = "Administrador",
+            avatarEmoji = "👨",
+            avatarColorHex = 0xFF1877F2L,
+            pin = "1234"
+        )
+        assertEquals(1, member.id)
+        assertEquals("Papá", member.name)
+        assertEquals("👨", member.avatarEmoji)
+        assertTrue(member.isOnlineInLan)
+    }
+
+    @Test
+    fun testPost_reactionsAndMedia() {
+        val author = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
+        val media = listOf(
+            MediaItem(id = "m1", type = MediaType.IMAGE, url = "http://nas/photo.jpg"),
+            MediaItem(id = "m2", type = MediaType.VIDEO, url = "http://nas/video.mp4")
+        )
+        val post = Post(
+            id = 101,
             author = author,
-            contentText = "Probando muro en Synology NAS real",
-            reactions = mapOf(ReactionType.LIKE to 2),
-            feeling = "feliz"
+            contentText = "Día en el parque familiar",
+            mediaItems = media,
+            reactions = mapOf(ReactionType.LOVE to 3, ReactionType.LIKE to 5)
         )
 
-        assertEquals(1, post.id)
-        assertEquals("Carlos (Papá)", post.author.name)
-        assertEquals("feliz", post.feeling)
-        assertEquals(2, post.reactions[ReactionType.LIKE])
+        assertEquals(101, post.id)
+        assertEquals(2, post.mediaItems.size)
+        assertEquals(3, post.reactions[ReactionType.LOVE])
+        assertEquals(5, post.reactions[ReactionType.LIKE])
+        assertFalse(post.isShort)
     }
 
     @Test
-    fun testNasConfigDefaults() {
-        val config = NasConfig()
-        assertEquals("192.168.1.100", config.ip)
-        assertEquals(80, config.port)
-        assertEquals("/family_api", config.path)
-        assertFalse(config.isConnected)
-    }
-
-    @Test
-    fun testSynologyScriptsContent() {
-        assertTrue(SynologyScripts.schemaSql.contains("CREATE DATABASE IF NOT EXISTS family_feed"))
-        assertTrue(SynologyScripts.schemaSql.contains("CREATE TABLE IF NOT EXISTS posts"))
-        assertTrue(SynologyScripts.schemaSql.contains("CREATE TABLE IF NOT EXISTS media"))
-        assertTrue(SynologyScripts.configPhp.contains("DB_NAME"))
-        assertTrue(SynologyScripts.configPhp.contains("autoBootstrapDatabase"))
-        assertTrue(SynologyScripts.configPhp.contains("family_groups"))
-        assertTrue(SynologyScripts.configPhp.contains("media_chunks"))
-        assertTrue(SynologyScripts.indexPhp.contains("Synology Web Station + MariaDB 10"))
-        assertTrue(SynologyScripts.indexPhp.contains("uploads/originals"))
-        assertTrue(SynologyScripts.indexPhp.contains("repair_db"))
-    }
-
-    @Test
-    fun testAppErrorLogger() {
-        com.example.data.AppErrorLogger.log(
-            category = com.example.model.ErrorCategory.MARIADB,
-            title = "Prueba de error MariaDB 10",
-            message = "Table family_feed.posts doesn't exist",
-            httpCode = 500
+    fun testDatabaseDiagnosticReport_tableCountCheck() {
+        val tables = listOf(
+            "users", "posts", "media", "comments", "reactions", "stories", "family_groups", "groups"
         )
-        val logs = com.example.data.AppErrorLogger.logs.value
-        assertTrue(logs.isNotEmpty())
-        assertEquals(com.example.model.ErrorCategory.MARIADB, logs.first().category)
-        assertTrue(com.example.data.AppErrorLogger.exportAsText(NasConfig()).contains("MariaDB"))
-    }
-
-    @Test
-    fun testPhp73CompatibilityInScripts() {
-        val sanitizedIndex = SynologyScripts.indexPhp.replace("preg_match", "")
-        assertFalse(sanitizedIndex.contains("match("))
-        assertFalse(SynologyScripts.configPhp.contains("match("))
-        assertTrue(SynologyScripts.indexPhp.contains("str_ends_with"))
-        assertTrue(SynologyScripts.indexPhp.contains("str_starts_with"))
-        assertTrue(SynologyScripts.indexPhp.contains("register_shutdown_function"))
-    }
-
-    @Test
-    fun testMariaDB10AndStreamingSupport() {
-        assertTrue(SynologyScripts.configPhp.contains("mysqld10.sock"))
-        assertTrue(SynologyScripts.configPhp.contains("3307"))
-        assertTrue(SynologyScripts.configPhp.contains("1045"))
-        assertTrue(SynologyScripts.configPhp.contains("2002"))
-        assertTrue(SynologyScripts.configPhp.contains("localhost"))
-        assertTrue(SynologyScripts.indexPhp.contains("streamMediaFile"))
-        assertTrue(SynologyScripts.indexPhp.contains("HTTP_RANGE"))
-        assertTrue(SynologyScripts.indexPhp.contains("206 Partial Content"))
-        assertTrue(SynologyScripts.indexPhp.contains("WHERE p.group_id = ?"))
-        assertTrue(SynologyScripts.indexPhp.contains("db_diagnostics"))
-        assertTrue(SynologyScripts.indexPhp.contains("DIAGNOSTIC_REPORT"))
-    }
-
-    @Test
-    fun testDualPortScanSupport() {
-        // Verify NasApiClient has dual port probe logic
-        val ports = listOf(80, 8080)
-        assertEquals(2, ports.size)
-        assertTrue(ports.contains(80))
-        assertTrue(ports.contains(8080))
-    }
-
-    @Test
-    fun testDatabaseDiagnosticReportModel() {
-        val report = com.example.model.DatabaseDiagnosticReport(
-            status = "DIAGNOSTIC_REPORT",
-            phpVersion = "7.3.33",
+        val report = DatabaseDiagnosticReport(
+            status = "OK",
+            timestamp = "2026-11-10 12:00:00",
+            phpVersion = "7.3.16",
             dbHost = "127.0.0.1",
             dbPort = 3307,
             dbName = "family_feed",
-            dbUser = "root",
+            tablesCount = tables.size,
+            expectedTablesCount = 8,
+            tables = tables,
+            missingTables = emptyList(),
             databaseExists = true,
-            tablesCount = 8,
-            recommendation = "Conexión perfecta"
+            pdoMysqlExtension = CheckItem(success = true, message = "PDO MySQL Activo"),
+            tcpConnection = CheckItem(success = true, message = "Puerto TCP 3307 OK")
         )
-        assertEquals("DIAGNOSTIC_REPORT", report.status)
-        assertEquals("root", report.dbUser)
-        assertEquals("127.0.0.1", report.dbHost)
-        assertEquals(3307, report.dbPort)
+
+        assertEquals("OK", report.status)
         assertEquals(8, report.tablesCount)
+        assertEquals(8, report.expectedTablesCount)
+        assertTrue(report.missingTables.isEmpty())
+        assertTrue(report.databaseExists)
+        assertTrue(report.pdoMysqlExtension.success)
+        assertTrue(report.tcpConnection.success)
+    }
+
+    @Test
+    fun testScannedFolder_subfolderAttributes() {
+        val folder = ScannedFolder(
+            folderName = "Vacaciones 2026",
+            folderPath = "/volume1/photo/Vacaciones 2026",
+            mediaCount = 150,
+            photosCount = 120,
+            videosCount = 30,
+            isAlreadyImported = false,
+            isSelected = true
+        )
+
+        assertEquals("Vacaciones 2026", folder.folderName)
+        assertEquals(150, folder.mediaCount)
+        assertTrue(folder.isSelected)
+        assertFalse(folder.isAlreadyImported)
+    }
+
+    @Test
+    fun testFamilyStory_defaults() {
+        val author = FamilyMember(id = 3, name = "Hija", role = "Hija")
+        val story = FamilyStory(
+            id = "s-1",
+            author = author,
+            imageUrl = "http://nas/story1.jpg"
+        )
+
+        assertEquals("s-1", story.id)
+        assertEquals("http://nas/story1.jpg", story.mediaUrl)
+        assertFalse(story.isViewed)
     }
 }

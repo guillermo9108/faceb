@@ -1,9 +1,7 @@
 package com.example.ui.screens
 
-import android.media.MediaPlayer
 import android.net.Uri
-import android.widget.FrameLayout
-import android.widget.VideoView
+import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,32 +18,30 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubbleOutline
-import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.VideoCall
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Surface
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,19 +52,26 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem as ExoMediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.model.FamilyMember
-import com.example.model.MediaType
 import com.example.model.Post
+import com.example.model.ReactionType
 import com.example.ui.theme.FacebookBlue
-import com.example.ui.theme.FacebookRed
+import com.example.ui.theme.ReactionLoveRed
 
+@OptIn(UnstableApi::class)
 @Composable
 fun ShortsScreen(
     shorts: List<Post>,
@@ -78,204 +81,171 @@ fun ShortsScreen(
     onOpenComments: (Post) -> Unit,
     onOpenCreateShort: () -> Unit,
     onRefresh: () -> Unit,
-    onShortViewed: (Int) -> Unit = {}
+    onShortViewed: (Int) -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .testTag("shorts_screen")
-    ) {
-        if (shorts.isEmpty()) {
-            // Empty state
+    if (shorts.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.padding(24.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(90.dp)
-                        .clip(CircleShape)
-                        .background(FacebookBlue.copy(alpha = 0.2f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ElectricBolt,
-                        contentDescription = null,
-                        tint = FacebookBlue,
-                        modifier = Modifier.size(52.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.6f),
+                    modifier = Modifier.size(64.dp)
+                )
                 Text(
                     text = "Aún no hay Shorts familiares",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp
+                    style = MaterialTheme.typography.titleMedium.copy(color = Color.White, fontWeight = FontWeight.Bold)
                 )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
                 Text(
-                    text = "Graba o sube un vídeo vertical y activa 'Subir como Short'. Se verá aquí a pantalla completa en bucle.",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 14.sp,
+                    text = "Sé el primero en compartir un momento rápido o vídeo vertical con tu familia.",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = Color.White.copy(alpha = 0.7f)),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Button(
+                FloatingActionButton(
                     onClick = onOpenCreateShort,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
-                    modifier = Modifier.testTag("create_first_short_button")
-                ) {
-                    Icon(Icons.Default.VideoCall, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Subir primer Short", fontWeight = FontWeight.Bold)
-                }
-            }
-        } else {
-            val pagerState = rememberPagerState(pageCount = { shorts.size })
-
-            VerticalPager(
-                state = pagerState,
-                modifier = Modifier.fillMaxSize()
-            ) { page ->
-                val shortPost = shorts[page]
-                val author = members.find { it.id == shortPost.author.id } ?: shortPost.author
-                val isCurrentPage = pagerState.currentPage == page
-
-                LaunchedEffect(isCurrentPage, shortPost.id) {
-                    if (isCurrentPage) {
-                        onShortViewed(shortPost.id)
-                    }
-                }
-
-                ShortVideoItem(
-                    post = shortPost,
-                    author = author,
-                    baseUrl = baseUrl,
-                    isActive = isCurrentPage,
-                    onLike = { onLikePost(shortPost.id) },
-                    onComment = { onOpenComments(shortPost) }
-                )
-            }
-        }
-
-        // Top bar overlay
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.ElectricBolt,
-                    contentDescription = null,
-                    tint = FacebookBlue,
-                    modifier = Modifier.size(26.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Shorts",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 22.sp,
-                    letterSpacing = (-0.5).sp
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onRefresh) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Actualizar",
-                        tint = Color.White
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = FacebookBlue,
-                    modifier = Modifier
-                        .clickable { onOpenCreateShort() }
-                        .testTag("add_short_top_button")
+                    containerColor = FacebookBlue,
+                    contentColor = Color.White,
+                    modifier = Modifier.testTag("create_first_short_fab")
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.VideoCall,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Crear",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
-                        )
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Crear Short")
                     }
                 }
             }
+        }
+        return
+    }
+
+    val pagerState = rememberPagerState(pageCount = { shorts.size })
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        VerticalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            val shortPost = shorts[page]
+            val isCurrentPage = pagerState.currentPage == page
+
+            LaunchedEffect(isCurrentPage) {
+                if (isCurrentPage) {
+                    onShortViewed(shortPost.id)
+                }
+            }
+
+            ShortItemPage(
+                post = shortPost,
+                baseUrl = baseUrl,
+                isActive = isCurrentPage,
+                onLike = { onLikePost(shortPost.id) },
+                onComments = { onOpenComments(shortPost) }
+            )
+        }
+
+        // Botón FAB para crear nuevo Short
+        FloatingActionButton(
+            onClick = onOpenCreateShort,
+            containerColor = FacebookBlue,
+            contentColor = Color.White,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+                .size(48.dp)
+                .testTag("create_short_fab")
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Nuevo Short")
         }
     }
 }
 
+@OptIn(UnstableApi::class)
 @Composable
-private fun ShortVideoItem(
+private fun ShortItemPage(
     post: Post,
-    author: FamilyMember,
     baseUrl: String,
     isActive: Boolean,
     onLike: () -> Unit,
-    onComment: () -> Unit
+    onComments: () -> Unit
 ) {
-    val videoMedia = remember(post.mediaItems) {
-        post.mediaItems.firstOrNull { it.type == MediaType.VIDEO } ?: post.mediaItems.firstOrNull()
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(true) }
+    val mediaItem = post.mediaItems.firstOrNull()
+
+    val rawVideoUrl = mediaItem?.url ?: ""
+    val resolvedUrl = remember(rawVideoUrl, baseUrl) {
+        if (rawVideoUrl.startsWith("http://") || rawVideoUrl.startsWith("https://") || rawVideoUrl.startsWith("content://")) {
+            rawVideoUrl
+        } else {
+            val cleanBase = baseUrl.trimEnd('/')
+            val cleanPath = rawVideoUrl.trimStart('/')
+            "$cleanBase/$cleanPath"
+        }
     }
 
-    val videoFullUrl = remember(videoMedia, baseUrl) {
-        val rel = videoMedia?.url ?: ""
-        if (rel.startsWith("http://") || rel.startsWith("https://")) rel
-        else if (rel.isNotEmpty()) "$baseUrl/$rel"
-        else ""
+    val exoPlayer = remember(resolvedUrl) {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            if (resolvedUrl.isNotBlank()) {
+                setMediaItem(ExoMediaItem.fromUri(Uri.parse(resolvedUrl)))
+                prepare()
+            }
+        }
     }
 
-    val isChunked = videoMedia?.isChunked == true && videoMedia.chunks.isNotEmpty()
-    val chunks = videoMedia?.chunks ?: emptyList()
+    LaunchedEffect(isActive, isPlaying) {
+        if (isActive && isPlaying) {
+            exoPlayer.play()
+        } else {
+            exoPlayer.pause()
+        }
+    }
+
+    DisposableEffect(resolvedUrl) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        isPlaying = !isPlaying
+                    },
+                    onDoubleTap = {
+                        onLike()
+                    }
+                )
+            }
     ) {
-        if (videoFullUrl.isNotEmpty() || chunks.isNotEmpty()) {
-            com.example.ui.components.FamilyVideoPlayer(
-                videoUrl = videoFullUrl,
-                chunks = chunks,
-                isChunked = isChunked,
-                autoPlay = isActive,
-                isLooping = true,
-                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        // Reproductor de vídeo nativo ExoPlayer
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false
+                    resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
-        // Gradient overlay for bottom readability
+        // Degradado inferior para legibilidad de subtítulos
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -288,130 +258,98 @@ private fun ShortVideoItem(
                 )
         )
 
-        // Bottom info: Author, Text, Tag
+        // Información del autor y pie de foto (esquina inferior izquierda)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 16.dp, end = 80.dp, bottom = 24.dp)
         ) {
-            // Short badge
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = FacebookBlue.copy(alpha = 0.85f),
-                modifier = Modifier.padding(bottom = 8.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ElectricBolt,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(12.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Short Familiar LAN",
-                        color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // Author Row
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
-                        .background(Color(author.avatarColorHex)),
+                        .background(Color(post.author.avatarColorHex)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = author.avatarEmoji, fontSize = 18.sp)
+                    Text(text = post.author.avatarEmoji, fontSize = 20.sp)
                 }
+
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = author.name,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+
+                Column {
+                    Text(
+                        text = post.author.name,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Color.White)
+                    )
+                    Text(
+                        text = post.author.role,
+                        style = MaterialTheme.typography.labelSmall.copy(color = Color.White.copy(alpha = 0.7f))
+                    )
+                }
             }
 
-            // Caption
             if (post.contentText.isNotBlank()) {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = post.contentText,
-                    color = Color.White,
-                    fontSize = 13.sp,
+                    style = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
-        val isLikedByMe = post.userReaction != null
-        val totalLikes = post.reactions.values.sum()
-        val totalComments = post.comments.size
-
-        // Right Action Bar (TikTok / Reels style)
+        // Columna de interacción (Me Gusta y Comentarios en la esquina inferior derecha)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 12.dp, bottom = 24.dp),
+                .padding(end = 16.dp, bottom = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            // Like Action
+            val isLiked = post.reactions.containsKey(ReactionType.LIKE)
+            val likesCount = post.reactions.values.sum()
+
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 IconButton(
                     onClick = onLike,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.4f))
-                        .testTag("short_like_button_${post.id}")
                 ) {
                     Icon(
-                        imageVector = if (isLikedByMe) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        imageVector = if (isLiked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "Me gusta",
-                        tint = if (isLikedByMe) FacebookRed else Color.White,
-                        modifier = Modifier.size(26.dp)
+                        tint = if (isLiked) ReactionLoveRed else Color.White,
+                        modifier = Modifier.size(28.dp)
                     )
                 }
                 Text(
-                    text = "$totalLikes",
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    text = if (likesCount > 0) likesCount.toString() else "Me gusta",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
                 )
             }
 
-            // Comments Action
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 IconButton(
-                    onClick = onComment,
+                    onClick = onComments,
                     modifier = Modifier
-                        .size(44.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.4f))
-                        .testTag("short_comment_button_${post.id}")
                 ) {
                     Icon(
                         imageVector = Icons.Default.ChatBubbleOutline,
                         contentDescription = "Comentarios",
                         tint = Color.White,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(26.dp)
                     )
                 }
                 Text(
-                    text = "$totalComments",
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    text = if (post.comments.isNotEmpty()) post.comments.size.toString() else "Comentar",
+                    style = MaterialTheme.typography.labelSmall.copy(color = Color.White, fontWeight = FontWeight.Bold)
                 )
             }
         }

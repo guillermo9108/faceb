@@ -15,6 +15,7 @@ import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
+import com.example.model.NasStorageVolume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -836,6 +837,58 @@ class NasApiClient(
     }
 
     /**
+     * Detecta discos y volúmenes de almacenamiento en el servidor Synology NAS (/volume1, /volume2, /volume3...).
+     */
+    suspend fun detectStorageVolumes(ip: String, port: Int, path: String): Result<List<NasStorageVolume>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "admin/detect_storage")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "admin/detect_storage")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val volArray = json.optJSONArray("volumes") ?: JSONArray()
+            val list = mutableListOf<NasStorageVolume>()
+            for (i in 0 until volArray.length()) {
+                val vo = volArray.optJSONObject(i) ?: continue
+                val mediaArr = vo.optJSONArray("media_folders") ?: JSONArray()
+                val mediaList = mutableListOf<String>()
+                for (j in 0 until mediaArr.length()) {
+                    mediaList.add(mediaArr.optString(j))
+                }
+                list.add(
+                    NasStorageVolume(
+                        volumeName = vo.optString("volume", "volume3"),
+                        path = vo.optString("path", "/volume3"),
+                        totalGb = vo.optDouble("total_gb", 0.0),
+                        freeGb = vo.optDouble("free_gb", 0.0),
+                        isCurrentServerVolume = vo.optBoolean("is_current_server_volume", false),
+                        mediaFolders = mediaList
+                    )
+                )
+            }
+            Result.success(list)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Escanea carpetas con contenido multimedia en el almacenamiento del NAS (solo Administrador).
      */
     suspend fun scanNasFolders(ip: String, port: Int, path: String, basePath: String): Result<List<ScannedFolder>> = withContext(Dispatchers.IO) {
@@ -1519,16 +1572,20 @@ class NasApiClient(
     suspend fun deletePost(ip: String, port: Int, path: String, postId: Int): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
+            val formBody = FormBody.Builder()
+                .add("action", "delete_post")
+                .add("post_id", postId.toString())
+                .build()
             var url = buildEndpointUrl(ip, port, currentPath, "delete_post", "post_id=$postId")
-            var response = client.newCall(Request.Builder().url(url).delete().build()).execute()
+            var response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
                     url = buildEndpointUrl(ip, port, currentPath, "delete_post", "post_id=$postId")
-                    response = client.newCall(Request.Builder().url(url).delete().build()).execute()
+                    response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
                     body = response.body?.string() ?: ""
                 }
             }

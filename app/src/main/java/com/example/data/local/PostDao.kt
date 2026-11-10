@@ -9,23 +9,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface PostDao {
 
-    @Query("SELECT * FROM cached_posts ORDER BY isPinned DESC, createdAt DESC")
-    fun getAllPosts(): Flow<List<PostEntity>>
-
     @Query("SELECT * FROM cached_posts WHERE isShort = 0 ORDER BY isPinned DESC, createdAt DESC")
     fun getFeedPosts(): Flow<List<PostEntity>>
 
     @Query("SELECT * FROM cached_posts WHERE isShort = 1 ORDER BY createdAt DESC")
     fun getShortsPosts(): Flow<List<PostEntity>>
 
-    @Query("SELECT * FROM cached_posts WHERE groupId = :groupId ORDER BY createdAt DESC")
+    @Query("SELECT * FROM cached_posts WHERE groupId = :groupId ORDER BY isPinned DESC, createdAt DESC")
     fun getPostsByGroupId(groupId: Int): Flow<List<PostEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPosts(posts: List<PostEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPost(post: PostEntity)
 
     @Query("DELETE FROM cached_posts WHERE id = :postId")
     suspend fun deletePost(postId: Int)

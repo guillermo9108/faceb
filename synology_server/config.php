@@ -21,10 +21,36 @@ if (!defined('DB_USER')) define('DB_USER', getenv('DB_USER') ?: (ini_get('mysqli
 if (!defined('DB_PASS')) define('DB_PASS', getenv('DB_PASS') ?: (ini_get('mysqli.default_pw') ?: 'TuClaveSynology123')); // <--- EDITA ESTA CONTRASEÑA CON TU CLAVE REAL DE MARIADB 10
 
 function autoBootstrapDatabase(PDO $pdo) {
+    $report = [
+        "tables" => [],
+        "missing" => [],
+        "errors" => []
+    ];
     try {
-        // 1. REPARAR O CREAR TABLAS QUE NO EXISTAN (Ejecución individual para máxima compatibilidad con MariaDB 10 / PHP 7.3)
+        // 0. COMPROBAR SI LA TABLA 'groups' EXISTE COMO TABLA REAL Y MIGRARLA A 'family_groups'
+        try {
+            $checkType = $pdo->query("SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'groups'");
+            if ($checkType && $checkType->fetchColumn() === 'BASE TABLE') {
+                $hasFamily = false;
+                try {
+                    $chkFam = $pdo->query("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'family_groups'");
+                    if ($chkFam && $chkFam->fetchColumn()) $hasFamily = true;
+                } catch (Exception $eFam) {}
+
+                if (!$hasFamily) {
+                    $pdo->exec("RENAME TABLE `groups` TO `family_groups`");
+                } else {
+                    $pdo->exec("INSERT IGNORE INTO family_groups (name, folder_path, description, created_at) SELECT name, folder_path, description, created_at FROM `groups`");
+                    $pdo->exec("DROP TABLE `groups`");
+                }
+            }
+        } catch (Exception $eGrpMig) {
+            error_log("Groups migration note: " . $eGrpMig->getMessage());
+        }
+
+        // 1. DDL CANÓNICO PARA LAS 8 TABLAS (Sin claves foráneas en la creación inicial para garantizar que ninguna tabla falle por dependencias)
         $tables = [
-            "CREATE TABLE IF NOT EXISTS users (
+            "users" => "CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(50) NOT NULL UNIQUE,
                 display_name VARCHAR(100) NOT NULL,
@@ -36,7 +62,7 @@ function autoBootstrapDatabase(PDO $pdo) {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS family_groups (
+            "family_groups" => "CREATE TABLE IF NOT EXISTS family_groups (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(150) NOT NULL,
                 folder_path VARCHAR(255) NOT NULL,
@@ -49,7 +75,7 @@ function autoBootstrapDatabase(PDO $pdo) {
                 UNIQUE KEY uq_group_folder (folder_path)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS posts (
+            "posts" => "CREATE TABLE IF NOT EXISTS posts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
                 group_id INT NULL DEFAULT NULL,
@@ -64,19 +90,19 @@ function autoBootstrapDatabase(PDO $pdo) {
                 INDEX idx_is_short (is_short)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS media (
+            "media" => "CREATE TABLE IF NOT EXISTS media (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 post_id INT NOT NULL,
                 media_type VARCHAR(20) NOT NULL,
                 file_path VARCHAR(255) NOT NULL,
-                thumb_path VARCHAR(255) NOT NULL,
+                thumb_path VARCHAR(255) NULL,
                 duration_label VARCHAR(20) NULL,
                 is_chunked TINYINT(1) DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_media_post (post_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS media_chunks (
+            "media_chunks" => "CREATE TABLE IF NOT EXISTS media_chunks (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 post_id INT NOT NULL,
                 chunk_index INT NOT NULL,
@@ -87,7 +113,7 @@ function autoBootstrapDatabase(PDO $pdo) {
                 INDEX idx_chunk_post (post_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS comments (
+            "comments" => "CREATE TABLE IF NOT EXISTS comments (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 post_id INT NOT NULL,
                 user_id INT NOT NULL,
@@ -96,7 +122,7 @@ function autoBootstrapDatabase(PDO $pdo) {
                 INDEX idx_comm_post (post_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS reactions (
+            "reactions" => "CREATE TABLE IF NOT EXISTS reactions (
                 post_id INT NOT NULL,
                 user_id INT NOT NULL,
                 reaction_type VARCHAR(20) DEFAULT 'LIKE',
@@ -104,7 +130,7 @@ function autoBootstrapDatabase(PDO $pdo) {
                 PRIMARY KEY (post_id, user_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 
-            "CREATE TABLE IF NOT EXISTS stories (
+            "stories" => "CREATE TABLE IF NOT EXISTS stories (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
                 caption VARCHAR(255) NULL,
@@ -117,41 +143,44 @@ function autoBootstrapDatabase(PDO $pdo) {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         ];
 
-        foreach ($tables as $tableSql) {
+        foreach ($tables as $tblName => $tableSql) {
             try {
                 $pdo->exec($tableSql);
             } catch (Exception $eTbl) {
-                error_log("Error creating table: " . $eTbl->getMessage());
+                $report["errors"][$tblName] = $eTbl->getMessage();
+                error_log("Error creating table {$tblName}: " . $eTbl->getMessage());
             }
         }
 
-        // 2. MIGRACIONES DE COMPATIBILIDAD Y VISTA PARA LA PALABRA RESERVADA 'groups'
+        // 2. CREAR VISTA 'groups' PARA RETROCOMPATIBILIDAD CON QUERIES ANTIGUAS
         try {
             $pdo->exec("CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE posts ADD COLUMN is_short TINYINT(1) DEFAULT 0");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE posts ADD COLUMN group_id INT NULL DEFAULT NULL");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE posts ADD INDEX idx_group (group_id)");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE media ADD COLUMN thumb_path VARCHAR(255) NULL");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE media ADD COLUMN duration_label VARCHAR(20) NULL");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE media ADD COLUMN is_chunked TINYINT(1) DEFAULT 0");
-        } catch (Exception $eCol) {}
-        try {
-            $pdo->exec("ALTER TABLE stories ADD COLUMN thumb_path VARCHAR(255) NULL");
-        } catch (Exception $eCol) {}
+        } catch (Exception $eView) {}
 
-        // 3. CREACIÓN EXCLUSIVA DE USUARIO ADMIN SI LA BD ES NUEVA
+        // 3. MIGRACIONES DE COLUMNAS ACTUALIZADAS
+        $colMigrations = [
+            "ALTER TABLE posts ADD COLUMN is_short TINYINT(1) DEFAULT 0",
+            "ALTER TABLE posts ADD COLUMN group_id INT NULL DEFAULT NULL",
+            "ALTER TABLE posts ADD COLUMN feeling VARCHAR(100) NULL",
+            "ALTER TABLE posts ADD COLUMN location VARCHAR(100) NULL",
+            "ALTER TABLE posts ADD COLUMN is_pinned TINYINT(1) DEFAULT 0",
+            "ALTER TABLE posts ADD INDEX idx_group (group_id)",
+            "ALTER TABLE posts ADD INDEX idx_is_short (is_short)",
+            "ALTER TABLE media ADD COLUMN thumb_path VARCHAR(255) NULL",
+            "ALTER TABLE media ADD COLUMN duration_label VARCHAR(20) NULL",
+            "ALTER TABLE media ADD COLUMN is_chunked TINYINT(1) DEFAULT 0",
+            "ALTER TABLE media_chunks ADD COLUMN duration_ms INT DEFAULT 0",
+            "ALTER TABLE stories ADD COLUMN thumb_path VARCHAR(255) NULL",
+            "ALTER TABLE stories ADD COLUMN bg_color_hex BIGINT DEFAULT 4280171146",
+            "ALTER TABLE family_groups ADD COLUMN posts_count INT DEFAULT 0",
+            "ALTER TABLE family_groups ADD COLUMN cover_photo_url VARCHAR(255) NULL",
+            "ALTER TABLE family_groups ADD COLUMN description TEXT NULL"
+        ];
+        foreach ($colMigrations as $colSql) {
+            try { $pdo->exec($colSql); } catch (Exception $eCol) {}
+        }
+
+        // 4. ASEGURAR QUE EXISTA AL MENOS UN USUARIO ADMINISTRADOR EN 'users'
         try {
             $countQuery = $pdo->query("SELECT COUNT(*) FROM users");
             $userCount = $countQuery ? (int)$countQuery->fetchColumn() : 0;
@@ -165,14 +194,16 @@ function autoBootstrapDatabase(PDO $pdo) {
             error_log("Error seeding default admin: " . $eUser->getMessage());
         }
 
-        // 4. ASEGURAR CARPETAS PARA ARCHIVOS MULTIMEDIA EN EL NAS
+        // 5. ASEGURAR CARPETAS PARA ARCHIVOS MULTIMEDIA EN EL NAS
         $uploadDir = __DIR__ . '/uploads';
         if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
         if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
         if (!is_dir($uploadDir . '/chunks')) @mkdir($uploadDir . '/chunks', 0777, true);
     } catch (Exception $ex) {
         error_log("Bootstrap DB error: " . $ex->getMessage());
+        $report["errors"]["general"] = $ex->getMessage();
     }
+    return $report;
 }
 
 function getDB(): PDO {

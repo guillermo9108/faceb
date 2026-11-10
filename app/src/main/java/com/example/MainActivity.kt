@@ -110,6 +110,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isErrorLogsDialogOpen by viewModel.isErrorLogsDialogOpen.collectAsState()
     val diagnosticReport by viewModel.diagnosticReport.collectAsState()
     val isRunningDiagnostics by viewModel.isRunningDiagnostics.collectAsState()
+    val detectedVolumes by viewModel.detectedVolumes.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -408,6 +409,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             isScanning = isScanningFolders,
             isImporting = isImportingFolders,
             importProgress = importProgress,
+            detectedVolumes = detectedVolumes,
+            onDetectVolumes = { viewModel.detectVolumes(autoScan = false) },
             onScanPath = { path -> viewModel.scanFolders(path) },
             onToggleFolder = { path -> viewModel.toggleFolderSelection(path) },
             onSelectAll = { select -> viewModel.selectAllFolders(select) },

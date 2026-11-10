@@ -135,8 +135,12 @@ object AppErrorLogger {
                 "La base de datos 'family_feed' no existe. Pulsa 'Reparar y crear tablas' para que el script la cree automáticamente."
             text.contains("match") && (text.contains("parse error") || text.contains("syntax")) ->
                 "PHP 7.3 no soporta la expresión 'match'. Se requiere usar 'switch'. Verifica tener la versión actualizada de los scripts."
+            httpCode == 405 || text.contains("405") ->
+                "Error HTTP 405 en Nginx: La petición no está permitida en esa ruta o verbo. La app ahora utiliza POST/GET directo hacia 'index.php'."
+            httpCode == 500 ->
+                "Error 500 en PHP/Web Station: Verifica la configuración de PHP en Web Station y que MariaDB 10 esté activo en el puerto 3307."
             httpCode == 404 ->
-                "Verifica que los archivos 'index.php' y 'config.php' estén en '/volume1/web/family_api' de Web Station y que el puerto coincida."
+                "Verifica que los archivos 'index.php' y 'config.php' estén en la carpeta web del NAS (ej. '/volume3/web/family_api' o '/volume1/web/family_api') y que el puerto coincida."
             category == ErrorCategory.NETWORK || httpCode == -1 ->
                 "Comprueba que el móvil esté en la misma red Wi-Fi que el Synology NAS y que la IP LAN sea la correcta."
             else ->

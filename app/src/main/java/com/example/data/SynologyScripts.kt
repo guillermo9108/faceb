@@ -1263,14 +1263,92 @@ object SynologyScripts {
             return ${D}results;
         }
 
+        // 3.4. DETECCIÓN DE DISCOS Y VOLÚMENES EN SYNOLOGY NAS (/volume1, /volume2, /volume3...)
+        if ((${D}method === 'GET' || ${D}method === 'POST') && (matchRoute(${D}action, ${D}uri, 'admin/detect_storage') || matchRoute(${D}action, ${D}uri, 'detect_volumes') || matchRoute(${D}action, ${D}uri, 'admin/volumes'))) {
+            ${D}volumes = [];
+            ${D}candidateVolumes = [];
+            ${D}currentDir = __DIR__;
+            if (preg_match('#^(/volume[0-9a-zA-Z_-]+)#', ${D}currentDir, ${D}m)) {
+                ${D}candidateVolumes[] = ${D}m[1];
+            }
+            for (${D}i = 1; ${D}i <= 12; ${D}i++) {
+                ${D}v = "/volume" . ${D}i;
+                if (!in_array(${D}v, ${D}candidateVolumes)) ${D}candidateVolumes[] = ${D}v;
+            }
+            ${D}candidateVolumes[] = "/volumeUSB1";
+            ${D}candidateVolumes[] = "/volumeUSB2";
+            ${D}suggestedPath = "";
+
+            foreach (${D}candidateVolumes as ${D}volPath) {
+                if (@is_dir(${D}volPath) && @is_readable(${D}volPath)) {
+                    ${D}totalBytes = @disk_total_space(${D}volPath);
+                    ${D}freeBytes = @disk_free_space(${D}volPath);
+                    ${D}totalGB = ${D}totalBytes ? round(${D}totalBytes / (1024 * 1024 * 1024), 1) : 0;
+                    ${D}freeGB = ${D}freeBytes ? round(${D}freeBytes / (1024 * 1024 * 1024), 1) : 0;
+                    ${D}mediaCandidates = [
+                        ${D}volPath . '/photo',
+                        ${D}volPath . '/home/Photos',
+                        ${D}volPath . '/video',
+                        ${D}volPath . '/public',
+                        ${D}volPath . '/web',
+                        ${D}volPath . '/media'
+                    ];
+                    ${D}availableFolders = [];
+                    foreach (${D}mediaCandidates as ${D}mc) {
+                        if (@is_dir(${D}mc) && @is_readable(${D}mc)) {
+                            ${D}availableFolders[] = ${D}mc;
+                            if (empty(${D}suggestedPath)) ${D}suggestedPath = ${D}mc;
+                        }
+                    }
+                    if (empty(${D}suggestedPath)) ${D}suggestedPath = ${D}volPath;
+                    ${D}volumes[] = [
+                        "volume" => basename(${D}volPath),
+                        "path" => ${D}volPath,
+                        "total_gb" => ${D}totalGB,
+                        "free_gb" => ${D}freeGB,
+                        "is_current_server_volume" => (strpos(${D}currentDir, ${D}volPath) === 0),
+                        "media_folders" => ${D}availableFolders
+                    ];
+                }
+            }
+            if (empty(${D}suggestedPath)) ${D}suggestedPath = "/volume3/photo";
+            echo json_encode([
+                "status" => "OK",
+                "volumes_count" => count(${D}volumes),
+                "volumes" => ${D}volumes,
+                "suggested_path" => ${D}suggestedPath,
+                "server_volume" => (preg_match('#^(/volume[0-9a-zA-Z_-]+)#', __DIR__, ${D}m) ? ${D}m[1] : "/volume3")
+            ]);
+            exit;
+        }
+
         // 3.5. ESCANEAR CARPETAS DEL ALMACENAMIENTO DEL NAS (SOLO ADMIN, RECURSIVO)
         if ((${D}method === 'GET' || ${D}method === 'POST') && (matchRoute(${D}action, ${D}uri, 'admin/scan_folders') || str_ends_with(${D}uri, '/admin/scan_folders'))) {
-            ${D}basePath = trim(${D}_GET['base_path'] ?? ${D}_POST['base_path'] ?? '/volume1/photo');
-            if (empty(${D}basePath)) ${D}basePath = '/volume1/photo';
+            ${D}basePath = trim(${D}_GET['base_path'] ?? ${D}_POST['base_path'] ?? '');
+            if (empty(${D}basePath) || !@is_dir(${D}basePath)) {
+                ${D}fallbacks = [
+                    ${D}basePath,
+                    '/volume3/photo',
+                    '/volume3/home/Photos',
+                    '/volume3/video',
+                    '/volume3',
+                    '/volume1/photo',
+                    '/volume1',
+                    '/volume2/photo',
+                    '/volume2'
+                ];
+                foreach (${D}fallbacks as ${D}fb) {
+                    if (!empty(${D}fb) && @is_dir(${D}fb) && @is_readable(${D}fb)) {
+                        ${D}basePath = ${D}fb;
+                        break;
+                    }
+                }
+            }
+            if (empty(${D}basePath)) ${D}basePath = '/volume3/photo';
 
             if (!is_dir(${D}basePath)) {
                 http_response_code(404);
-                echo json_encode(["error" => "La ruta '{${D}basePath}' no existe o no tiene permisos de lectura"]);
+                echo json_encode(["error" => "La ruta '{${D}basePath}' no existe o no tiene permisos de lectura. Comprueba el disco del servidor (ej. /volume3/photo)."]);
                 exit;
             }
 

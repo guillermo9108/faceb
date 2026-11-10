@@ -108,7 +108,7 @@ data class UserStoryGroup(
 )
 
 data class NasConfig(
-    val ip: String = "192.168.1.100",
+    val ip: String = "192.168.43.101",
     val port: Int = 80,
     val path: String = "/family_api",
     val dbPort: Int = 3307,
@@ -183,4 +183,13 @@ data class DatabaseDiagnosticReport(
     val missingTables: List<String> = emptyList(),
     val recommendation: String = "",
     val rawJson: String = ""
+)
+
+data class NasStorageVolume(
+    val volumeName: String,
+    val path: String,
+    val totalGb: Double = 0.0,
+    val freeGb: Double = 0.0,
+    val isCurrentServerVolume: Boolean = false,
+    val mediaFolders: List<String> = emptyList()
 )

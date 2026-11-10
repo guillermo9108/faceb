@@ -128,7 +128,7 @@ fun NasIpConfirmationDialog(
                     value = ipInput,
                     onValueChange = { ipInput = it },
                     label = { Text("Dirección IP local") },
-                    placeholder = { Text("Ej: 192.168.1.100") },
+                    placeholder = { Text("Ej: 192.168.43.101") },
                     singleLine = true,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier

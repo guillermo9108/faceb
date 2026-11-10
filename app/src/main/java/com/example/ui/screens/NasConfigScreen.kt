@@ -1,10 +1,6 @@
 package com.example.ui.screens
 
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,36 +15,32 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,836 +48,268 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
-import com.example.data.SynologyScripts
 import com.example.model.NasConfig
 import com.example.ui.theme.FacebookBlue
-import com.example.ui.theme.FamilyBluePrimary
+import com.example.ui.theme.LanOfflineAmber
 import com.example.ui.theme.LanOnlineGreen
-import com.example.util.SynologyZipExporter
 
 @Composable
 fun NasConfigScreen(
     nasConfig: NasConfig,
     onSaveConfig: (NasConfig) -> Unit,
     onTestConnection: () -> Unit,
-    onRepairDatabase: (() -> Unit)? = null,
-    onOpenErrorLogs: (() -> Unit)? = null,
-    onRunDiagnostics: (() -> Unit)? = null,
+    onRepairDatabase: () -> Unit,
+    onOpenErrorLogs: () -> Unit,
+    onRunDiagnostics: () -> Unit,
     errorCount: Int = 0,
     isRepairing: Boolean = false,
-    isRunningDiagnostics: Boolean = false,
-    modifier: Modifier = Modifier
+    isRunningDiagnostics: Boolean = false
 ) {
-    val context = LocalContext.current
+    var ip by remember(nasConfig.ip) { mutableStateOf(nasConfig.ip) }
+    var port by remember(nasConfig.port) { mutableStateOf(nasConfig.port.toString()) }
+    var path by remember(nasConfig.path) { mutableStateOf(nasConfig.path) }
+    var dbHost by remember(nasConfig.dbHost) { mutableStateOf(nasConfig.dbHost) }
+    var dbPort by remember(nasConfig.dbPort) { mutableStateOf(nasConfig.dbPort.toString()) }
+    var dbName by remember(nasConfig.dbName) { mutableStateOf(nasConfig.dbName) }
 
-    var ipInput by remember(nasConfig.ip) { mutableStateOf(nasConfig.ip) }
-    var portInput by remember(nasConfig.port) { mutableStateOf(nasConfig.port.toString()) }
-    var pathInput by remember(nasConfig.path) { mutableStateOf(nasConfig.path) }
-    var dbHostInput by remember(nasConfig.dbHost) { mutableStateOf(nasConfig.dbHost) }
-    var dbPortInput by remember(nasConfig.dbPort) { mutableStateOf(nasConfig.dbPort.toString()) }
-    var dbNameInput by remember(nasConfig.dbName) { mutableStateOf(nasConfig.dbName) }
-    var dbUserInput by remember(nasConfig.dbUser) { mutableStateOf(nasConfig.dbUser) }
-    var dbPassInput by remember(nasConfig.dbPass) { mutableStateOf(nasConfig.dbPass) }
-    var isPasswordVisible by remember { mutableStateOf(false) }
-
-    var downloadStatusMsg by remember { mutableStateOf<String?>(null) }
-    var selectedScriptTab by remember { mutableIntStateOf(0) }
-    val scriptTitles = listOf(
-        "schema.sql (Base de Datos)",
-        "config.php (Conexión)",
-        "index.php (API REST)",
-        "Guía DSM 7/6"
-    )
-
-    val currentConfig = remember(ipInput, portInput, pathInput, dbHostInput, dbPortInput, dbNameInput, dbUserInput, dbPassInput, nasConfig) {
-        nasConfig.copy(
-            ip = ipInput.trim().ifEmpty { "192.168.1.100" },
-            port = portInput.toIntOrNull() ?: 80,
-            path = pathInput.trim(),
-            dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
-            dbPort = dbPortInput.toIntOrNull() ?: 3307,
-            dbName = dbNameInput.trim().ifEmpty { "family_feed" },
-            dbUser = dbUserInput.trim().ifEmpty { "root" },
-            dbPass = dbPassInput
-        )
-    }
-
-    // Launcher para guardar el archivo ZIP en el almacenamiento del dispositivo
-    val createZipLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/zip")
-    ) { uri ->
-        if (uri != null) {
-            val success = SynologyZipExporter.exportToUri(context, uri, currentConfig)
-            if (success) {
-                downloadStatusMsg = "¡Archivo ZIP descargado con éxito! Ya puedes transferirlo o descomprimirlo en tu Synology NAS."
-                Toast.makeText(context, "Archivo ZIP descargado correctamente", Toast.LENGTH_SHORT).show()
-            } else {
-                downloadStatusMsg = "Error al escribir el archivo ZIP."
-                Toast.makeText(context, "Error al generar archivo ZIP", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
+    val scrollState = rememberScrollState()
 
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(14.dp)
-            .padding(bottom = 80.dp)
-            .testTag("nas_config_screen")
+            .verticalScroll(scrollState)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Status Card
+        // Tarjeta de Estado de Conexión LAN
         Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (nasConfig.isConnected) LanOnlineGreen.copy(alpha = 0.12f) else LanOfflineAmber.copy(alpha = 0.12f)
+            ),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(if (nasConfig.isConnected) LanOnlineGreen else LanOfflineAmber),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(FacebookBlue),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Dns, contentDescription = null, tint = Color.White)
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Synology NAS Web Station",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(if (nasConfig.isConnected) LanOnlineGreen else Color(0xFFE53935))
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = if (nasConfig.isConnected) {
-                                        "Conectado por LAN (${nasConfig.lastPingMs} ms)"
-                                    } else {
-                                        "Sin conexión activa (Modo sin conexión)"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (nasConfig.isConnected) LanOnlineGreen else Color(0xFFE53935),
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                )
-                            }
-                        }
-                    }
-
-                    OutlinedButton(
-                        onClick = onTestConnection,
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Probar", fontSize = 12.sp)
-                    }
+                    Icon(
+                        imageVector = if (nasConfig.isConnected) Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
 
-                // Error Diagnostic Banner si hay un error reportado
-                if (!nasConfig.isConnected && !nasConfig.lastError.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Surface(
-                        color = Color(0xFFFFEBEE),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = nasConfig.lastError ?: "",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = Color(0xFFC62828),
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                )
-                            }
-                            if (onRepairDatabase != null) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                FilledTonalButton(
-                                    onClick = onRepairDatabase,
-                                    enabled = !isRepairing,
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = Color(0xFFC62828),
-                                        contentColor = Color.White
-                                    ),
-                                    modifier = Modifier.fillMaxWidth().testTag("repair_db_error_button")
-                                ) {
-                                    if (isRepairing) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Reparando y creando tablas...", fontSize = 12.sp)
-                                    } else {
-                                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Reparar y crear tablas en MariaDB automáticamente", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                            if (onRunDiagnostics != null) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Button(
-                                    onClick = onRunDiagnostics,
-                                    enabled = !isRunningDiagnostics,
-                                    modifier = Modifier.fillMaxWidth().testTag("banner_diagnostics_button"),
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
-                                ) {
-                                    if (isRunningDiagnostics) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Ejecutando diagnóstico...", fontSize = 12.sp)
-                                    } else {
-                                        Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Diagnosticar Conexión MariaDB en Vivo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                            if (onOpenErrorLogs != null) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                OutlinedButton(
-                                    onClick = onOpenErrorLogs,
-                                    modifier = Modifier.fillMaxWidth().testTag("view_error_logs_button"),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC62828))
-                                ) {
-                                    Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (errorCount > 0) "Ver Registro de Errores ($errorCount)" else "Ver Registro de Errores",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+                Spacer(modifier = Modifier.width(14.dp))
 
-                Spacer(modifier = Modifier.height(14.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Diagnostic parameters
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text("Servidor Web:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Web Station (${currentConfig.ip}:${currentConfig.port})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
-                    }
-                    Column {
-                        Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("MariaDB (${currentConfig.dbUser}@${currentConfig.dbHost}:${currentConfig.dbPort})", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text("Ruta API en NAS:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(if (currentConfig.path.isBlank()) "/ (Raíz /web)" else "${currentConfig.path}/", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
-                    }
-                    Column {
-                        Text("Base de Datos:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(currentConfig.dbName, style = MaterialTheme.typography.bodySmall.copy(color = FacebookBlue, fontWeight = FontWeight.Bold))
-                    }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (nasConfig.isConnected) "Conectado al Synology NAS" else "Desconectado del NAS",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = if (nasConfig.isConnected) LanOnlineGreen else LanOfflineAmber
+                    )
+                    Text(
+                        text = if (nasConfig.isConnected) {
+                            "IP: ${nasConfig.ip}:${nasConfig.port} • Latencia: ${nasConfig.lastPingMs} ms"
+                        } else {
+                            nasConfig.lastError ?: "Comprueba la IP y que Web Station esté activo en la red local"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Connection & Database Settings Inputs
+        // Parámetros de Red y Web Station
         Card(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "Ajustes de Conexión LAN y Base de Datos",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                )
-                Text(
-                    text = "Configura la IP, puertos y credenciales de acceso a MariaDB/MySQL. Se guardan automáticamente en tu dispositivo.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Fila 1: IP del NAS y Puerto Web Station
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = ipInput,
-                        onValueChange = { ipInput = it },
-                        label = { Text("IP Synology NAS") },
-                        placeholder = { Text("192.168.1.100") },
-                        modifier = Modifier.weight(2f),
-                        singleLine = true
-                    )
-
-                    OutlinedTextField(
-                        value = portInput,
-                        onValueChange = { portInput = it },
-                        label = { Text("Puerto Web") },
-                        placeholder = { Text("8085") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Fila 2: Host de BD y Puerto de BD
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = dbHostInput,
-                        onValueChange = { dbHostInput = it },
-                        label = { Text("Host BD") },
-                        placeholder = { Text("127.0.0.1") },
-                        modifier = Modifier.weight(1.5f),
-                        singleLine = true,
-                        supportingText = {
-                            Text("127.0.0.1 o localhost en NAS", fontSize = 10.sp)
-                        }
-                    )
-
-                    OutlinedTextField(
-                        value = dbPortInput,
-                        onValueChange = { dbPortInput = it },
-                        label = { Text("Puerto BD") },
-                        placeholder = { Text("3307") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        supportingText = {
-                            Text("3307 MariaDB 10 / 3306 MySQL", fontSize = 10.sp)
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Fila 3: Usuario y Contraseña de Base de Datos
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = dbUserInput,
-                        onValueChange = { dbUserInput = it },
-                        label = { Text("Usuario BD") },
-                        placeholder = { Text("root") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(18.dp))
-                        },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        supportingText = {
-                            Text("Ej: root o family_user", fontSize = 10.sp)
-                        }
-                    )
-
-                    OutlinedTextField(
-                        value = dbPassInput,
-                        onValueChange = { dbPassInput = it },
-                        label = { Text("Contraseña BD") },
-                        placeholder = { Text("Contraseña MariaDB") },
-                        leadingIcon = {
-                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
-                                Icon(
-                                    if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = if (isPasswordVisible) "Ocultar" else "Mostrar"
-                                )
-                            }
-                        },
-                        visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        modifier = Modifier.weight(1.4f),
-                        singleLine = true,
-                        supportingText = {
-                            Text("Clave de MariaDB en DSM", fontSize = 10.sp)
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Fila 4: Ruta relativa API y Nombre BD
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = pathInput,
-                        onValueChange = { pathInput = it },
-                        label = { Text("Ruta relativa API") },
-                        placeholder = { Text("/family_api o vacío") },
-                        modifier = Modifier.weight(1.5f),
-                        singleLine = true,
-                        supportingText = {
-                            Text("Ej: /family_api o vacío para raíz", fontSize = 10.sp)
-                        }
-                    )
-
-                    OutlinedTextField(
-                        value = dbNameInput,
-                        onValueChange = { dbNameInput = it },
-                        label = { Text("Nombre BD") },
-                        placeholder = { Text("family_feed") },
-                        modifier = Modifier.weight(1.2f),
-                        singleLine = true
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = {
-                        val parsedPort = portInput.toIntOrNull() ?: 80
-                        val parsedDbPort = dbPortInput.toIntOrNull() ?: 3307
-                        val updated = nasConfig.copy(
-                            ip = ipInput.trim().ifEmpty { "192.168.1.100" },
-                            port = parsedPort,
-                            path = pathInput.trim(),
-                            dbHost = dbHostInput.trim().ifEmpty { "127.0.0.1" },
-                            dbPort = parsedDbPort,
-                            dbName = dbNameInput.trim().ifEmpty { "family_feed" },
-                            dbUser = dbUserInput.trim().ifEmpty { "root" },
-                            dbPass = dbPassInput
-                        )
-                        onSaveConfig(updated)
-                        Toast.makeText(context, "Configuración guardada permanentemente", Toast.LENGTH_SHORT).show()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue)
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Guardar Parámetros y Credenciales BD", fontWeight = FontWeight.Bold)
-                }
-
-                if (onRepairDatabase != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedButton(
-                        onClick = onRepairDatabase,
-                        enabled = !isRepairing,
-                        modifier = Modifier.fillMaxWidth().testTag("manual_repair_db_button"),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        if (isRepairing) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Verificando y reparando MariaDB...")
-                        } else {
-                            Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp), tint = FacebookBlue)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Verificar / Reparar Tablas MariaDB en Synology", color = FacebookBlue, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                if (onRunDiagnostics != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = onRunDiagnostics,
-                        enabled = !isRunningDiagnostics,
-                        modifier = Modifier.fillMaxWidth().testTag("manual_diagnostics_button"),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0))
-                    ) {
-                        if (isRunningDiagnostics) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Ejecutando diagnóstico MariaDB...")
-                        } else {
-                            Icon(Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Diagnóstico Exhaustivo de MariaDB en Vivo", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                if (onOpenErrorLogs != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    FilledTonalButton(
-                        onClick = onOpenErrorLogs,
-                        modifier = Modifier.fillMaxWidth().testTag("open_error_logs_settings_button"),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(Icons.Default.Warning, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFC62828))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (errorCount > 0) "Registro de Errores y Diagnóstico ($errorCount)" else "Registro de Errores y Diagnóstico",
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Card de Descarga de Paquete de Configuración ZIP
-        Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFE7F3FF)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.FolderZip, contentDescription = null, tint = FacebookBlue)
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Descargar Configuración (.ZIP)",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Paquete completo listo para descomprimir en tu Synology NAS",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Icon(Icons.Default.Dns, contentDescription = null, tint = FacebookBlue)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Servidor Web Station (PHP 7.3)",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = ip,
+                    onValueChange = { ip = it },
+                    label = { Text("Dirección IP local del Synology NAS") },
+                    placeholder = { Text("Ej: 192.168.43.101") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("nas_ip_input")
+                )
 
-                // Lista de contenido del ZIP
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            text = "Contenido generado con tus parámetros (Puerto BD: ${currentConfig.dbPort}):",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text("• schema.sql: Crea la BD 'family_feed' y tablas con MariaDB/MySQL", fontSize = 11.sp)
-                        Text("• config.php: Conexión PDO con puerto ${currentConfig.dbPort} y codificación UTF-8", fontSize = 11.sp)
-                        Text("• index.php: API REST con subida real de fotos/vídeos y miniaturas WebP", fontSize = 11.sp)
-                        Text("• .htaccess: Ajuste de límites de subida hasta 512 MB para Web Station", fontSize = 11.sp)
-                        Text("• docker-compose.yml: Alternativa si usas Docker / Container Manager", fontSize = 11.sp)
-                        Text("• LEEME_INSTRUCCIONES.txt: Guía en español paso a paso para DSM 7/6", fontSize = 11.sp)
-                    }
-                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it },
+                        label = { Text("Puerto") },
+                        placeholder = { Text("80 u 8085") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).testTag("nas_port_input")
+                    )
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // Botón Principal: Descargar ZIP al almacenamiento
-                    Button(
-                        onClick = {
-                            createZipLauncher.launch("synology_family_nas_config.zip")
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
-                        modifier = Modifier.weight(1.4f)
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Descargar ZIP", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-
-                    // Botón Secundario: Compartir ZIP
-                    OutlinedButton(
-                        onClick = {
-                            val shareIntent = SynologyZipExporter.shareZip(context, currentConfig)
-                            if (shareIntent != null) {
-                                context.startActivity(shareIntent)
-                            } else {
-                                Toast.makeText(context, "No se pudo compartir el archivo ZIP", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Compartir", fontSize = 13.sp)
-                    }
-                }
-
-                if (downloadStatusMsg != null) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Surface(
-                        color = LanOnlineGreen.copy(alpha = 0.12f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = LanOnlineGreen, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = downloadStatusMsg ?: "",
-                                style = MaterialTheme.typography.bodySmall.copy(color = LanOnlineGreen, fontWeight = FontWeight.Medium)
-                            )
-                        }
-                    }
+                    OutlinedTextField(
+                        value = path,
+                        onValueChange = { path = it },
+                        label = { Text("Ruta Web") },
+                        placeholder = { Text("/family_api") },
+                        singleLine = true,
+                        modifier = Modifier.weight(2f).testTag("nas_path_input")
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Tarjeta Almacenamiento Offline Oculto (.offline_media)
-        var cacheStats by remember { mutableStateOf(com.example.util.OfflineMediaManager.getCacheStats(context)) }
-
+        // Parámetros de MariaDB 10
         Card(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Storage, contentDescription = null, tint = FacebookBlue)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Almacenamiento Offline (.offline_media)",
+                        text = "Base de Datos MariaDB 10",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Carpeta oculta en el dispositivo que guarda fotos, vídeos de publicaciones y Shorts descargados para ver al instante y disfrutar sin conexión al servidor.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
-                Spacer(modifier = Modifier.height(10.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("Archivos multimedia:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${cacheStats.fileCount} elementos guardados", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("Espacio ocupado:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(cacheStats.formattedSize, style = MaterialTheme.typography.bodyMedium.copy(color = FacebookBlue, fontWeight = FontWeight.Bold))
-                        }
-                    }
-                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = dbHost,
+                        onValueChange = { dbHost = it },
+                        label = { Text("Host MariaDB") },
+                        singleLine = true,
+                        modifier = Modifier.weight(2f)
+                    )
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            com.example.util.OfflineMediaManager.clearCache(context)
-                            cacheStats = com.example.util.OfflineMediaManager.getCacheStats(context)
-                            Toast.makeText(context, "Caché offline liberada", Toast.LENGTH_SHORT).show()
-                        },
-                        shape = RoundedCornerShape(8.dp),
+                    OutlinedTextField(
+                        value = dbPort,
+                        onValueChange = { dbPort = it },
+                        label = { Text("Puerto") },
+                        singleLine = true,
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Liberar espacio", fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = {
-                            onTestConnection()
-                            cacheStats = com.example.util.OfflineMediaManager.getCacheStats(context)
-                            Toast.makeText(context, "Sincronizando contenido offline...", Toast.LENGTH_SHORT).show()
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
-                        modifier = Modifier.weight(1.2f)
-                    ) {
-                        Text("Sincronizar todo", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Synology Backend Scripts Viewer
-        Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Code, contentDescription = null, tint = FacebookBlue)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Visor de Scripts para el NAS",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
-                Text(
-                    text = "Previsualiza o copia manualmente el código para tu Synology:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                OutlinedTextField(
+                    value = dbName,
+                    onValueChange = { dbName = it },
+                    label = { Text("Nombre de Base de Datos") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                ScrollableTabRow(
-                    selectedTabIndex = selectedScriptTab,
-                    edgePadding = 0.dp,
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    scriptTitles.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedScriptTab == index,
-                            onClick = { selectedScriptTab = index },
-                            text = {
-                                Text(
-                                    title,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (selectedScriptTab == index) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Contenido dinámico según los parámetros de red y base de datos actuales
-                val contentToShow = when (selectedScriptTab) {
-                    0 -> SynologyScripts.schemaSql
-                    1 -> SynologyScripts.generateConfigPhp(
-                        dbHost = currentConfig.dbHost,
-                        dbPort = currentConfig.dbPort,
-                        dbName = currentConfig.dbName,
-                        dbUser = currentConfig.dbUser,
-                        dbPass = currentConfig.dbPass
-                    )
-                    2 -> SynologyScripts.indexPhp
-                    else -> """
-                        PASOS RÁPIDOS EN SYNOLOGY DSM:
-                        
-                        1. Instala 'Web Station', 'PHP 8.2' y 'MariaDB 10' desde el Centro de Paquetes.
-                        2. Abre 'phpMyAdmin' (o consola SSH a MariaDB en puerto ${currentConfig.dbPort}), crea la base de datos '${currentConfig.dbName}' y ejecuta el script 'schema.sql'.
-                        3. En File Station, dentro de la carpeta compartida 'web', crea la subcarpeta '${currentConfig.path.trim('/')}'.
-                        4. Guarda los archivos 'index.php', 'config.php' y '.htaccess' allí (o usa el botón 'Descargar ZIP' de arriba).
-                        5. Crea dentro de '${currentConfig.path.trim('/')}' la carpeta 'uploads' y dale permisos de lectura/escritura (usuario 'http').
-                        6. En Web Station, crea un 'Portal de servicio web' basado en puertos (puerto ${currentConfig.port}) que apunte a /web/${currentConfig.path.trim('/')} usando PHP 8.2.
-                        7. ¡Listo! La app Android se conectará instantáneamente en tu Wi-Fi local.
-                    """.trimIndent()
-                }
-
-                SelectionContainer {
-                    Surface(
-                        color = Color(0xFF1E1E1E),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                    ) {
-                        Text(
-                            text = contentToShow,
-                            color = Color(0xFFD4D4D4),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            modifier = Modifier
-                                .padding(12.dp)
-                                .verticalScroll(rememberScrollState())
-                        )
-                    }
-                }
             }
         }
-    }
-}
 
-@Composable
-fun NasConfigScreen(
-    nasConfig: NasConfig,
-    onSaveConfig: (ip: String, port: Int, path: String, dbPort: Int) -> Unit,
-    onTestConnection: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    NasConfigScreen(
-        nasConfig = nasConfig,
-        onSaveConfig = { cfg -> onSaveConfig(cfg.ip, cfg.port, cfg.path, cfg.dbPort) },
-        onTestConnection = onTestConnection,
-        modifier = modifier
-    )
+        // Botones de Acción
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = {
+                    val portInt = port.toIntOrNull() ?: 80
+                    val dbPortInt = dbPort.toIntOrNull() ?: 3307
+                    onSaveConfig(
+                        nasConfig.copy(
+                            ip = ip.trim(),
+                            port = portInt,
+                            path = path.trim(),
+                            dbHost = dbHost.trim(),
+                            dbPort = dbPortInt,
+                            dbName = dbName.trim()
+                        )
+                    )
+                },
+                modifier = Modifier.weight(1f).testTag("save_nas_config_button"),
+                colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue)
+            ) {
+                Icon(Icons.Default.Save, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Guardar")
+            }
+
+            OutlinedButton(
+                onClick = onTestConnection,
+                modifier = Modifier.weight(1f).testTag("test_nas_connection_button")
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Probar")
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+        // Diagnóstico y Reparación
+        Text(
+            text = "Herramientas de Mantenimiento",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+        )
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FilledTonalButton(
+                onClick = onRunDiagnostics,
+                enabled = !isRunningDiagnostics,
+                modifier = Modifier.weight(1f).testTag("run_diagnostics_button")
+            ) {
+                if (isRunningDiagnostics) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Diagnosticar")
+            }
+
+            FilledTonalButton(
+                onClick = onRepairDatabase,
+                enabled = !isRepairing,
+                modifier = Modifier.weight(1f).testTag("repair_db_button")
+            ) {
+                if (isRepairing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Build, contentDescription = null)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Reparar BD")
+            }
+        }
+
+        // Acceso al Registro de Errores
+        OutlinedButton(
+            onClick = onOpenErrorLogs,
+            modifier = Modifier.fillMaxWidth().testTag("open_error_logs_button")
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = null, tint = if (errorCount > 0) LanOfflineAmber else MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(if (errorCount > 0) "Registro de Errores ($errorCount)" else "Ver Registro de Errores")
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+    }
 }

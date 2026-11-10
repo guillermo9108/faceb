@@ -110,7 +110,7 @@ class FamilyRepository(
 
     private fun loadSavedNasConfig(): NasConfig {
         return NasConfig(
-            ip = prefs.getString("nas_ip", "192.168.1.100") ?: "192.168.1.100",
+            ip = prefs.getString("nas_ip", "192.168.43.101") ?: "192.168.43.101",
             port = prefs.getInt("nas_port", 80),
             path = prefs.getString("nas_path", "/family_api") ?: "/family_api",
             dbPort = prefs.getInt("nas_db_port", 3307),
@@ -458,6 +458,18 @@ class FamilyRepository(
         return result
     }
 
+    private val _detectedVolumes = MutableStateFlow<List<com.example.model.NasStorageVolume>>(emptyList())
+    val detectedVolumes: StateFlow<List<com.example.model.NasStorageVolume>> = _detectedVolumes.asStateFlow()
+
+    suspend fun detectNasVolumes(): Result<List<com.example.model.NasStorageVolume>> {
+        val config = _nasConfig.value
+        val result = apiClient.detectStorageVolumes(config.ip, config.port, config.path)
+        result.onSuccess { list ->
+            _detectedVolumes.value = list
+        }
+        return result
+    }
+
     suspend fun scanNasFolders(basePath: String): Result<List<ScannedFolder>> {
         val config = _nasConfig.value
         return apiClient.scanNasFolders(config.ip, config.port, config.path, basePath)
@@ -642,6 +654,7 @@ class FamilyRepository(
         } catch (_: Exception) {}
 
         if (list.isEmpty()) {
+            list.add("192.168.43")
             list.add("192.168.1")
             list.add("192.168.0")
             list.add("10.0.0")
