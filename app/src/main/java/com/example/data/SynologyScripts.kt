@@ -1651,46 +1651,70 @@ object SynologyScripts {
                 ${D}stmt->execute([${D}userId, ${D}groupId, ${D}text, ${D}feeling, ${D}location, ${D}isShort]);
                 ${D}postId = ${D}db->lastInsertId();
 
-                if (isset(${D}_FILES['photo'])) {
-                    if (${D}_FILES['photo']['error'] !== UPLOAD_ERR_OK && ${D}_FILES['photo']['error'] !== UPLOAD_ERR_NO_FILE) {
-                        ${D}uploadErrors = [
-                            1 => 'El archivo supera upload_max_filesize en php.ini del NAS',
-                            2 => 'El archivo supera MAX_FILE_SIZE permitido',
-                            3 => 'El archivo se subió solo parcialmente',
-                            6 => 'Falta la carpeta temporal en el servidor',
-                            7 => 'Fallo al escribir el archivo en el disco del NAS',
-                            8 => 'Una extensión de PHP detuvo la subida'
-                        ];
-                        throw new Exception(${D}uploadErrors[${D}_FILES['photo']['error']] ?? ('Error de subida #' . ${D}_FILES['photo']['error']));
-                    }
-                    if (${D}_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-                        ${D}uploadDir = __DIR__ . '/uploads';
-                        if (!is_dir(${D}uploadDir . '/originals')) mkdir(${D}uploadDir . '/originals', 0777, true);
-                        if (!is_dir(${D}uploadDir . '/thumbs')) mkdir(${D}uploadDir . '/thumbs', 0777, true);
+                ${D}uploadDir = __DIR__ . '/uploads';
+                if (!is_dir(${D}uploadDir . '/originals')) mkdir(${D}uploadDir . '/originals', 0777, true);
+                if (!is_dir(${D}uploadDir . '/thumbs')) mkdir(${D}uploadDir . '/thumbs', 0777, true);
 
-                        ${D}ext = strtolower(pathinfo(${D}_FILES['photo']['name'], PATHINFO_EXTENSION));
-                        ${D}uuid = uniqid('media_', true);
-                        ${D}relOrig = "uploads/originals/{${D}uuid}.{${D}ext}";
-                        ${D}relThumb = "uploads/thumbs/{${D}uuid}.webp";
-
-                        move_uploaded_file(${D}_FILES['photo']['tmp_name'], __DIR__ . '/' . ${D}relOrig);
-
-                        // Si el cliente envió una miniatura extraída explícita (para videos), guardarla
-                        if (isset(${D}_FILES['thumbnail']) && ${D}_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
-                            ${D}thumbFile = "uploads/thumbs/{${D}uuid}_poster.jpg";
-                            move_uploaded_file(${D}_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . ${D}thumbFile);
-                            ${D}relThumb = ${D}thumbFile;
-                        } else if (in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp'])) {
-                            // Generar WebP thumbnail con GD si es imagen
-                            createThumbnail(__DIR__ . '/' . ${D}relOrig, __DIR__ . '/' . ${D}relThumb, 720);
-                        } else {
-                            ${D}relThumb = ${D}relOrig;
+                ${D}uploadedFiles = [];
+                if (isset(${D}_FILES['photo']) && is_array(${D}_FILES['photo']['name'])) {
+                    for (${D}fi = 0; ${D}fi < count(${D}_FILES['photo']['name']); ${D}fi++) {
+                        if (${D}_FILES['photo']['error'][${D}fi] === UPLOAD_ERR_OK) {
+                            ${D}uploadedFiles[] = [
+                                'name' => ${D}_FILES['photo']['name'][${D}fi],
+                                'tmp_name' => ${D}_FILES['photo']['tmp_name'][${D}fi]
+                            ];
                         }
-
-                        ${D}isVideo = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']) || isset(${D}_FILES['thumbnail']) || !empty(${D}durationLabel);
-                        ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label) VALUES (?, ?, ?, ?, ?)");
-                        ${D}stmtMedia->execute([${D}postId, ${D}isVideo ? 'VIDEO' : 'IMAGE', ${D}relOrig, ${D}relThumb, ${D}durationLabel ?: null]);
                     }
+                } else if (isset(${D}_FILES['photo']) && ${D}_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+                    ${D}uploadedFiles[] = [
+                        'name' => ${D}_FILES['photo']['name'],
+                        'tmp_name' => ${D}_FILES['photo']['tmp_name']
+                    ];
+                }
+
+                if (isset(${D}_FILES['photos']) && is_array(${D}_FILES['photos']['name'])) {
+                    for (${D}fi = 0; ${D}fi < count(${D}_FILES['photos']['name']); ${D}fi++) {
+                        if (${D}_FILES['photos']['error'][${D}fi] === UPLOAD_ERR_OK) {
+                            ${D}uploadedFiles[] = [
+                                'name' => ${D}_FILES['photos']['name'][${D}fi],
+                                'tmp_name' => ${D}_FILES['photos']['tmp_name'][${D}fi]
+                            ];
+                        }
+                    }
+                }
+
+                foreach (${D}_FILES as ${D}fk => ${D}fv) {
+                    if (strpos(${D}fk, 'photo_') === 0 || strpos(${D}fk, 'media_') === 0) {
+                        if (isset(${D}fv['error']) && ${D}fv['error'] === UPLOAD_ERR_OK) {
+                            ${D}uploadedFiles[] = [
+                                'name' => ${D}fv['name'],
+                                'tmp_name' => ${D}fv['tmp_name']
+                            ];
+                        }
+                    }
+                }
+
+                foreach (${D}uploadedFiles as ${D}uFile) {
+                    ${D}ext = strtolower(pathinfo(${D}uFile['name'], PATHINFO_EXTENSION));
+                    ${D}uuid = uniqid('media_', true);
+                    ${D}relOrig = "uploads/originals/{${D}uuid}.{${D}ext}";
+                    ${D}relThumb = "uploads/thumbs/{${D}uuid}.webp";
+
+                    move_uploaded_file(${D}uFile['tmp_name'], __DIR__ . '/' . ${D}relOrig);
+
+                    if (isset(${D}_FILES['thumbnail']) && ${D}_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
+                        ${D}thumbFile = "uploads/thumbs/{${D}uuid}_poster.jpg";
+                        move_uploaded_file(${D}_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . ${D}thumbFile);
+                        ${D}relThumb = ${D}thumbFile;
+                    } else if (in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+                        createThumbnail(__DIR__ . '/' . ${D}relOrig, __DIR__ . '/' . ${D}relThumb, 720);
+                    } else {
+                        ${D}relThumb = ${D}relOrig;
+                    }
+
+                    ${D}isVideo = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']) || isset(${D}_FILES['thumbnail']) || !empty(${D}durationLabel);
+                    ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label) VALUES (?, ?, ?, ?, ?)");
+                    ${D}stmtMedia->execute([${D}postId, ${D}isVideo ? 'VIDEO' : 'IMAGE', ${D}relOrig, ${D}relThumb, ${D}durationLabel ?: null]);
                 }
 
                 ${D}db->commit();

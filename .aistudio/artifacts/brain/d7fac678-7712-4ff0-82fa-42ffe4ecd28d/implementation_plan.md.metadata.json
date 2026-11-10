@@ -1,6 +1,6 @@
 {
-  "summary": "Plan de trabajo integral para resolver el error HTTP 500 y la conexión con MariaDB 10 en Synology NAS. Corrige la visualización 'root@127.0.0.1:3307', añade un endpoint de diagnóstico exhaustivo en vivo en el servidor PHP y la app, robustece la auto-conexión multi-socket/TCP en config.php, y facilita la edición clara de credenciales con guía paso a paso para Web Station.",
-  "updatedAt": "2026-11-05T18:01:06.222392027Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Plan de trabajo detallado para incorporar la edición visual de config.php, exportación del paquete ZIP preconfigurado para Synology Web Station y MariaDB 10, publicación multimagen y cuadrículas estilo Facebook con visor en pantalla dividida (foto + comentarios en vivo).",
+  "updatedAt":  "2026-11-10T17:55:56.476776164Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

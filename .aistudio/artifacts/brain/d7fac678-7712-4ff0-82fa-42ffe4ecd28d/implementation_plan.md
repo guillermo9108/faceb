@@ -1,151 +1,148 @@
-# Plan de Trabajo: Diagnóstico y Solución Integral del Error 500 y Conexión MariaDB 10 en Synology NAS
+# Plan de Trabajo: Mejoras de Configuración NAS, Exportación ZIP y Publicaciones Estilo Facebook
 
-Plan de trabajo exhaustivo para corregir el error de conexión HTTP 500 entre el servidor PHP 7.3 en Synology Web Station y MariaDB 10. Implementa un motor de diagnóstico en vivo que evalúa sockets, TCP, extensiones y permisos, corrige la representación visual de la dirección de base de datos a `root@127.0.0.1:3307` en la app, y proporciona una configuración clara y resiliente en `config.php` y `index.php`.
+Mejora integral de la aplicación **Muro Familiar LAN** para incorporar configuración visual de `config.php`, exportación de paquete ZIP listo para desplegar en Synology NAS, y renovación visual completa de las publicaciones con mosaicos multimagen y visor en pantalla dividida (imagen + comentarios simultáneos) estilo Facebook.
 
 ---
 
-## Decisiones Críticas y Preferencias del Usuario
+### Decisiones Confirmadas del Usuario
 
 > [!IMPORTANT]
-> Decisiones confirmadas por el usuario para la resolución de la conexión:
-> - **Gestión de Credenciales**: El usuario editará directamente las credenciales (`DB_USER`, `DB_PASS`, `DB_NAME`, `DB_PORT`) en el archivo `config.php` del NAS. El archivo vendrá documentado con comentarios claros y valores por defecto adaptados a Synology MariaDB 10.
-> - **Diagnóstico Exhaustivo en Vivo**: Se integrará un endpoint especializado en PHP (`action=db_diagnostics`) y una vista de diagnóstico en vivo en la aplicación Android que probará paso a paso: extensión PDO, conexión TCP a `127.0.0.1:3307`, existencia y permisos de sockets UNIX (`mysqld10.sock`), autenticación con MariaDB y existencia de la base de datos `family_feed`.
-> - **Corrección Visual en la APK**: Corrección inmediata de la cadena en pantalla para mostrar `root@127.0.0.1:3307` en lugar de `root@:3307`.
+> - **Organización de Fotos en el Muro**: Mosaico dinámico estilo Facebook (1 a 4+ fotos con tamaños adaptativos y contador `+N` en la última imagen).
+> - **Visor de Foto en Detalle**: Pantalla dividida con imagen en alta resolución y panel de comentarios/reacciones interactivo simultáneo.
+> - **Herramienta de Configuración y ZIP**: Sección dedicada e interactiva dentro de la pantalla de **Ajustes del NAS** para editar `config.php` en vivo y descargar el ZIP completo listo para Web Station.
+> - **Arquitectura de Base de Datos**: Confirmación de que la APK consume MariaDB 10 a través de la capa REST API en PHP 7.3/8 (`index.php` en Web Station), garantizando seguridad y compatibilidad sin requerir conexiones JDBC directas ni puertos abiertos a internet.
 
 ---
 
-## 1. Visión General y Diagnóstico del Problema
+## 1. Visión General y Objetivos
 
-### El Problema
-Al realizar peticiones al servidor Synology Web Station (`index.php`), se obtiene una respuesta **HTTP 500** persistente:
-1. **Representación visual confusa en la app**: Se mostraba `MariaDB root@ :3307` debido a la omisión de la variable `dbHost` en la composición del texto en `NasConfigScreen.kt`.
-2. **Rechazo de conexión por MariaDB 10**:
-   - En Synology DSM, MariaDB 10 tiene por defecto la casilla **"Habilitar conexión TCP/IP"** desmarcada, lo que provoca que los intentos de conexión TCP a `127.0.0.1:3307` sean rechazados con `SQLSTATE[HY000] [2002] Connection refused`.
-   - Cuando se intenta conectar mediante socket UNIX, las rutas típicas de MariaDB 10 en DSM (`/run/mysqld/mysqld10.sock` o `/var/run/mysqld/mysqld10.sock`) pueden estar restringidas por la directiva `open_basedir` del perfil PHP 7.3 en Web Station o carecer de permisos para el usuario `http`.
-   - Las credenciales configuradas en la interfaz de Web Station no se transmiten automáticamente a las llamadas PDO de PHP si `config.php` mantiene una contraseña distinta a la definida en MariaDB 10 en DSM.
-3. **Falta de visibilidad de la causa raíz**: El cliente recibía únicamente un error 500 genérico sin conocer con certeza si el fallo era de red TCP, de archivo de socket, de extensión PHP faltante o de usuario/contraseña denegados (código 1045).
-
-### Beneficios de la Solución
-- **Transparencia Total**: Diagnóstico en un solo toque que indica con precisión milimétrica qué componente falla (TCP, Socket, Credenciales o Tablas).
-- **Conectividad Resiliente**: `config.php` probará de forma secuencial y transparente todos los métodos válidos de conexión para MariaDB 10 (TCP `127.0.0.1:3307`, TCP `localhost:3307`, socket `/run/mysqld/mysqld10.sock`, socket `/var/run/mysqld/mysqld10.sock` y socket `/run/mysqld/mysqld.sock`).
-- **Claridad de Interfaz**: Datos de conexión exactos y visualmente correctos en la APK.
-
----
-
-## 2. Experiencia de Usuario y Flujo de Diagnóstico
-
-### Flujo de Diagnóstico Paso a Paso
-1. **Acceso al Diagnóstico**:
-   - El usuario abre la pantalla de **Configuración de Synology NAS** en la app.
-   - Si la conexión falla o hay un error 500, aparece un botón destacado: **"Ejecutar Diagnóstico Exhaustivo de MariaDB"**.
-2. **Resultados Detallados en Tiempo Real**:
-   - La app contacta al endpoint `?action=db_diagnostics` y presenta una tarjeta con indicadores visuales claros (verde/rojo):
-     - **Extensión `pdo_mysql`**: `[OK] Cargada en PHP 7.3` / `[ERROR] No habilitada en Web Station`.
-     - **Conexión TCP (127.0.0.1:3307)**: `[OK] Puerto abierto` / `[ERROR] Conexión rechazada (¿TCP/IP habilitado en DSM?)`.
-     - **Socket UNIX (`mysqld10.sock`)**: `[OK] Socket accesible` / `[AVISO] No encontrado en /run/mysqld/mysqld10.sock`.
-     - **Autenticación MariaDB**: `[OK] Conectado como root` / `[ERROR 1045] Contraseña incorrecta en config.php`.
-     - **Base de Datos `family_feed`**: `[OK] Existente y accesible` / `[CREADA] Creada automáticamente`.
-     - **Tablas de la Aplicación**: `[OK] 8 tablas sincronizadas`.
-   - Incluye un botón para **"Copiar Diagnóstico Completo"** para compartirlo o guardarlo.
-3. **Exportación de Scripts Actualizados**:
-   - La pantalla de configuración permite descargar o copiar los archivos `config.php` e `index.php` actualizados directamente al portapapeles o mediante ZIP para reemplazarlos en `/volume1/web/family_api/`.
+1. **Gestor Visual de `config.php` y Exportador ZIP**:
+   - Permitir al usuario inspeccionar, editar y copiar los parámetros de MariaDB 10 (`db_host`, `db_port`, `db_name`, `db_user`, `db_pass`).
+   - Botón directo para descargar o compartir el archivo `.zip` que incluye `config.php` preconfigurado, `index.php`, `schema.sql`, `.htaccess` y la guía de instalación para Synology.
+2. **Publicaciones Multimágenes en el Servidor y la APK**:
+   - Permitir seleccionar múltiples fotos simultáneamente desde el selector de medios de Android (`PickMultipleVisualMedia`).
+   - El backend PHP (`index.php`) procesará arreglos de fotos (`photo_0`, `photo_1`... o `photos[]`), generando miniaturas webp y asociándolas al mismo `post_id`.
+3. **Mosaico Dinámico de Publicaciones Estilo Facebook**:
+   - Tarjetas con bordes limpios, espaciado e interacciones idénticas a Facebook.
+   - Distribución de medios según la cantidad de imágenes:
+     - **1 imagen**: Formato completo con relación de aspecto natural (1:1, 4:5 o 16:9).
+     - **2 imágenes**: Dos columnas simétricas divididas verticalmente.
+     - **3 imágenes**: Una imagen principal destacada arriba y dos abajo.
+     - **4 imágenes**: Mosaico 1 superior + 3 inferiores, o cuadrícula 2x2.
+     - **5 o más imágenes**: Mosaico con overlay oscuro en la última imagen indicando cuántas fotos adicionales contiene (ej. `+3`).
+4. **Visor de Foto en Pantalla Dividida (Facebook Split-View)**:
+   - Al tocar cualquier foto, se abre un visor interactivo:
+     - **Área Multimedia**: Fondo oscuro con navegación entre fotos, contador (`Foto 2 de 5`) y zoom táctil.
+     - **Área Social**: Autor, texto de la publicación, barra de reacciones (Me gusta, Me encanta, etc.) y lista de comentarios en tiempo real con campo de texto para responder de inmediato.
 
 ---
 
-## 3. Decisiones de Arquitectura y Diseño Técnico
+## 2. Experiencia de Usuario y Diseño Visual
 
-### A. Corrección Visual en la APK Android
-- En `app/src/main/java/com/example/ui/screens/NasConfigScreen.kt`:
-  - Reemplazar la interpolación errónea:
-    - *Antes*: `Text("MariaDB (${currentConfig.dbUser}@:${currentConfig.dbPort})")`
-    - *Después*: `Text("MariaDB (${currentConfig.dbUser}@${currentConfig.dbHost}:${currentConfig.dbPort})")`
-  - Mostrar explícitamente el socket activo si la conexión se establece mediante socket UNIX en lugar de TCP.
+### Flujos Principales
+```
+[Pantalla Ajustes NAS]
+   └──> [Sección Configuración Servidor]
+           ├──> Campos editables (Host, Puerto 3307, BD, Usuario root, Contraseña)
+           ├──> Vista previa en vivo del código config.php con botón "Copiar"
+           └──> Botón "Descargar ZIP Completo para NAS" (Action Send / Save Intent)
 
-### B. Endpoint de Diagnóstico Exhaustivo en `index.php` (`action=db_diagnostics`)
-Se incorporará una acción dedicada que no genera un error 500 fatal si la base de datos no conecta, sino que devuelve código 200 con un informe JSON minucioso:
-```json
-{
-  "status": "DIAGNOSTIC_REPORT",
-  "php_version": "7.3.x",
-  "checks": {
-    "pdo_mysql_extension": { "success": true, "message": "Extensión PDO MySQL disponible" },
-    "tcp_port_open": { "success": true, "port": 3307, "host": "127.0.0.1" },
-    "unix_socket_exists": { "success": true, "path": "/run/mysqld/mysqld10.sock" },
-    "mariadb_authentication": { "success": false, "code": 1045, "error": "Access denied for user 'root'@'127.0.0.1' (using password: YES)" },
-    "recommended_action": "La contraseña en config.php no coincide con la configurada en el paquete MariaDB 10 de DSM."
-  }
-}
+[Crear Publicación]
+   └──> Selector de imágenes múltiple (hasta 10 fotos)
+           ├──> Tira horizontal de previsualización con botón (×) para remover
+           └──> Subida concurrente al NAS mediante index.php
+
+[Muro Familiar]
+   └──> Tarjeta de Publicación Facebook
+           ├──> Encabezado (Avatar, Nombre, Hora relativa, Ícono privacidad)
+           ├──> Texto de la publicación
+           ├──> Mosaico dinámico adaptativo (1, 2, 3, 4, 5+ con insignia +N)
+           ├──> Barra social (Reacciones agrupadas, contador de comentarios)
+           └──> Botones de acción: "Me gusta" (con selector de reacciones) y "Comentar"
+
+[Al pulsar una imagen]
+   └──> Visor Pantalla Dividida (Facebook Split-View)
+           ├──> Superior / Izquierda: Visor de foto en negro con selector deslizable
+           └──> Inferior / Derecha: Perfil, texto, reacciones y comentarios en vivo
 ```
 
-### C. Robustecimiento de `config.php`
-- **Lista de DSN Optimizada para MariaDB 10**:
-  1. `mysql:host=127.0.0.1;port=3307;dbname=family_feed;charset=utf8mb4`
-  2. `mysql:unix_socket=/run/mysqld/mysqld10.sock;dbname=family_feed;charset=utf8mb4`
-  3. `mysql:unix_socket=/var/run/mysqld/mysqld10.sock;dbname=family_feed;charset=utf8mb4`
-  4. `mysql:host=localhost;port=3307;dbname=family_feed;charset=utf8mb4`
-  5. `mysql:unix_socket=/run/mysqld/mysqld.sock;dbname=family_feed;charset=utf8mb4`
-  6. `mysql:host=127.0.0.1;port=3306;dbname=family_feed;charset=utf8mb4`
-- **Manejo Específico de Errores PDO**:
-  - Distinción entre error de autenticación (`1045 Access denied`: alertar sobre contraseña en `config.php`), error de conexión (`2002 Connection refused`: alertar sobre casilla TCP/IP en MariaDB 10 de DSM) y base de datos inexistente (`1049 Unknown database`: auto-creación con `CREATE DATABASE IF NOT EXISTS`).
-
-### D. Guía Clara de Configuración en Synology DSM para el Usuario
-La app y el archivo `README.md` / `config.php` incluirán los tres pasos exactos en DSM:
-1. **DSM > MariaDB 10**: Marcar la casilla *"Habilitar conexión TCP/IP"* en el puerto 3307.
-2. **DSM > Web Station > Configuración de lenguaje de script > PHP 7.3**: En la pestaña *Extensiones*, asegurarse de marcar `pdo_mysql` y `mysqli`.
-3. **Archivo `config.php`**: Editar la línea `define('DB_PASS', 'TuClaveRealDeMariaDB');` con la clave establecida al instalar MariaDB 10.
+### Paleta y Estilo
+- **Azul Facebook**: `#1877F2` (acciones primarias, botones, badges).
+- **Fondos**: Superficie blanca/modo oscuro con elevación suave de 0.5.dp y divisores sutiles (`#E4E6EB`).
+- **Insignia `+N`**: Capa negra semitransparente (`Color.Black.copy(alpha = 0.55f)`) con tipografía bold blanca de 22.sp centrada.
 
 ---
 
-## 4. Diagrama de Arquitectura y Diagnóstico
+## 3. Decisiones de Producto y Arquitectura Técnica
 
+### Conexión Segura APK -> PHP -> MariaDB 10
 ```
-┌────────────────────────────────────────────────────────┐
-│                   App Android (M3)                     │
-│  - Muestra: MariaDB (root@127.0.0.1:3307)              │
-│  - Botón: "Diagnóstico Exhaustivo de MariaDB"          │
-│  - Diálogo de Resultados: Tests individuales (OK/FAIL) │
-└──────────────────────────┬─────────────────────────────┘
-                           │ HTTP GET /index.php?action=db_diagnostics
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│            Synology Web Station (PHP 7.3)              │
-│                                                        │
-│  Prueba 1: extension_loaded('pdo_mysql')               │
-│  Prueba 2: fsockopen('127.0.0.1', 3307, 2s)            │
-│  Prueba 3: file_exists('/run/mysqld/mysqld10.sock')    │
-│  Prueba 4: Intento PDO con credenciales de config.php   │
-│            ├── Código 1045 -> Clave incorrecta en PHP  │
-│            ├── Código 2002 -> TCP deshabilitado en DSM │
-│            └── Código 1049 -> Auto-crea DB family_feed │
-└──────────────────────────┬─────────────────────────────┘
-                           │ TCP 3307 o Socket mysqld10.sock
-                           ▼
-┌────────────────────────────────────────────────────────┐
-│                  Synology MariaDB 10                   │
-│  - Puerto: 3307                                        │
-│  - Sockets: /run/mysqld/mysqld10.sock                  │
-│  - Base de Datos: family_feed                          │
-└────────────────────────────────────────────────────────┘
+┌─────────────────────────────────┐
+│        Android APK (Muro)       │
+│  - OkHttp 4 / Retrofit          │
+│  - Jetpack Compose M3           │
+└────────────────┬────────────────┘
+                 │ HTTP REST (LAN / Wi-Fi)
+                 │ Acciones: post, feed, comments, react, delete
+                 ▼
+┌─────────────────────────────────┐
+│      Synology Web Station       │
+│  - Nginx / Apache FastCGI       │
+│  - index.php + config.php       │
+└────────────────┬────────────────┘
+                 │ PDO MySQL (Localhost 127.0.0.1:3307)
+                 │ Socket / TCP interno
+                 ▼
+┌─────────────────────────────────┐
+│           MariaDB 10            │
+│  - Base de datos: family_feed   │
+│  - 8 Tablas: users, posts,      │
+│    media, comments, reactions,  │
+│    stories, family_groups...    │
+└─────────────────────────────────┘
 ```
+- **Por qué**: La APK nunca debe exponer claves de root de MariaDB en la red ni requerir que MariaDB acepte conexiones remotas inseguras (que por defecto DSM deshabilita). Toda la autenticación, subida de archivos y consultas SQL se realizan de forma segura en el servidor mediante `index.php`.
 
 ---
 
-## 5. Fases de Ejecución
+## 4. Plan de Implementación por Fases
 
-- [x] **Fase 1: Corrección de la Interfaz en la APK**
-  - Corregida en `NasConfigScreen.kt` la cadena de texto para incluir `currentConfig.dbHost`, mostrando `MariaDB (root@127.0.0.1:3307)`.
-  - Añadido botón interactivo de diagnóstico tanto en la tarjeta de estado como en el banner de error de `NasConfigScreen.kt` y en `ErrorLogsDialog.kt`.
+### Fase 1: Backend PHP y Generador de Scripts (`config.php` y ZIP)
+1. **Actualizar `synology_server/index.php`**:
+   - Ampliar la ruta `action=post` para recibir múltiples archivos en `$_FILES` (`photos[]` o `photo_0`, `photo_1`...).
+   - Guardar cada imagen en `uploads/originals/`, generar miniatura en `uploads/thumbs/` e insertar cada registro en `media`.
+2. **Actualizar `SynologyZipExporter.kt` y `SynologyScripts.kt`**:
+   - Sincronizar el contenido del ZIP generado en tiempo real con las credenciales activas del usuario (`dbHost`, `dbPort`, `dbName`, `dbUser`, `dbPass`).
+   - Crear función `generateZipFile(context, nasConfig): File` que permita descarga local o apertura en el explorador de archivos.
 
-- [x] **Fase 2: Implementación del Endpoint de Diagnóstico y Robustecimiento en PHP**
-  - Implementada la ruta `action=db_diagnostics` en `synology_server/index.php` y `SynologyScripts.kt` que comprueba extensiones, puerto TCP 3307, sockets UNIX, credenciales y tablas sin retornar nunca 500.
-  - Reforzados los mensajes en `synology_server/config.php` y `SynologyScripts.kt` con detección específica de código 1045 (contraseña de MariaDB) y 2002 (TCP/IP en DSM).
-  - Añadido fallback `mysql:host=localhost;port=3307;dbname=...` y soporte de variables de entorno / ini.
+### Fase 2: Sección de Configuración en `NasConfigScreen.kt`
+1. **Card "Generador de config.php y Paquete ZIP"**:
+   - Campos interactivos para usuario y clave de MariaDB.
+   - Diálogo / visor de código con resaltado de sintaxis para `config.php`.
+   - Botón directo para compartir/guardar el archivo `family_feed_synology_setup.zip`.
 
-- [x] **Fase 3: Integración en el Cliente Android (`NasApiClient.kt` & `FamilyRepository.kt`)**
-  - Creado `DatabaseDiagnosticDialog.kt` con diseño Material 3, checklist detallado, tarjeta de solución y botón para copiar informe.
-  - Agregado el método `getDatabaseDiagnostics()` en `NasApiClient.kt` y expuesto en `FamilyRepository` y `FamilyFeedViewModel`.
-  - Integrado el diálogo en `MainActivity.kt`.
+### Fase 3: Selección Multimágen en `CreatePostDialog.kt`
+1. Reemplazar `PickVisualMedia` simple por `PickMultipleVisualMedia(maxItems = 10)`.
+2. Tira de vista previa con miniaturas de las imágenes seleccionadas y botón de eliminación individual.
+3. Actualizar `NasApiClient.createPost` y `FamilyRepository.createPost` para enviar la lista de URIs en el `MultipartBody`.
 
-- [x] **Fase 4: Verificación y Pruebas Unitarias**
-  - Pruebas unitarias ejecutadas exitosamente con Gradle (`BUILD SUCCESSFUL in 25s`).
-  - Compilación de la APK exitosa (`compile_applet`).
+### Fase 4: Mosaico de Publicaciones Estilo Facebook en `PostCard.kt`
+1. Crear el composable `FacebookMediaGrid`:
+   - Cálculo de cuadrícula según `mediaItems.size`:
+     - 1 item: `SingleMediaView` con relación de aspecto dinámica.
+     - 2 items: `TwoMediaGrid` (50% / 50%).
+     - 3 items: `ThreeMediaGrid` (1 arriba al 100%, 2 abajo al 50% cada una).
+     - 4 items: `FourMediaGrid` (1 arriba grande, 3 abajo simétricas).
+     - 5+ items: `FivePlusMediaGrid` con capa oscura y texto `+X` sobre la última celda.
+2. Callback `onMediaClick: (index: Int) -> Unit` al pulsar cualquier imagen del mosaico.
+
+### Fase 5: Visor de Foto en Pantalla Dividida (`FacebookMediaViewerDialog.kt`)
+1. Implementar componente modal de pantalla completa con diseño adaptable:
+   - **En modo vertical**: Mitad superior visor de fotos con paginador táctil horizontal (`HorizontalPager`) y fondo negro; mitad inferior panel scrollable con avatar, nombre, hora, descripción de la publicación, resumen de reacciones y lista de comentarios con caja de envío rápido.
+   - **En modo horizontal / tableta**: Lado izquierdo visor de fotos (65%) y lado derecho panel de comentarios y reacciones (35%).
+2. Integrar acciones en vivo: dar reacción directamente desde el visor y enviar comentarios que se actualizan al instante.
+
+### Fase 6: Verificación y Pruebas
+1. Compilar el proyecto con `compile_applet`.
+2. Ejecutar la suite de pruebas unitarias (`gradle :app:testDebugUnitTest`).
+3. Verificar la integridad de los archivos ZIP generados y la respuesta de los endpoints PHP.

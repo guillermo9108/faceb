@@ -1193,7 +1193,8 @@ class NasApiClient(
         text: String,
         feeling: String?,
         location: String?,
-        mediaUri: Uri?,
+        mediaUri: Uri? = null,
+        mediaUris: List<Uri> = emptyList(),
         thumbnailFile: File? = null,
         durationLabel: String? = null,
         isShort: Boolean = false
@@ -1216,26 +1217,32 @@ class NasApiClient(
                 multipartBuilder.addFormDataPart("thumbnail", thumbnailFile.name, thumbBody)
             }
 
-            // Si hay un archivo real seleccionado desde el dispositivo, leer los bytes y enviarlos
-            if (mediaUri != null) {
-                val inputStream = context.contentResolver.openInputStream(mediaUri)
-                val mimeType = context.contentResolver.getType(mediaUri) ?: "image/jpeg"
-                val isVideo = mimeType.startsWith("video")
-                val extension = if (isVideo) "mp4" else "jpg"
+            // Procesar todos los archivos multimedia seleccionados (uno o múltiples)
+            val allUris = if (mediaUris.isNotEmpty()) mediaUris else listOfNotNull(mediaUri)
+            for ((idx, uri) in allUris.withIndex()) {
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val mimeType = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    val isVideo = mimeType.startsWith("video")
+                    val extension = if (isVideo) "mp4" else "jpg"
 
-                val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}.$extension")
-                inputStream?.use { input ->
-                    FileOutputStream(tempFile).use { output ->
-                        input.copyTo(output)
+                    val tempFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}_$idx.$extension")
+                    inputStream?.use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
+                        }
                     }
-                }
 
-                val mediaRequestBody = tempFile.asRequestBody(mimeType.toMediaTypeOrNull())
-                multipartBuilder.addFormDataPart(
-                    "photo",
-                    tempFile.name,
-                    mediaRequestBody
-                )
+                    val mediaRequestBody = tempFile.asRequestBody(mimeType.toMediaTypeOrNull())
+                    val partKey = if (allUris.size == 1 && idx == 0) "photo" else "photo_$idx"
+                    multipartBuilder.addFormDataPart(
+                        partKey,
+                        tempFile.name,
+                        mediaRequestBody
+                    )
+                } catch (eFile: Exception) {
+                    eFile.printStackTrace()
+                }
             }
 
             val request = Request.Builder()

@@ -993,6 +993,7 @@ class FamilyRepository(
     suspend fun addPost(
         contentText: String,
         mediaUri: Uri? = null,
+        mediaUris: List<Uri> = emptyList(),
         feeling: String? = null,
         location: String? = null,
         thumbnailFile: java.io.File? = null,
@@ -1002,13 +1003,16 @@ class FamilyRepository(
         val config = _nasConfig.value
         val author = _currentMember.value
 
+        val effectiveUris = if (mediaUris.isNotEmpty()) mediaUris else listOfNotNull(mediaUri)
+        val firstUri = effectiveUris.firstOrNull()
+
         var finalThumb = thumbnailFile
         var finalDur = durationLabel
-        if (mediaUri != null && finalThumb == null) {
-            val mime = context.contentResolver.getType(mediaUri) ?: ""
+        if (firstUri != null && finalThumb == null) {
+            val mime = context.contentResolver.getType(firstUri) ?: ""
             if (mime.startsWith("video")) {
                 try {
-                    val info = com.example.util.VideoHelper.extractVideoInfo(context, mediaUri)
+                    val info = com.example.util.VideoHelper.extractVideoInfo(context, firstUri)
                     finalThumb = info.thumbnailFile
                     if (finalDur.isNullOrBlank()) {
                         finalDur = info.durationFormatted
@@ -1026,7 +1030,8 @@ class FamilyRepository(
             text = contentText,
             feeling = feeling,
             location = location,
-            mediaUri = mediaUri,
+            mediaUri = firstUri,
+            mediaUris = effectiveUris,
             thumbnailFile = finalThumb,
             durationLabel = finalDur,
             isShort = isShort
@@ -1035,18 +1040,16 @@ class FamilyRepository(
         return result.fold(
             onSuccess = { postId ->
                 // Actualizar optimista local inmediatamente en memoria
-                val mediaItems = if (mediaUri != null) {
-                    val isVideo = context.contentResolver.getType(mediaUri)?.startsWith("video") == true || durationLabel != null
-                    listOf(
-                        MediaItem(
-                            id = "m_$postId",
-                            type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
-                            url = mediaUri.toString(),
-                            thumbnailUrl = finalThumb?.absolutePath ?: mediaUri.toString(),
-                            durationLabel = finalDur
-                        )
+                val mediaItems = effectiveUris.mapIndexed { idx, u ->
+                    val isVideo = context.contentResolver.getType(u)?.startsWith("video") == true || (idx == 0 && durationLabel != null)
+                    MediaItem(
+                        id = "m_${postId}_$idx",
+                        type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
+                        url = u.toString(),
+                        thumbnailUrl = if (idx == 0 && finalThumb != null) finalThumb.absolutePath else u.toString(),
+                        durationLabel = if (idx == 0) finalDur else null
                     )
-                } else emptyList()
+                }
 
                 val newPost = Post(
                     id = postId,

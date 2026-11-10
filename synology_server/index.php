@@ -582,17 +582,57 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'post') || matchRoute($acti
         $stmt->execute([$userId, $groupId, $text, $feeling, $location, $isShort]);
         $postId = (int)$db->lastInsertId();
 
-        if (isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-            $uploadDir = __DIR__ . '/uploads';
-            if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
-            if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
+        $uploadDir = __DIR__ . '/uploads';
+        if (!is_dir($uploadDir . '/originals')) @mkdir($uploadDir . '/originals', 0777, true);
+        if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
 
-            $ext = strtolower(pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION));
+        // Recolectar todos los archivos subidos (individuales, en array 'photos[]' o con prefijo 'photo_')
+        $uploadedFiles = [];
+        if (isset($_FILES['photo']) && is_array($_FILES['photo']['name'])) {
+            for ($fi = 0; $fi < count($_FILES['photo']['name']); $fi++) {
+                if ($_FILES['photo']['error'][$fi] === UPLOAD_ERR_OK) {
+                    $uploadedFiles[] = [
+                        'name' => $_FILES['photo']['name'][$fi],
+                        'tmp_name' => $_FILES['photo']['tmp_name'][$fi]
+                    ];
+                }
+            }
+        } else if (isset($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
+            $uploadedFiles[] = [
+                'name' => $_FILES['photo']['name'],
+                'tmp_name' => $_FILES['photo']['tmp_name']
+            ];
+        }
+
+        if (isset($_FILES['photos']) && is_array($_FILES['photos']['name'])) {
+            for ($fi = 0; $fi < count($_FILES['photos']['name']); $fi++) {
+                if ($_FILES['photos']['error'][$fi] === UPLOAD_ERR_OK) {
+                    $uploadedFiles[] = [
+                        'name' => $_FILES['photos']['name'][$fi],
+                        'tmp_name' => $_FILES['photos']['tmp_name'][$fi]
+                    ];
+                }
+            }
+        }
+
+        foreach ($_FILES as $fk => $fv) {
+            if (strpos($fk, 'photo_') === 0 || strpos($fk, 'media_') === 0) {
+                if (isset($fv['error']) && $fv['error'] === UPLOAD_ERR_OK) {
+                    $uploadedFiles[] = [
+                        'name' => $fv['name'],
+                        'tmp_name' => $fv['tmp_name']
+                    ];
+                }
+            }
+        }
+
+        foreach ($uploadedFiles as $uFile) {
+            $ext = strtolower(pathinfo($uFile['name'], PATHINFO_EXTENSION));
             $uuid = uniqid('media_', true);
             $relOrig = "uploads/originals/{$uuid}.{$ext}";
             $relThumb = "uploads/thumbs/{$uuid}.webp";
 
-            move_uploaded_file($_FILES['photo']['tmp_name'], __DIR__ . '/' . $relOrig);
+            move_uploaded_file($uFile['tmp_name'], __DIR__ . '/' . $relOrig);
 
             $isVideo = in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v']);
             if (isset($_FILES['thumbnail']) && $_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {

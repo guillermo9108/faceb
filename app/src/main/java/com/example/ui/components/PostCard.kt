@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -83,6 +85,7 @@ fun PostCard(
     onTogglePin: () -> Unit,
     onDeletePost: () -> Unit,
     onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit = { _, _, _, _, _ -> },
+    onSendComment: (text: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -91,6 +94,7 @@ fun PostCard(
     var isPlayingInline by remember { mutableStateOf(false) }
     var isBuffering by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
+    var activeMediaViewerIndex by remember { mutableStateOf<Int?>(null) }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -264,123 +268,129 @@ fun PostCard(
                 )
             }
 
-            // 3. Full-bleed Media Container (Images or Videos)
+            // 3. Full-bleed Media Container (Images or Videos) - Facebook Style Dynamic Sizing & Mosaic
             if (post.mediaItems.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(6.dp))
-                val media = post.mediaItems.first()
-                val isVideo = media.type == MediaType.VIDEO
-                val imageModel = remember(media.thumbnailUrl, media.url) {
-                    val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
-                    com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
-                }
-                val isChunked = media.isChunked && media.chunks.isNotEmpty()
+                if (post.mediaItems.size == 1) {
+                    val media = post.mediaItems.first()
+                    val isVideo = media.type == MediaType.VIDEO
+                    val imageModel = remember(media.thumbnailUrl, media.url) {
+                        val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
+                        com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
+                    }
+                    val isChunked = media.isChunked && media.chunks.isNotEmpty()
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .background(Color.Black.copy(alpha = 0.08f))
-                ) {
                     if (isVideo && isPlayingInline) {
-                        // Reproducción ultra-fluida con ExoPlayer y concatenación continua de fragmentos
-                        FamilyVideoPlayer(
-                            videoUrl = media.url,
-                            chunks = media.chunks,
-                            isChunked = isChunked,
-                            autoPlay = !isPaused,
-                            isLooping = true,
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                        // Overlay con botón para cerrar vídeo inline
-                        IconButton(
-                            onClick = {
-                                isPlayingInline = false
-                                isPaused = false
-                            },
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(8.dp)
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.65f))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Cerrar reproducción inline",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        // Barra inferior de controles inline
-                        Row(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .background(Color.Black.copy(alpha = 0.65f))
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .aspectRatio(16f / 9f)
+                                .background(Color.Black.copy(alpha = 0.08f))
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            // Reproducción ultra-fluida con ExoPlayer y concatenación continua de fragmentos
+                            FamilyVideoPlayer(
+                                videoUrl = media.url,
+                                chunks = media.chunks,
+                                isChunked = isChunked,
+                                autoPlay = !isPaused,
+                                isLooping = true,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            // Overlay con botón para cerrar vídeo inline
+                            IconButton(
+                                onClick = {
+                                    isPlayingInline = false
+                                    isPaused = false
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.65f))
                             ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cerrar reproducción inline",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            // Barra inferior de controles inline
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.BottomCenter)
+                                    .background(Color.Black.copy(alpha = 0.65f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { isPaused = !isPaused },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                            contentDescription = if (isPaused) "Reanudar" else "Pausar",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isPaused) "Pausado" else "Reproduciendo en tarjeta",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color.White,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
+
                                 IconButton(
-                                    onClick = { isPaused = !isPaused },
+                                    onClick = {
+                                        isPlayingInline = false
+                                        isPaused = true
+                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
+                                    },
                                     modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
-                                        imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                        contentDescription = if (isPaused) "Reanudar" else "Pausar",
+                                        imageVector = Icons.Default.Fullscreen,
+                                        contentDescription = "Pantalla completa",
                                         tint = Color.White,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
-                                Text(
-                                    text = if (isPaused) "Pausado" else "Reproduciendo en tarjeta",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = Color.White,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 12.sp
-                                    )
-                                )
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    isPlayingInline = false
-                                    isPaused = true
-                                    onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
-                                },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Fullscreen,
-                                    contentDescription = "Pantalla completa",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
                             }
                         }
-                    } else {
-                        // Vista previa de imagen o miniatura de vídeo
-                        AsyncImage(
-                            model = imageModel,
-                            contentDescription = media.caption.ifBlank { "Foto de publicación" },
-                            contentScale = ContentScale.Crop,
+                    } else if (isVideo) {
+                        // Video preview with play overlay
+                        Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .clickable(enabled = isVideo) {
-                                    isPlayingInline = true
-                                    isBuffering = true
-                                    isPaused = false
-                                }
-                        )
+                                .fillMaxWidth()
+                                .aspectRatio(16f / 9f)
+                                .background(Color.Black.copy(alpha = 0.08f))
+                        ) {
+                            AsyncImage(
+                                model = imageModel,
+                                contentDescription = media.caption.ifBlank { "Miniatura de vídeo" },
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable {
+                                        isPlayingInline = true
+                                        isBuffering = true
+                                        isPaused = false
+                                    }
+                            )
 
-                        // Superposición de vídeo con botón reproducir en tarjeta
-                        if (isVideo) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -451,7 +461,31 @@ fun PostCard(
                                 }
                             }
                         }
+                    } else {
+                        // Single Photo - Dynamic Facebook sizing, tap opens split viewer
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 220.dp, max = 460.dp)
+                                .background(Color.Black.copy(alpha = 0.08f))
+                                .clickable { activeMediaViewerIndex = 0 }
+                        ) {
+                            AsyncImage(
+                                model = imageModel,
+                                contentDescription = media.caption.ifBlank { "Foto de publicación" },
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 220.dp, max = 460.dp)
+                            )
+                        }
                     }
+                } else {
+                    // Multi-photo Facebook Dynamic Mosaic Grid
+                    FacebookMediaGrid(
+                        mediaItems = post.mediaItems,
+                        onMediaClick = { index -> activeMediaViewerIndex = index }
+                    )
                 }
             }
 
@@ -685,6 +719,202 @@ fun PostCard(
                         )
                     )
                 }
+            }
+        }
+    }
+
+    // Modal Visor de Fotos Estilo Facebook con Vista Dividida (Foto + Comentarios simultáneos)
+    activeMediaViewerIndex?.let { initialIndex ->
+        FacebookMediaViewerDialog(
+            post = post,
+            initialMediaIndex = initialIndex,
+            onDismiss = { activeMediaViewerIndex = null },
+            onReactionClick = onReactionClick,
+            onSendComment = onSendComment
+        )
+    }
+}
+
+@Composable
+private fun FacebookMediaGrid(
+    mediaItems: List<com.example.model.MediaItem>,
+    onMediaClick: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val count = mediaItems.size
+    when (count) {
+        2 -> {
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .height(230.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                FacebookGridItem(
+                    media = mediaItems[0],
+                    onClick = { onMediaClick(0) },
+                    modifier = Modifier.weight(1f).fillMaxHeight()
+                )
+                FacebookGridItem(
+                    media = mediaItems[1],
+                    onClick = { onMediaClick(1) },
+                    modifier = Modifier.weight(1f).fillMaxHeight()
+                )
+            }
+        }
+        3 -> {
+            Column(
+                modifier = modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                FacebookGridItem(
+                    media = mediaItems[0],
+                    onClick = { onMediaClick(0) },
+                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(140.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    FacebookGridItem(
+                        media = mediaItems[1],
+                        onClick = { onMediaClick(1) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    FacebookGridItem(
+                        media = mediaItems[2],
+                        onClick = { onMediaClick(2) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                }
+            }
+        }
+        4 -> {
+            Column(
+                modifier = modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                FacebookGridItem(
+                    media = mediaItems[0],
+                    onClick = { onMediaClick(0) },
+                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(125.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    FacebookGridItem(
+                        media = mediaItems[1],
+                        onClick = { onMediaClick(1) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    FacebookGridItem(
+                        media = mediaItems[2],
+                        onClick = { onMediaClick(2) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    FacebookGridItem(
+                        media = mediaItems[3],
+                        onClick = { onMediaClick(3) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                }
+            }
+        }
+        else -> { // count >= 5
+            val remainingCount = count - 3
+            Column(
+                modifier = modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                FacebookGridItem(
+                    media = mediaItems[0],
+                    onClick = { onMediaClick(0) },
+                    modifier = Modifier.fillMaxWidth().height(200.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(125.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    FacebookGridItem(
+                        media = mediaItems[1],
+                        onClick = { onMediaClick(1) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    FacebookGridItem(
+                        media = mediaItems[2],
+                        onClick = { onMediaClick(2) },
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                    FacebookGridItem(
+                        media = mediaItems[3],
+                        onClick = { onMediaClick(3) },
+                        overlayText = "+$remainingCount",
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FacebookGridItem(
+    media: com.example.model.MediaItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    overlayText: String? = null
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isVideo = media.type == MediaType.VIDEO
+    val imageModel = remember(media.thumbnailUrl, media.url) {
+        val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
+        com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
+    }
+
+    Box(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.08f))
+            .clickable(onClick = onClick)
+    ) {
+        AsyncImage(
+            model = imageModel,
+            contentDescription = media.caption.ifBlank { "Foto de publicación" },
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        if (isVideo) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .align(Alignment.Center)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.65f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Vídeo",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+
+        if (overlayText != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = overlayText,
+                    color = Color.White,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }

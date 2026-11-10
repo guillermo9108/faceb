@@ -80,6 +80,7 @@ fun FeedScreen(
     onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit,
     onOpenNasConfig: () -> Unit,
     onOpenErrorLogs: (() -> Unit)? = null,
+    onSendComment: (Int, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -340,7 +341,8 @@ fun FeedScreen(
                     onCommentClick = { onCommentClick(post) },
                     onTogglePin = { onTogglePin(post.id) },
                     onDeletePost = { onDeletePost(post.id) },
-                    onPlayVideo = onPlayVideo
+                    onPlayVideo = onPlayVideo,
+                    onSendComment = { text -> onSendComment(post.id, text) }
                 )
             }
         }

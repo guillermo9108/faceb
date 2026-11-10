@@ -206,7 +206,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                             activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
                         },
                         onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
-                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() }
+                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
+                        onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) }
                     )
                 }
                 FeedTab.WATCH -> {
@@ -325,8 +326,17 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             currentMember = currentMember,
             initiallyShortMode = isCreateShortMode,
             onDismiss = { viewModel.closeCreatePostDialog() },
-            onSubmitPost = { text, mediaUri, feeling, loc, thumbFile, durLabel, isShort ->
-                viewModel.createPost(text, mediaUri, feeling, loc, thumbFile, durLabel, isShort)
+            onSubmitPost = { text, mediaUri, mediaUris, feeling, loc, thumbFile, durLabel, isShort ->
+                viewModel.createPost(
+                    text = text,
+                    mediaUri = mediaUri,
+                    mediaUris = mediaUris,
+                    feeling = feeling,
+                    location = loc,
+                    thumbnailFile = thumbFile,
+                    durationLabel = durLabel,
+                    isShort = isShort
+                )
             }
         )
     }

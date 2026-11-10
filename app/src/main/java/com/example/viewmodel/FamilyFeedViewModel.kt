@@ -479,6 +479,7 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     fun createPost(
         text: String,
         mediaUri: Uri? = null,
+        mediaUris: List<Uri> = emptyList(),
         feeling: String? = null,
         location: String? = null,
         thumbnailFile: File? = null,
@@ -486,24 +487,26 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         isShort: Boolean = false,
         groupId: Int? = null
     ) {
-        if (text.isBlank() && mediaUri == null) return
+        val effectiveUris = if (mediaUris.isNotEmpty()) mediaUris else listOfNotNull(mediaUri)
+        if (text.isBlank() && effectiveUris.isEmpty()) return
 
         viewModelScope.launch {
             _isCreatePostDialogOpen.value = false
 
-            val mimeType = if (mediaUri != null) {
-                getApplication<Application>().contentResolver.getType(mediaUri) ?: ""
+            val primaryUri = effectiveUris.firstOrNull()
+            val mimeType = if (primaryUri != null) {
+                getApplication<Application>().contentResolver.getType(primaryUri) ?: ""
             } else ""
             val isVideo = mimeType.startsWith("video")
 
-            if (isVideo && mediaUri != null) {
+            if (isVideo && primaryUri != null) {
                 _uploadProgress.value = "Iniciando preparación del vídeo..."
                 _uploadProgressFraction.value = 0.02f
                 showStatus(if (isShort) "Fragmentando y subiendo Short familiar al NAS..." else "Fragmentando y subiendo vídeo al NAS...")
 
                 val result = repository.uploadChunkedVideoPost(
                     contentText = text,
-                    videoUri = mediaUri,
+                    videoUri = primaryUri,
                     feeling = feeling,
                     location = location,
                     isShort = isShort,
@@ -534,11 +537,17 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                     }
                 )
             } else {
-                showStatus(if (isShort) "Subiendo Short familiar al Synology NAS..." else "Subiendo publicación al Synology NAS...")
+                val photoCount = effectiveUris.size
+                showStatus(
+                    if (isShort) "Subiendo Short familiar al Synology NAS..."
+                    else if (photoCount > 1) "Subiendo $photoCount fotos familiares al Synology NAS..."
+                    else "Subiendo publicación al Synology NAS..."
+                )
 
                 val result = repository.addPost(
                     contentText = text,
-                    mediaUri = mediaUri,
+                    mediaUri = primaryUri,
+                    mediaUris = effectiveUris,
                     feeling = feeling,
                     location = location,
                     thumbnailFile = thumbnailFile,
@@ -548,7 +557,11 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
                 result.fold(
                     onSuccess = { postId ->
-                        showStatus(if (isShort) "¡Short publicado en la sección Shorts!" else "Publicado en Synology NAS (ID #$postId)")
+                        showStatus(
+                            if (isShort) "¡Short publicado en la sección Shorts!"
+                            else if (photoCount > 1) "¡$photoCount fotos publicadas en el Muro Familiar (ID #$postId)!"
+                            else "Publicado en Synology NAS (ID #$postId)"
+                        )
                     },
                     onFailure = { error ->
                         showStatus("Error al subir al NAS: ${error.localizedMessage}")

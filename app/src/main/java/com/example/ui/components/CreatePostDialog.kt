@@ -47,6 +47,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -87,12 +88,13 @@ fun CreatePostDialog(
     currentMember: FamilyMember,
     initiallyShortMode: Boolean = false,
     onDismiss: () -> Unit,
-    onSubmitPost: (text: String, mediaUri: Uri?, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?, isShort: Boolean) -> Unit
+    onSubmitPost: (text: String, mediaUri: Uri?, mediaUris: List<Uri>, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?, isShort: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     var postText by remember { mutableStateOf("") }
+    var selectedMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var selectedMediaUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFeeling by remember { mutableStateOf<String?>(null) }
     var selectedLocation by remember { mutableStateOf<String?>(null) }
@@ -104,29 +106,30 @@ fun CreatePostDialog(
     var isShort by remember { mutableStateOf(initiallyShortMode) }
     var isVerticalVideoDetected by remember { mutableStateOf(false) }
 
-    // Selector de Fotos/Vídeos Real de Android
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            selectedMediaUri = uri
-            val mimeType = context.contentResolver.getType(uri) ?: ""
-            val isVid = mimeType.startsWith("video")
-            isVideoMedia = isVid
+    // Selector múltiple de fotos (estilo Facebook)
+    val multipleMediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10)
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            val merged = (selectedMediaUris + uris).distinct().take(10)
+            selectedMediaUris = merged
+            selectedMediaUri = merged.firstOrNull()
 
-            if (isVid) {
+            // Comprobar si la primera es vídeo
+            val mime = context.contentResolver.getType(merged.first()) ?: ""
+            if (mime.startsWith("video")) {
+                isVideoMedia = true
                 isExtractingVideo = true
                 coroutineScope.launch {
-                    val info = VideoHelper.extractVideoInfo(context, uri)
+                    val info = VideoHelper.extractVideoInfo(context, merged.first())
                     videoDurationLabel = info.durationFormatted
                     videoThumbnailFile = info.thumbnailFile
                     isVerticalVideoDetected = info.isVertical
-                    if (initiallyShortMode) {
-                        isShort = true
-                    }
+                    if (initiallyShortMode) isShort = true
                     isExtractingVideo = false
                 }
             } else {
+                isVideoMedia = false
                 videoDurationLabel = null
                 videoThumbnailFile = null
                 isVerticalVideoDetected = false
@@ -152,7 +155,7 @@ fun CreatePostDialog(
         "Parque"
     )
 
-    val canPublish = postText.isNotBlank() || selectedMediaUri != null
+    val canPublish = postText.isNotBlank() || selectedMediaUris.isNotEmpty() || selectedMediaUri != null
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -202,6 +205,7 @@ fun CreatePostDialog(
                                 onSubmitPost(
                                     postText,
                                     selectedMediaUri,
+                                    selectedMediaUris,
                                     selectedFeeling,
                                     selectedLocation,
                                     videoThumbnailFile,
@@ -319,8 +323,8 @@ fun CreatePostDialog(
                     )
                 )
 
-                // Preview del archivo seleccionado si existe
-                if (selectedMediaUri != null) {
+                // Preview de archivos multimedia seleccionados (Fotos o Vídeo)
+                if (isVideoMedia && selectedMediaUri != null) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Box(
                         modifier = Modifier
@@ -335,10 +339,11 @@ fun CreatePostDialog(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // Close/Remove photo button
+                        // Botón para quitar vídeo
                         IconButton(
                             onClick = {
                                 selectedMediaUri = null
+                                selectedMediaUris = emptyList()
                                 videoThumbnailFile = null
                                 videoDurationLabel = null
                                 isVideoMedia = false
@@ -353,58 +358,134 @@ fun CreatePostDialog(
                             Icon(Icons.Default.Close, contentDescription = "Quitar", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
 
-                        // Video Play Icon and Duration badge
-                        if (isVideoMedia) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.65f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isExtractingVideo) {
-                                    CircularProgressIndicator(
-                                        color = Color.White,
-                                        strokeWidth = 2.dp,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                } else {
-                                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
-                                }
-                            }
-
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.75f),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(8.dp)
-                            ) {
-                                Text(
-                                    text = if (isExtractingVideo) "Analizando vídeo..." else "Vídeo LAN · ${videoDurationLabel ?: "00:00"}",
+                        // Play Icon y Duración
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isExtractingVideo) {
+                                CircularProgressIndicator(
                                     color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(24.dp)
                                 )
+                            } else {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
                             }
                         }
 
                         Surface(
-                            color = Color.Black.copy(alpha = 0.7f),
+                            color = Color.Black.copy(alpha = 0.75f),
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier
-                                .align(Alignment.BottomStart)
+                                .align(Alignment.TopStart)
                                 .padding(8.dp)
                         ) {
                             Text(
-                                text = "Synology NAS /web/family_api/uploads",
+                                text = if (isExtractingVideo) "Analizando vídeo..." else "Vídeo LAN · ${videoDurationLabel ?: "00:00"}",
                                 color = Color.White,
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
+                        }
+                    }
+                } else if (!isVideoMedia && selectedMediaUris.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (selectedMediaUris.size == 1) {
+                        // Una sola imagen seleccionada
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                        ) {
+                            AsyncImage(
+                                model = selectedMediaUris.first(),
+                                contentDescription = "Foto adjunta",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            IconButton(
+                                onClick = {
+                                    selectedMediaUris = emptyList()
+                                    selectedMediaUri = null
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.6f))
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Quitar", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    } else {
+                        // Múltiples fotos seleccionadas
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "📸 ${selectedMediaUris.size} fotos seleccionadas",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = FacebookBlue
+                                )
+                                TextButton(
+                                    onClick = {
+                                        multipleMediaPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text("+ Agregar más", fontSize = 11.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(selectedMediaUris) { u ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    ) {
+                                        AsyncImage(
+                                            model = u,
+                                            contentDescription = "Foto",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        IconButton(
+                                            onClick = {
+                                                val updated = selectedMediaUris - u
+                                                selectedMediaUris = updated
+                                                selectedMediaUri = updated.firstOrNull()
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(4.dp)
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(Color.Black.copy(alpha = 0.65f))
+                                        ) {
+                                            Icon(Icons.Default.Close, contentDescription = "Quitar", tint = Color.White, modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -518,10 +599,10 @@ fun CreatePostDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // 1. Botón Foto/Video
+                            // 1. Botón Foto/Video múltiple estilo Facebook
                             IconButton(
                                 onClick = {
-                                    mediaPickerLauncher.launch(
+                                    multipleMediaPickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                     )
                                 },
