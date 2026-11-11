@@ -33,7 +33,7 @@ object SynologyScripts {
         CREATE TABLE IF NOT EXISTS family_groups (
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(150) NOT NULL,
-            folder_path VARCHAR(255) NOT NULL,
+            folder_path VARCHAR(190) NOT NULL,
             description TEXT NULL,
             cover_photo_url VARCHAR(255) NULL,
             created_by_user_id INT DEFAULT 1,
@@ -42,6 +42,9 @@ object SynologyScripts {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uq_group_folder (folder_path)
         ) ENGINE=InnoDB;
+
+        -- Vista para compatibilidad total con consultas a 'groups'
+        CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups;
 
         -- 3. Tabla de Publicaciones (Muro)
         CREATE TABLE IF NOT EXISTS posts (
@@ -173,7 +176,7 @@ object SynologyScripts {
                     "CREATE TABLE IF NOT EXISTS family_groups (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         name VARCHAR(150) NOT NULL,
-                        folder_path VARCHAR(255) NOT NULL,
+                        folder_path VARCHAR(190) NOT NULL,
                         description TEXT NULL,
                         cover_photo_url VARCHAR(255) NULL,
                         created_by_user_id INT DEFAULT 1,
@@ -272,6 +275,9 @@ object SynologyScripts {
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("ALTER TABLE posts ADD CONSTRAINT fk_post_group FOREIGN KEY (group_id) REFERENCES family_groups(id) ON DELETE SET NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE family_groups MODIFY folder_path VARCHAR(190) NOT NULL");
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups");
@@ -771,19 +777,31 @@ object SynologyScripts {
                 } catch (Exception ${D}ex) {}
             }
 
+            ${D}expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
+            ${D}effectiveTables = ${D}tables;
+            if (in_array('groups', ${D}tables) && !in_array('family_groups', ${D}tables)) {
+                ${D}effectiveTables[] = 'family_groups';
+            }
+            if (in_array('family_groups', ${D}tables) && !in_array('groups', ${D}tables)) {
+                ${D}effectiveTables[] = 'groups';
+            }
+            ${D}missingTables = array_values(array_diff(${D}expectedTables, ${D}effectiveTables));
+
             ${D}effectiveError = !empty(${D}primaryError) ? ${D}primaryError : ${D}authError;
 
             ${D}report["checks"]["mariadb_authentication"] = [
                 "success" => ${D}authSuccess,
                 "connected_dsn" => ${D}connectedDsn,
                 "server_version" => ${D}serverVer,
-                "database_exists" => ${D}dbExists,
-                "tables_count" => count(${D}tables),
+                "database_exists" => ${D}authSuccess,
+                "tables_count" => count(${D}effectiveTables),
+                "expected_tables_count" => 8,
                 "tables" => ${D}tables,
+                "missing_tables" => ${D}missingTables,
                 "attempts" => ${D}attempts,
                 "error" => ${D}effectiveError,
                 "message" => ${D}authSuccess 
-                    ? "Conexión y autenticación exitosa con MariaDB (" . ${D}serverVer . "). Tablas encontradas: " . count(${D}tables)
+                    ? "Conexión y autenticación exitosa con MariaDB (" . ${D}serverVer . "). Tablas encontradas: " . count(${D}effectiveTables) . "/8"
                     : "Fallo de autenticación o conexión. " . (${D}report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: " . ${D}effectiveError)
             ];
 

@@ -146,7 +146,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -180,7 +180,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -295,7 +295,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -374,7 +374,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -428,7 +428,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).post(formBody).build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -492,7 +492,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).post(formBuilder.build()).build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -535,7 +535,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -587,7 +587,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -739,7 +739,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -806,7 +806,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -846,7 +846,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -899,7 +899,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -972,7 +972,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1057,7 +1057,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1110,7 +1110,7 @@ class NasApiClient(
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1253,7 +1253,7 @@ class NasApiClient(
             var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1308,7 +1308,7 @@ class NasApiClient(
             var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1377,7 +1377,7 @@ class NasApiClient(
             var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1449,7 +1449,7 @@ class NasApiClient(
             var response = uploadClient.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1501,7 +1501,7 @@ class NasApiClient(
             var response = client.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1550,7 +1550,7 @@ class NasApiClient(
             var response = client.newCall(request).execute()
             var body = response.body?.string() ?: ""
 
-            if (response.code == 404) {
+            if (response.code == 404 || response.code == 405) {
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
@@ -1656,6 +1656,10 @@ class NasApiClient(
     }
 
     private fun extractHtmlOrPhpError(raw: String, statusCode: Int = 0, path: String = ""): String {
+        if (statusCode == 405 || raw.contains("405 Not Allowed", ignoreCase = true)) {
+            val pDesc = if (path.isNotBlank()) " en '$path'" else ""
+            return "Error HTTP 405 en Nginx$pDesc: Web Station rechazó la petición en esa ruta. Pulsa 'Probar' para autodetectar la ruta raíz de tu portal web o verifica que index.php esté en la raíz de Web Station."
+        }
         if (statusCode == 404 || raw.contains("404 Not Found", ignoreCase = true) || raw.contains("File Not Found", ignoreCase = true)) {
             val pDesc = if (path.isNotBlank()) " en '$path'" else ""
             return "Error 404: No se encontró 'index.php'$pDesc en el Synology NAS. Comprueba que los archivos PHP estén en '/volume1/web' o '/volume1/web/family_api' de Web Station o pulsa 'Probar' para autodetectar la ruta."

@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS family_groups (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(150) NOT NULL,
-    folder_path VARCHAR(255) NOT NULL,
+    folder_path VARCHAR(190) NOT NULL,
     description TEXT NULL,
     cover_photo_url VARCHAR(255) NULL,
     created_by_user_id INT DEFAULT 1,
@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS family_groups (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_group_folder (folder_path)
 ) ENGINE=InnoDB;
+
+-- Vista para compatibilidad total con consultas a 'groups'
+CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups;
 
 -- 3. Tabla de Publicaciones (Muro)
 CREATE TABLE IF NOT EXISTS posts (

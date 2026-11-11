@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -129,6 +132,19 @@ fun NasConfigScreen(
             dbUser = currentGeneratedConfig.dbUser,
             dbPass = currentGeneratedConfig.dbPass
         )
+    }
+
+    val createZipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) {
+            val success = SynologyZipExporter.exportToUri(context, uri, currentGeneratedConfig)
+            if (success) {
+                Toast.makeText(context, "Archivo 'synology_family_config.zip' guardado exitosamente", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "Error al guardar el archivo ZIP", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     val scrollState = rememberScrollState()
@@ -407,15 +423,10 @@ fun NasConfigScreen(
                     }
                 }
 
-                // Botón principal de Descarga ZIP
+                // Botón principal de Descarga directa de archivo ZIP
                 Button(
                     onClick = {
-                        val intent = SynologyZipExporter.shareZip(context, currentGeneratedConfig)
-                        if (intent != null) {
-                            context.startActivity(intent)
-                        } else {
-                            Toast.makeText(context, "No se pudo generar el archivo ZIP", Toast.LENGTH_SHORT).show()
-                        }
+                        createZipLauncher.launch("synology_family_config.zip")
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
                     modifier = Modifier
@@ -425,6 +436,23 @@ fun NasConfigScreen(
                     Icon(Icons.Default.Download, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Descargar Paquete ZIP para NAS", fontWeight = FontWeight.Bold)
+                }
+
+                // Botón alternativo para Compartir ZIP directamente a apps
+                OutlinedButton(
+                    onClick = {
+                        val intent = SynologyZipExporter.shareZip(context, currentGeneratedConfig)
+                        if (intent != null) {
+                            context.startActivity(intent)
+                        } else {
+                            Toast.makeText(context, "No se pudo preparar el archivo ZIP para compartir", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Compartir ZIP (WhatsApp, Drive, PC...)")
                 }
 
                 Text(

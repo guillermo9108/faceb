@@ -65,7 +65,7 @@ function autoBootstrapDatabase(PDO $pdo) {
             "family_groups" => "CREATE TABLE IF NOT EXISTS family_groups (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(150) NOT NULL,
-                folder_path VARCHAR(255) NOT NULL,
+                folder_path VARCHAR(190) NOT NULL,
                 description TEXT NULL,
                 cover_photo_url VARCHAR(255) NULL,
                 created_by_user_id INT DEFAULT 1,
@@ -172,6 +172,7 @@ function autoBootstrapDatabase(PDO $pdo) {
             "ALTER TABLE media_chunks ADD COLUMN duration_ms INT DEFAULT 0",
             "ALTER TABLE stories ADD COLUMN thumb_path VARCHAR(255) NULL",
             "ALTER TABLE stories ADD COLUMN bg_color_hex BIGINT DEFAULT 4280171146",
+            "ALTER TABLE family_groups MODIFY folder_path VARCHAR(190) NOT NULL",
             "ALTER TABLE family_groups ADD COLUMN posts_count INT DEFAULT 0",
             "ALTER TABLE family_groups ADD COLUMN cover_photo_url VARCHAR(255) NULL",
             "ALTER TABLE family_groups ADD COLUMN description TEXT NULL"
