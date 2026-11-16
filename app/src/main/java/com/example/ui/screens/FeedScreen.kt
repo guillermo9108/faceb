@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,6 +37,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,13 +82,35 @@ fun FeedScreen(
     onCommentClick: (Post) -> Unit,
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long) -> Unit,
     onOpenNasConfig: () -> Unit,
     onOpenErrorLogs: (() -> Unit)? = null,
     onSendComment: (Int, String) -> Unit = { _, _ -> },
+    hasMorePosts: Boolean = false,
+    isLoadingMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
+    onToggleSaveOffline: (Post) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(hasMorePosts, isLoadingMore) {
+        derivedStateOf {
+            if (!hasMorePosts || isLoadingMore) return@derivedStateOf false
+            val layoutInfo = listState.layoutInfo
+            val totalItems = layoutInfo.totalItemsCount
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            totalItems > 0 && lastVisible >= (totalItems - 3)
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore) {
+            onLoadMore()
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
@@ -120,10 +147,10 @@ fun FeedScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = if (nasConfig.isConnected) {
-                                    "Synology NAS: Conectado (${nasConfig.ip}:${nasConfig.port})"
-                                } else {
-                                    "Synology NAS: Esperando conexión LAN"
+                                text = when {
+                                    nasConfig.isConnected -> "Synology NAS: Conectado (${nasConfig.ip}:${nasConfig.port})"
+                                    posts.isNotEmpty() -> "Modo sin conexión · Caché local (${posts.size} publicaciones)"
+                                    else -> "Synology NAS: Esperando conexión LAN"
                                 },
                                 style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = FontWeight.Bold,
@@ -333,7 +360,7 @@ fun FeedScreen(
                 }
             }
         } else {
-            // 5. Publicaciones reales del muro (Full-width edge-to-edge con separador)
+            // 5. Publicaciones paginadas de 10 en 10
             items(posts, key = { it.id }, contentType = { "post_card" }) { post ->
                 PostCard(
                     post = post,
@@ -342,8 +369,47 @@ fun FeedScreen(
                     onTogglePin = { onTogglePin(post.id) },
                     onDeletePost = { onDeletePost(post.id) },
                     onPlayVideo = onPlayVideo,
-                    onSendComment = { text -> onSendComment(post.id, text) }
+                    onSendComment = { text -> onSendComment(post.id, text) },
+                    onToggleSaveOffline = { onToggleSaveOffline(post) }
                 )
+            }
+
+            // 6. Indicador de paginación inferior
+            item(key = "feed_pagination_footer", contentType = "footer") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp, horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isLoadingMore) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = FacebookBlue
+                            )
+                            Text(
+                                text = "Cargando 10 publicaciones más...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else if (!hasMorePosts) {
+                        Text(
+                            text = "Has llegado al final del muro (${posts.size} publicaciones)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        OutlinedButton(onClick = onLoadMore) {
+                            Text("Cargar siguientes 10 publicaciones")
+                        }
+                    }
+                }
             }
         }
     }

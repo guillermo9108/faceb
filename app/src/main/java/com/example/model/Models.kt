@@ -34,7 +34,9 @@ data class MediaItem(
     val caption: String = "",
     val durationLabel: String? = null,
     val isChunked: Boolean = false,
-    val chunks: List<String> = emptyList()
+    val chunks: List<String> = emptyList(),
+    val chunkDurationsMs: List<Long> = emptyList(),
+    val totalDurationMs: Long = 0L
 )
 
 data class Comment(
@@ -59,7 +61,15 @@ data class Post(
     val location: String? = null,
     val isShort: Boolean = false,
     val groupId: Int? = null,
-    val groupName: String? = null
+    val groupName: String? = null,
+    val isSavedOffline: Boolean = false
+)
+
+data class FeedPageResult(
+    val posts: List<Post>,
+    val hasMore: Boolean,
+    val totalCount: Int,
+    val nextOffset: Int
 )
 
 data class FamilyGroup(

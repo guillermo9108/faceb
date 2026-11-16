@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material.icons.rounded.ThumbUp
@@ -73,6 +75,7 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FacebookCardLight
+import com.example.ui.theme.LanOnlineGreen
 import com.example.ui.theme.ReactionHahaYellow
 import com.example.ui.theme.ReactionLikeBlue
 import com.example.ui.theme.ReactionLoveRed
@@ -84,8 +87,9 @@ fun PostCard(
     onCommentClick: () -> Unit,
     onTogglePin: () -> Unit,
     onDeletePost: () -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>) -> Unit = { _, _, _, _, _ -> },
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long) -> Unit = { _, _, _, _, _, _, _ -> },
     onSendComment: (text: String) -> Unit = {},
+    onToggleSaveOffline: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -206,6 +210,32 @@ fun PostCard(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(13.dp)
                         )
+                        if (post.isSavedOffline) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Surface(
+                                color = LanOnlineGreen.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudDone,
+                                        contentDescription = "Guardado offline",
+                                        tint = LanOnlineGreen,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "Offline",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = LanOnlineGreen
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -213,7 +243,7 @@ fun PostCard(
                 Box {
                     IconButton(
                         onClick = { showMenu = true },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreHoriz,
@@ -227,6 +257,22 @@ fun PostCard(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (post.isSavedOffline) "Guardado offline (Quitar)" else "Guardar offline (Descargar todo)")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload,
+                                    contentDescription = null,
+                                    tint = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            onClick = {
+                                showMenu = false
+                                onToggleSaveOffline()
+                            }
+                        )
                         DropdownMenuItem(
                             text = {
                                 Text(if (post.isPinned) "Desfijar del muro" else "Fijar al inicio")
@@ -287,88 +333,36 @@ fun PostCard(
                                 .aspectRatio(16f / 9f)
                                 .background(Color.Black.copy(alpha = 0.08f))
                         ) {
-                            // Reproducción ultra-fluida con ExoPlayer y concatenación continua de fragmentos
+                            // Reproducción continua multi-fragmento con barra unificada y soporte offline
                             FamilyVideoPlayer(
                                 videoUrl = media.url,
                                 chunks = media.chunks,
+                                chunkDurationsMs = media.chunkDurationsMs,
+                                totalDurationMsHint = media.totalDurationMs,
+                                durationLabel = media.durationLabel,
                                 isChunked = isChunked,
-                                autoPlay = !isPaused,
+                                autoPlay = true,
                                 isLooping = true,
-                                modifier = Modifier.fillMaxSize()
-                            )
-
-                            // Overlay con botón para cerrar vídeo inline
-                            IconButton(
-                                onClick = {
+                                showUnifiedBar = true,
+                                onFullscreenClick = {
+                                    isPlayingInline = false
+                                    isPaused = true
+                                    onPlayVideo(
+                                        media.url,
+                                        post.contentText.take(40),
+                                        post.author.name,
+                                        media.durationLabel,
+                                        media.chunks,
+                                        media.chunkDurationsMs,
+                                        media.totalDurationMs
+                                    )
+                                },
+                                onCloseClick = {
                                     isPlayingInline = false
                                     isPaused = false
                                 },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(8.dp)
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.65f))
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Cerrar reproducción inline",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            // Barra inferior de controles inline
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .align(Alignment.BottomCenter)
-                                    .background(Color.Black.copy(alpha = 0.65f))
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    IconButton(
-                                        onClick = { isPaused = !isPaused },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                            contentDescription = if (isPaused) "Reanudar" else "Pausar",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    Text(
-                                        text = if (isPaused) "Pausado" else "Reproduciendo en tarjeta",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            color = Color.White,
-                                            fontWeight = FontWeight.SemiBold,
-                                            fontSize = 12.sp
-                                        )
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        isPlayingInline = false
-                                        isPaused = true
-                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Fullscreen,
-                                        contentDescription = "Pantalla completa",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
+                                modifier = Modifier.fillMaxSize()
+                            )
                         }
                     } else if (isVideo) {
                         // Video preview with play overlay
@@ -445,10 +439,18 @@ fun PostCard(
                                     onClick = {
                                         isPlayingInline = false
                                         isPaused = true
-                                        onPlayVideo(media.url, post.contentText.take(40), post.author.name, media.durationLabel, media.chunks)
+                                        onPlayVideo(
+                                            media.url,
+                                            post.contentText.take(40),
+                                            post.author.name,
+                                            media.durationLabel,
+                                            media.chunks,
+                                            media.chunkDurationsMs,
+                                            media.totalDurationMs
+                                        )
                                     },
                                     modifier = Modifier
-                                        .size(28.dp)
+                                        .size(36.dp)
                                         .clip(CircleShape)
                                         .background(Color.Black.copy(alpha = 0.8f))
                                 ) {
@@ -456,7 +458,7 @@ fun PostCard(
                                         imageVector = Icons.Default.Fullscreen,
                                         contentDescription = "Pantalla completa",
                                         tint = Color.White,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }

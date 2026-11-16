@@ -1,148 +1,109 @@
-# Plan de Trabajo: Mejoras de Configuración NAS, Exportación ZIP y Publicaciones Estilo Facebook
+# Plan de Mejora: Paginación del Muro, Modo Offline y Reproducción Multiparte Unificada
 
-Mejora integral de la aplicación **Muro Familiar LAN** para incorporar configuración visual de `config.php`, exportación de paquete ZIP listo para desplegar en Synology NAS, y renovación visual completa de las publicaciones con mosaicos multimagen y visor en pantalla dividida (imagen + comentarios simultáneos) estilo Facebook.
+Plan de arquitectura y experiencia de usuario para cargar el muro de forma rápida (10 publicaciones por página al hacer scroll), reforzar el almacenamiento offline de publicaciones y miniaturas, optimizar la subida y reproducción de vídeos divididos en partes en toda la app y unificar la barra de progreso temporal para todos los fragmentos en un solo reproductor continuo.
 
 ---
 
-### Decisiones Confirmadas del Usuario
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> - **Organización de Fotos en el Muro**: Mosaico dinámico estilo Facebook (1 a 4+ fotos con tamaños adaptativos y contador `+N` en la última imagen).
-> - **Visor de Foto en Detalle**: Pantalla dividida con imagen en alta resolución y panel de comentarios/reacciones interactivo simultáneo.
-> - **Herramienta de Configuración y ZIP**: Sección dedicada e interactiva dentro de la pantalla de **Ajustes del NAS** para editar `config.php` en vivo y descargar el ZIP completo listo para Web Station.
-> - **Arquitectura de Base de Datos**: Confirmación de que la APK consume MariaDB 10 a través de la capa REST API en PHP 7.3/8 (`index.php` en Web Station), garantizando seguridad y compatibilidad sin requerir conexiones JDBC directas ni puertos abiertos a internet.
+> Para avanzar directamente hacia la implementación sin bloqueos, el plan adopta las configuraciones recomendadas por defecto. Si prefieres ajustar algún comportamiento antes de comenzar, indícalo en tu revisión.
+
+- **Estrategia de Caché Offline Automática (Recomendado)**: Al cargar cada bloque de 10 publicaciones, se descargan automáticamente las miniaturas, fotos del mosaico y metadatos (incluidos comentarios recientes) en la base local y carpeta oculta, mientras que los fragmentos pesados de vídeo se descargan solo al pulsar **"Guardar offline"** en cada publicación o al reproducirlos (evitando saturar la red Wi-Fi o el almacenamiento del teléfono).
+- **Barra de Progreso Unificada para Vídeos por Partes (Recomendado)**: El reproductor suma la duración real de todos los fragmentos registrados en el servidor para mostrar una **línea de tiempo única y continua** (de `00:00` al total real del vídeo), con marcas discretas en las transiciones entre partes y salto instantáneo a cualquier segundo sin importar en qué fragmento esté.
+- **Límite de Caché Multimedia**: Se propone un tope inteligente de almacenamiento offline configurables en Ajustes (por defecto 1 GB con limpieza automática de archivos más antiguos no fijados como favoritos offline).
 
 ---
 
-## 1. Visión General y Objetivos
+## 1. Overview & Core Concept
 
-1. **Gestor Visual de `config.php` y Exportador ZIP**:
-   - Permitir al usuario inspeccionar, editar y copiar los parámetros de MariaDB 10 (`db_host`, `db_port`, `db_name`, `db_user`, `db_pass`).
-   - Botón directo para descargar o compartir el archivo `.zip` que incluye `config.php` preconfigurado, `index.php`, `schema.sql`, `.htaccess` y la guía de instalación para Synology.
-2. **Publicaciones Multimágenes en el Servidor y la APK**:
-   - Permitir seleccionar múltiples fotos simultáneamente desde el selector de medios de Android (`PickMultipleVisualMedia`).
-   - El backend PHP (`index.php`) procesará arreglos de fotos (`photo_0`, `photo_1`... o `photos[]`), generando miniaturas webp y asociándolas al mismo `post_id`.
-3. **Mosaico Dinámico de Publicaciones Estilo Facebook**:
-   - Tarjetas con bordes limpios, espaciado e interacciones idénticas a Facebook.
-   - Distribución de medios según la cantidad de imágenes:
-     - **1 imagen**: Formato completo con relación de aspecto natural (1:1, 4:5 o 16:9).
-     - **2 imágenes**: Dos columnas simétricas divididas verticalmente.
-     - **3 imágenes**: Una imagen principal destacada arriba y dos abajo.
-     - **4 imágenes**: Mosaico 1 superior + 3 inferiores, o cuadrícula 2x2.
-     - **5 o más imágenes**: Mosaico con overlay oscuro en la última imagen indicando cuántas fotos adicionales contiene (ej. `+3`).
-4. **Visor de Foto en Pantalla Dividida (Facebook Split-View)**:
-   - Al tocar cualquier foto, se abre un visor interactivo:
-     - **Área Multimedia**: Fondo oscuro con navegación entre fotos, contador (`Foto 2 de 5`) y zoom táctil.
-     - **Área Social**: Autor, texto de la publicación, barra de reacciones (Me gusta, Me encanta, etc.) y lista de comentarios en tiempo real con campo de texto para responder de inmediato.
+### Qué resuelve este plan
+Actualmente el muro solicita hasta 50 publicaciones de golpe en una sola consulta SQL, pierde parte de las fotos múltiples y fragmentos cuando no hay red, y los vídeos divididos en partes muestran la duración por fragmento separado en lugar de un único vídeo continuo —además de omitirse los fragmentos en secciones como Shorts.
+
+### Beneficio principal para la familia
+- **Apertura instantánea del muro**: Solo se descargan 10 publicaciones iniciales y las siguientes 10 se solicitan automáticamente cuando el usuario se acerca al final del scroll.
+- **Experiencia offline fiel**: Las publicaciones ya vistas (incluyendo mosaicos de varias fotos, miniaturas de vídeos y comentarios) permanecen disponibles sin conexión a la red doméstica.
+- **Reproducción unificada sin costuras**: Tanto en el muro, Watch, Shorts, Grupos, visor multimedia o pantalla completa, todos los vídeos fraccionados funcionan como un único vídeo con una sola barra continua de progreso.
 
 ---
 
-## 2. Experiencia de Usuario y Diseño Visual
+## 2. User Experience & Visual Design
 
 ### Flujos Principales
-```
-[Pantalla Ajustes NAS]
-   └──> [Sección Configuración Servidor]
-           ├──> Campos editables (Host, Puerto 3307, BD, Usuario root, Contraseña)
-           ├──> Vista previa en vivo del código config.php con botón "Copiar"
-           └──> Botón "Descargar ZIP Completo para NAS" (Action Send / Save Intent)
 
-[Crear Publicación]
-   └──> Selector de imágenes múltiple (hasta 10 fotos)
-           ├──> Tira horizontal de previsualización con botón (×) para remover
-           └──> Subida concurrente al NAS mediante index.php
+1. **Carga Paginada en el Muro (10 en 10)**
+   - Al abrir el muro se muestran inmediatamente las publicaciones guardadas offline en Room mientras en segundo plano se solicitan las primeras **10 publicaciones** más recientes del NAS.
+   - Al desplazarse hacia abajo (cuando faltan 3 tarjetas para llegar al final), aparece un indicador compacto en la parte inferior ("Cargando 10 publicaciones más...") y se anexan las siguientes 10 sin perder la posición ni recargar las tarjetas superiores.
+   - Si se llega al final del historial, se muestra un mensaje sutil ("Has visto todas las publicaciones familiares").
+   - El gesto de deslizar hacia abajo desde arriba (*Pull-to-Refresh*) reinicia la página 1 trayendo las 10 más recientes.
 
-[Muro Familiar]
-   └──> Tarjeta de Publicación Facebook
-           ├──> Encabezado (Avatar, Nombre, Hora relativa, Ícono privacidad)
-           ├──> Texto de la publicación
-           ├──> Mosaico dinámico adaptativo (1, 2, 3, 4, 5+ con insignia +N)
-           ├──> Barra social (Reacciones agrupadas, contador de comentarios)
-           └──> Botones de acción: "Me gusta" (con selector de reacciones) y "Comentar"
+2. **Guardado y Lectura Offline Mejorados**
+   - Cada tarjeta incluye un indicador discreto de estado offline y un acceso en el menú de opciones / barra superior de tarjeta para **"Guardar completo para offline"** (descarga las fotos en alta calidad y todos los fragmentos del vídeo asociado).
+   - Al cargar cada página de 10 publicaciones en red LAN, se pre-cachean de forma progresiva y ordenada sus miniaturas locales para que el scroll offline sea fluido y sin espacios en blanco.
+   - Si la app detecta que el NAS está desconectado, muestra un banner informativo no intrusivo ("Modo sin conexión · Mostrando recuerdos guardados") y carga las publicaciones locales paginadas de 10 en 10 desde la base de datos interna.
 
-[Al pulsar una imagen]
-   └──> Visor Pantalla Dividida (Facebook Split-View)
-           ├──> Superior / Izquierda: Visor de foto en negro con selector deslizable
-           └──> Inferior / Derecha: Perfil, texto, reacciones y comentarios en vivo
-```
-
-### Paleta y Estilo
-- **Azul Facebook**: `#1877F2` (acciones primarias, botones, badges).
-- **Fondos**: Superficie blanca/modo oscuro con elevación suave de 0.5.dp y divisores sutiles (`#E4E6EB`).
-- **Insignia `+N`**: Capa negra semitransparente (`Color.Black.copy(alpha = 0.55f)`) con tipografía bold blanca de 22.sp centrada.
+3. **Barra Unificada Continua en Reproducción Multiparte**
+   - **Alineación Visual Material 3**: Mantiene la estética limpia del tema actual con acento azul (`FacebookBlue`) sobre controles translúcidos oscuros de alto contraste y tipografía tabular para los contadores de tiempo (`01:24 / 04:15`).
+   - **Comportamiento del Scrubber**:
+     - Al arrastrar o tocar cualquier punto de la barra unificada, se calcula el fragmento destino y el desplazamiento exacto dentro de ese fragmento.
+     - Opcionalmente sobre la pista de la barra aparecen finas muescas divisorias que representan las uniones entre fragmentos sin interrumpir el arrastre continuo.
+     - Un único selector inferior con botón Play/Pausa, barra continua, tiempo transcurrido/total unificado, indicador discreto de calidad/partes (`⚡ 5 partes`) y botón de pantalla completa funciona idénticamente en tarjetas del muro, Watch, Grupos, Shorts, visor dividido y diálogo a pantalla completa.
 
 ---
 
-## 3. Decisiones de Producto y Arquitectura Técnica
+## 3. Key Product Decisions & Trade-Offs
 
-### Conexión Segura APK -> PHP -> MariaDB 10
-```
-┌─────────────────────────────────┐
-│        Android APK (Muro)       │
-│  - OkHttp 4 / Retrofit          │
-│  - Jetpack Compose M3           │
-└────────────────┬────────────────┘
-                 │ HTTP REST (LAN / Wi-Fi)
-                 │ Acciones: post, feed, comments, react, delete
-                 ▼
-┌─────────────────────────────────┐
-│      Synology Web Station       │
-│  - Nginx / Apache FastCGI       │
-│  - index.php + config.php       │
-└────────────────┬────────────────┘
-                 │ PDO MySQL (Localhost 127.0.0.1:3307)
-                 │ Socket / TCP interno
-                 ▼
-┌─────────────────────────────────┐
-│           MariaDB 10            │
-│  - Base de datos: family_feed   │
-│  - 8 Tablas: users, posts,      │
-│    media, comments, reactions,  │
-│    stories, family_groups...    │
-└─────────────────────────────────┘
-```
-- **Por qué**: La APK nunca debe exponer claves de root de MariaDB en la red ni requerir que MariaDB acepte conexiones remotas inseguras (que por defecto DSM deshabilita). Toda la autenticación, subida de archivos y consultas SQL se realizan de forma segura en el servidor mediante `index.php`.
+- **Paginación por Página/Offset con Agrupación SQL Limpia**
+  - *Enfoque elegido*: Calcular la paginación (`LIMIT 10 OFFSET N`) sobre los `id` de publicaciones primero y luego adjuntar todas sus fotos, comentarios previos y fragmentos ordenados en una estructura agrupada por publicación.
+  - *Por qué*: Actualmente, la unión directa con la tabla multimedia multiplica las filas cuando una publicación tiene varias fotos (por ejemplo, una publicación con 4 fotos consume 4 espacios del límite). Separar la paginación por publicación garantiza exactamente 10 tarjetas reales por página y permite devolver los mosaicos completos sin duplicados.
+
+- **Línea de Tiempo Unificada Calculada en Cliente + Metadatos de Duración en Servidor**
+  - *Enfoque elegido*: Registrar la duración real en milisegundos (`duration_ms`) de cada fragmento durante el corte en Android, guardarla en `media_chunks` al finalizar la subida y devolver la lista ordenada de `(url, duration_ms)` en el feed. En el cliente, el reproductor construye un mapa acumulado `[inicioMs..finMs]` por fragmento sobre ExoPlayer.
+  - *Por qué*: Evita esperar a que ExoPlayer descargue las cabeceras de todos los fragmentos remotos antes de conocer la duración total real y permite saltar de inmediato al minuto 03:20 aunque solo se haya reproducido el primer fragmento.
+  - *Alternativa descartada*: Unir físicamente todos los MP4 en el NAS con FFmpeg (muchos modelos Synology carecen de FFmpeg moderno o saturan la CPU del NAS y anularían la ventaja de transmisión ligera por fragmentos).
+
+- **Serialización Completa del Mosaico y Comentarios en Caché Local (Room)**
+  - *Enfoque elegido*: Ampliar la entidad local de publicaciones para persistir la lista completa de elementos multimedia (`mediaItemsJson`), un resumen de comentarios recientes y bandera explícita de descarga offline completa, usando actualización incremental por páginas en lugar de borrar la caché completa.
+  - *Por qué*: Corrige la pérdida de fotos secundarias en publicaciones con múltiples imágenes al quedarse sin red y permite abrir el visor dividido con comentarios incluso offline.
 
 ---
 
-## 4. Plan de Implementación por Fases
+## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### Fase 1: Backend PHP y Generador de Scripts (`config.php` y ZIP)
-1. **Actualizar `synology_server/index.php`**:
-   - Ampliar la ruta `action=post` para recibir múltiples archivos en `$_FILES` (`photos[]` o `photo_0`, `photo_1`...).
-   - Guardar cada imagen en `uploads/originals/`, generar miniatura en `uploads/thumbs/` e insertar cada registro en `media`.
-2. **Actualizar `SynologyZipExporter.kt` y `SynologyScripts.kt`**:
-   - Sincronizar el contenido del ZIP generado en tiempo real con las credenciales activas del usuario (`dbHost`, `dbPort`, `dbName`, `dbUser`, `dbPass`).
-   - Crear función `generateZipFile(context, nasConfig): File` que permita descarga local o apertura en el explorador de archivos.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         CAPA DE PRESENTACIÓN (UI)                       │
+│  FeedScreen / WatchScreen / GroupsScreen / ShortsScreen / MediaViewer   │
+│         │                                          │                    │
+│         ▼ (Scroll cerca del final: +10)            ▼ (Reproducción)     │
+│  Paginación Infinita                        UnifiedMediaPlayer +        │
+│  Estado Offline Badge                       UnifiedScrubberBar          │
+└─────────┬──────────────────────────────────────────┬────────────────────┘
+          │                                          │
+          ▼                                          ▼
+┌─────────────────────────────┐    ┌──────────────────────────────────────┐
+│    ViewModel & Repositorio  │    │  Gestor de Fragmentos & Offline      │
+│  - PagingState (offset=10)  │◄──►│  - VideoChunkingManager (duracionMs) │
+│  - Sync incremental a Room  │    │  - TimelineMapper (globalMs ↔ chunk) │
+│  - Cola de descarga offline │    │  - OfflineMediaManager (LRU + thumbs)│
+└─────────┬───────────────────┘    └─────────────────┬────────────────────┘
+          │                                          │
+          ▼                                          ▼
+┌─────────────────────────────┐    ┌──────────────────────────────────────┐
+│    Caché Local (Room)       │    │     API PHP Synology Web Station     │
+│  - PostEntity (v6: JSON     │    │  - GET feed?limit=10&offset=N        │
+│    mosaico, chunks y        │    │    (agrupado por post + chunks_meta) │
+│    comentarios offline)     │    │  - POST video/finalize_chunks        │
+└─────────────────────────────┘    │    (persiste duration_ms por parte)  │
+                                   └──────────────────────────────────────┘
+```
 
-### Fase 2: Sección de Configuración en `NasConfigScreen.kt`
-1. **Card "Generador de config.php y Paquete ZIP"**:
-   - Campos interactivos para usuario y clave de MariaDB.
-   - Diálogo / visor de código con resaltado de sintaxis para `config.php`.
-   - Botón directo para compartir/guardar el archivo `family_feed_synology_setup.zip`.
+### Mejoras Adicionales Detectadas en Auditoría Técnica
 
-### Fase 3: Selección Multimágen en `CreatePostDialog.kt`
-1. Reemplazar `PickVisualMedia` simple por `PickMultipleVisualMedia(maxItems = 10)`.
-2. Tira de vista previa con miniaturas de las imágenes seleccionadas y botón de eliminación individual.
-3. Actualizar `NasApiClient.createPost` y `FamilyRepository.createPost` para enviar la lista de URIs en el `MultipartBody`.
+Durante la revisión del proyecto se identificaron varios fallos latentes que este plan corregirá en conjunto:
 
-### Fase 4: Mosaico de Publicaciones Estilo Facebook en `PostCard.kt`
-1. Crear el composable `FacebookMediaGrid`:
-   - Cálculo de cuadrícula según `mediaItems.size`:
-     - 1 item: `SingleMediaView` con relación de aspecto dinámica.
-     - 2 items: `TwoMediaGrid` (50% / 50%).
-     - 3 items: `ThreeMediaGrid` (1 arriba al 100%, 2 abajo al 50% cada una).
-     - 4 items: `FourMediaGrid` (1 arriba grande, 3 abajo simétricas).
-     - 5+ items: `FivePlusMediaGrid` con capa oscura y texto `+X` sobre la última celda.
-2. Callback `onMediaClick: (index: Int) -> Unit` al pulsar cualquier imagen del mosaico.
-
-### Fase 5: Visor de Foto en Pantalla Dividida (`FacebookMediaViewerDialog.kt`)
-1. Implementar componente modal de pantalla completa con diseño adaptable:
-   - **En modo vertical**: Mitad superior visor de fotos con paginador táctil horizontal (`HorizontalPager`) y fondo negro; mitad inferior panel scrollable con avatar, nombre, hora, descripción de la publicación, resumen de reacciones y lista de comentarios con caja de envío rápido.
-   - **En modo horizontal / tableta**: Lado izquierdo visor de fotos (65%) y lado derecho panel de comentarios y reacciones (35%).
-2. Integrar acciones en vivo: dar reacción directamente desde el visor y enviar comentarios que se actualizan al instante.
-
-### Fase 6: Verificación y Pruebas
-1. Compilar el proyecto con `compile_applet`.
-2. Ejecutar la suite de pruebas unitarias (`gradle :app:testDebugUnitTest`).
-3. Verificar la integridad de los archivos ZIP generados y la respuesta de los endpoints PHP.
+1. **Sincronización Backend de Fragmentos**: El script principal del servidor PHP omitía devolver las rutas de fragmentos (`chunks_paths`) en las consultas del muro, grupos y shorts, impidiendo la reproducción multiparte fuera de la carga de prueba inicial. Se unificará la respuesta en servidor y en el generador integrado de scripts de la app.
+2. **Duplicación de Tarjetas con Múltiples Fotos**: La consulta SQL actual enlaza directamente las tablas `posts` y `media`, generando múltiples entradas JSON para una sola publicación con varias fotos. Se agruparán todos los ítems multimedia dentro de un arreglo `media_items` por publicación.
+3. **Soporte Multiparte y Offline en Shorts y Visor Dividido**: La pantalla de Shorts y el visor de fotos estilo Facebook utilizaban un reproductor aislado que ignoraba los vídeos divididos en fragmentos y la caché local offline; ambos pasarán a usar el componente unificado con soporte completo de fragmentos y barra continua.
+4. **Subida Resiliente de Vídeos Grandes**: Se registrará la duración exacta de cada fragmento durante el corte, se optimizará la tolerancia a fallos por fragmento (reintento exponencial sin repetir fragmentos ya confirmados por `session_id`) y se corregirán los sellos temporales (`PTS`) en cortes consecutivos de audio/vídeo para eliminar micro-cortes entre partes.
+5. **Control de Caché Offline y Pre-carga Ordenada**: Se limitará la pre-carga automática de red al bloque visible (10 elementos por turno) priorizando siempre las miniaturas y evitando duplicar descargas al hacer scroll rápido.

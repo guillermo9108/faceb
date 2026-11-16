@@ -452,11 +452,156 @@ if ($method === 'GET' && matchRoute($action, $uri, 'groups')) {
     exit;
 }
 
-// 3.1. PUBLICACIONES DE UN GRUPO
+function hydratePostsWithDetails(PDO $db, array $posts) {
+    if (empty($posts)) return [];
+
+    $postIds = [];
+    foreach ($posts as $row) {
+        $postIds[] = (int)$row['id'];
+    }
+    $placeholders = implode(',', array_fill(0, count($postIds), '?'));
+
+    // 1. Hidratar multimedia (todas las fotos y vídeos asociados a cada post, sin duplicar posts)
+    $mediaByPost = [];
+    try {
+        $mStmt = $db->prepare("SELECT id, post_id, media_type, file_path, thumb_path, duration_label, is_chunked FROM media WHERE post_id IN ($placeholders) ORDER BY id ASC");
+        $mStmt->execute($postIds);
+        while ($mRow = $mStmt->fetch()) {
+            $pid = (int)$mRow['post_id'];
+            if (!isset($mediaByPost[$pid])) $mediaByPost[$pid] = [];
+            $mediaByPost[$pid][] = $mRow;
+        }
+    } catch (Exception $eM) {}
+
+    // 2. Hidratar fragmentos de vídeo con su duración exacta en milisegundos
+    $chunksByPost = [];
+    try {
+        $cStmt = $db->prepare("SELECT post_id, chunk_index, file_path, duration_ms FROM media_chunks WHERE post_id IN ($placeholders) ORDER BY post_id ASC, chunk_index ASC");
+        $cStmt->execute($postIds);
+        while ($cRow = $cStmt->fetch()) {
+            $pid = (int)$cRow['post_id'];
+            if (!isset($chunksByPost[$pid])) $chunksByPost[$pid] = [];
+            $chunksByPost[$pid][] = [
+                "chunk_index" => (int)$cRow['chunk_index'],
+                "file_path" => $cRow['file_path'],
+                "duration_ms" => (int)($cRow['duration_ms'] ?? 0)
+            ];
+        }
+    } catch (Exception $eC) {
+        // Fallback si aún no existe columna duration_ms
+        try {
+            $cStmt = $db->prepare("SELECT post_id, chunk_index, file_path FROM media_chunks WHERE post_id IN ($placeholders) ORDER BY post_id ASC, chunk_index ASC");
+            $cStmt->execute($postIds);
+            while ($cRow = $cStmt->fetch()) {
+                $pid = (int)$cRow['post_id'];
+                if (!isset($chunksByPost[$pid])) $chunksByPost[$pid] = [];
+                $chunksByPost[$pid][] = [
+                    "chunk_index" => (int)$cRow['chunk_index'],
+                    "file_path" => $cRow['file_path'],
+                    "duration_ms" => 0
+                ];
+            }
+        } catch (Exception $eC2) {}
+    }
+
+    // 3. Hidratar comentarios recientes para vista dividida y modo offline (últimos 10 por post)
+    $commentsByPost = [];
+    try {
+        $cmStmt = $db->prepare("
+            SELECT c.*, COALESCE(u.display_name, 'Familiar') as display_name,
+                   COALESCE(u.role, 'Familiar') as role,
+                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex
+            FROM comments c
+            LEFT JOIN users u ON c.user_id = u.id
+            WHERE c.post_id IN ($placeholders)
+            ORDER BY c.created_at ASC
+        ");
+        $cmStmt->execute($postIds);
+        while ($cmRow = $cmStmt->fetch()) {
+            $pid = (int)$cmRow['post_id'];
+            if (!isset($commentsByPost[$pid])) $commentsByPost[$pid] = [];
+            $commentsByPost[$pid][] = $cmRow;
+        }
+        foreach ($commentsByPost as $pid => $cList) {
+            if (count($cList) > 10) {
+                $commentsByPost[$pid] = array_slice($cList, -10);
+            }
+        }
+    } catch (Exception $eCm) {}
+
+    // 4. Ensamblar respuesta unificada por publicación
+    foreach ($posts as &$post) {
+        $pid = (int)$post['id'];
+        $mList = $mediaByPost[$pid] ?? [];
+        $pChunks = $chunksByPost[$pid] ?? [];
+        $chunkPathsList = [];
+        $totalChunksDurMs = 0;
+        foreach ($pChunks as $ch) {
+            $chunkPathsList[] = $ch['file_path'];
+            $totalChunksDurMs += (int)$ch['duration_ms'];
+        }
+        $chunksPathsJoined = implode('|||', $chunkPathsList);
+
+        $hydratedMedia = [];
+        foreach ($mList as $idx => $m) {
+            $isVid = strtoupper($m['media_type'] ?? 'IMAGE') === 'VIDEO';
+            $isChunkedItem = ((int)($m['is_chunked'] ?? 0) === 1) || ($isVid && !empty($pChunks));
+            $itemChunksMeta = $isVid ? $pChunks : [];
+            $itemChunksPaths = $isVid ? $chunksPathsJoined : '';
+            $hydratedMedia[] = [
+                "id" => (int)$m['id'],
+                "media_type" => $m['media_type'],
+                "file_path" => $m['file_path'],
+                "thumb_path" => !empty($m['thumb_path']) ? $m['thumb_path'] : $m['file_path'],
+                "duration_label" => $m['duration_label'],
+                "is_chunked" => $isChunkedItem ? 1 : 0,
+                "chunks_paths" => $itemChunksPaths,
+                "chunks_meta" => $itemChunksMeta,
+                "total_duration_ms" => $isVid ? $totalChunksDurMs : 0
+            ];
+        }
+
+        $post['media_items'] = $hydratedMedia;
+        $post['comments'] = $commentsByPost[$pid] ?? [];
+
+        // Retrocompatibilidad con campos planos del primer elemento multimedia
+        if (!empty($hydratedMedia)) {
+            $firstM = $hydratedMedia[0];
+            $post['media_type'] = $firstM['media_type'];
+            $post['file_path'] = $firstM['file_path'];
+            $post['thumb_path'] = $firstM['thumb_path'];
+            $post['duration_label'] = $firstM['duration_label'];
+            $post['is_chunked'] = $firstM['is_chunked'];
+            $post['chunks_paths'] = $firstM['chunks_paths'];
+            $post['chunks_meta'] = $firstM['chunks_meta'];
+            $post['total_duration_ms'] = $firstM['total_duration_ms'];
+        } else {
+            $post['media_type'] = null;
+            $post['file_path'] = '';
+            $post['thumb_path'] = '';
+            $post['duration_label'] = null;
+            $post['is_chunked'] = 0;
+            $post['chunks_paths'] = '';
+            $post['chunks_meta'] = [];
+            $post['total_duration_ms'] = 0;
+        }
+    }
+    unset($post);
+    return $posts;
+}
+
+// 3.1. PUBLICACIONES DE UN GRUPO (Paginado e hidratado)
 if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
     $groupId = (int)($_GET['group_id'] ?? 0);
+    $limit = max(1, min(100, (int)($_GET['limit'] ?? 30)));
+    $offset = max(0, (int)($_GET['offset'] ?? 0));
     try {
         $db = getDB();
+        $cntStmt = $db->prepare("SELECT COUNT(*) FROM posts WHERE group_id = ?");
+        $cntStmt->execute([$groupId]);
+        $totalCount = (int)$cntStmt->fetchColumn();
+
         $stmt = $db->prepare("
             SELECT p.*, 
                    COALESCE(u.display_name, 'Familiar') as display_name,
@@ -464,20 +609,27 @@ if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
-                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
             LEFT JOIN users u ON p.user_id = u.id
             JOIN family_groups g ON g.id = p.group_id
-            LEFT JOIN media m ON m.post_id = p.id
             WHERE p.group_id = ?
             ORDER BY p.is_pinned DESC, p.created_at DESC
-            LIMIT 100
+            LIMIT $limit OFFSET $offset
         ");
         $stmt->execute([$groupId]);
+        $rows = hydratePostsWithDetails($db, $stmt->fetchAll());
+        $nextOffset = $offset + count($rows);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["posts" => $stmt->fetchAll()]);
+        echo json_encode([
+            "posts" => $rows,
+            "total_count" => $totalCount,
+            "limit" => $limit,
+            "offset" => $offset,
+            "next_offset" => $nextOffset,
+            "has_more" => ($nextOffset < $totalCount)
+        ]);
     } catch (Exception $e) {
         http_response_code(500);
         header("Content-Type: application/json; charset=UTF-8");
@@ -486,10 +638,13 @@ if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
     exit;
 }
 
-// 3.2. SHORTS
+// 3.2. SHORTS (Hidratado con chunks_meta)
 if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
+    $limit = max(1, min(100, (int)($_GET['limit'] ?? 30)));
+    $offset = max(0, (int)($_GET['offset'] ?? 0));
     try {
         $db = getDB();
+        $totalCount = (int)$db->query("SELECT COUNT(*) FROM posts WHERE is_short = 1")->fetchColumn();
         $stmt = $db->query("
             SELECT p.*, 
                    COALESCE(u.display_name, 'Familiar') as display_name,
@@ -497,19 +652,24 @@ if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
-                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
             LEFT JOIN users u ON p.user_id = u.id
             LEFT JOIN family_groups g ON g.id = p.group_id
-            LEFT JOIN media m ON m.post_id = p.id
             WHERE p.is_short = 1
             ORDER BY p.created_at DESC
-            LIMIT 50
+            LIMIT $limit OFFSET $offset
         ");
+        $rows = hydratePostsWithDetails($db, $stmt->fetchAll());
+        $nextOffset = $offset + count($rows);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["shorts" => $stmt->fetchAll()]);
+        echo json_encode([
+            "shorts" => $rows,
+            "total_count" => $totalCount,
+            "has_more" => ($nextOffset < $totalCount),
+            "next_offset" => $nextOffset
+        ]);
     } catch (Exception $e) {
         http_response_code(500);
         header("Content-Type: application/json; charset=UTF-8");
@@ -518,10 +678,13 @@ if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
     exit;
 }
 
-// 3.3. FEED
+// 3.3. FEED (Paginación real de 10 en 10 sin duplicar posts multifoto)
 if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($action, $uri, 'posts'))) {
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
+    $offset = max(0, (int)($_GET['offset'] ?? 0));
     try {
         $db = getDB();
+        $totalCount = (int)$db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
         $stmt = $db->query("
             SELECT p.*, 
                    COALESCE(u.display_name, 'Familiar') as display_name,
@@ -529,18 +692,26 @@ if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($actio
                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
-                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
             LEFT JOIN users u ON p.user_id = u.id
             LEFT JOIN family_groups g ON g.id = p.group_id
-            LEFT JOIN media m ON m.post_id = p.id
+            WHERE (p.is_short = 0 OR p.is_short IS NULL)
             ORDER BY p.is_pinned DESC, p.created_at DESC
-            LIMIT 50
+            LIMIT $limit OFFSET $offset
         ");
+        $rows = hydratePostsWithDetails($db, $stmt->fetchAll());
+        $nextOffset = $offset + count($rows);
         header("Content-Type: application/json; charset=UTF-8");
-        echo json_encode(["posts" => $stmt->fetchAll()]);
+        echo json_encode([
+            "posts" => $rows,
+            "total_count" => $totalCount,
+            "limit" => $limit,
+            "offset" => $offset,
+            "next_offset" => $nextOffset,
+            "has_more" => ($nextOffset < $totalCount)
+        ]);
     } catch (Exception $e) {
         http_response_code(500);
         header("Content-Type: application/json; charset=UTF-8");
@@ -678,13 +849,32 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/upload_chunk')) {
         exit;
     }
 
+    if ($_FILES[$fileKey]['error'] !== UPLOAD_ERR_OK) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Error al recibir fragmento #$chunkIndex: código " . $_FILES[$fileKey]['error']]);
+        exit;
+    }
+
     $chunkDir = __DIR__ . '/uploads/chunks/' . $sessionId;
     if (!is_dir($chunkDir)) @mkdir($chunkDir, 0777, true);
     $targetPath = $chunkDir . sprintf("/chunk_%04d.mp4", $chunkIndex);
-    move_uploaded_file($_FILES[$fileKey]['tmp_name'], $targetPath);
+    $moved = move_uploaded_file($_FILES[$fileKey]['tmp_name'], $targetPath);
+    if (!$moved || !file_exists($targetPath) || filesize($targetPath) <= 0) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "No se pudo guardar el fragmento #$chunkIndex en el disco del NAS"]);
+        exit;
+    }
 
     header("Content-Type: application/json; charset=UTF-8");
-    echo json_encode(["status" => "OK", "session_id" => $sessionId, "chunk_index" => $chunkIndex, "received" => true]);
+    echo json_encode([
+        "status" => "OK",
+        "session_id" => $sessionId,
+        "chunk_index" => $chunkIndex,
+        "bytes" => filesize($targetPath),
+        "received" => true
+    ]);
     exit;
 }
 
@@ -698,7 +888,10 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/finalize_chunks')) {
     $durationLabel = trim($_POST['duration_label'] ?? '');
     $isShort = (int)($_POST['is_short'] ?? 0);
     $groupId = !empty($_POST['group_id']) ? (int)$_POST['group_id'] : null;
-    $totalChunks = (int)($_POST['total_chunks'] ?? 1);
+    $totalChunks = max(1, (int)($_POST['total_chunks'] ?? 1));
+    $chunkDurationsRaw = $_POST['chunk_durations'] ?? '[]';
+    $chunkDurations = json_decode($chunkDurationsRaw, true);
+    if (!is_array($chunkDurations)) $chunkDurations = [];
 
     $chunkDir = __DIR__ . '/uploads/chunks/' . $sessionId;
     if (empty($sessionId) || !is_dir($chunkDir)) {
@@ -728,9 +921,17 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/finalize_chunks')) {
         $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
         $stmtMedia->execute([$postId, $firstChunkRel, $thumbRel, $durationLabel ?: null]);
 
-        $stmtChunk = $db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
-        for ($i = 0; $i < $totalChunks; $i++) {
-            $stmtChunk->execute([$postId, $i, $totalChunks, sprintf("uploads/chunks/%s/chunk_%04d.mp4", $sessionId, $i)]);
+        try {
+            $stmtChunk = $db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path, duration_ms) VALUES (?, ?, ?, ?, ?)");
+            for ($i = 0; $i < $totalChunks; $i++) {
+                $durMs = isset($chunkDurations[$i]) ? max(0, (int)$chunkDurations[$i]) : 0;
+                $stmtChunk->execute([$postId, $i, $totalChunks, sprintf("uploads/chunks/%s/chunk_%04d.mp4", $sessionId, $i), $durMs]);
+            }
+        } catch (Exception $eChunkCol) {
+            $stmtChunkFallback = $db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
+            for ($i = 0; $i < $totalChunks; $i++) {
+                $stmtChunkFallback->execute([$postId, $i, $totalChunks, sprintf("uploads/chunks/%s/chunk_%04d.mp4", $sessionId, $i)]);
+            }
         }
 
         $db->commit();

@@ -51,6 +51,8 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val notifications = repository.notifications
     val unreadNotificationsCount = repository.unreadNotificationsCount
     val isLoading = repository.isLoading
+    val hasMoreFeedPosts = repository.hasMoreFeedPosts
+    val isLoadingMoreFeed = repository.isLoadingMoreFeed
 
     private val _selectedTab = MutableStateFlow(FeedTab.FEED)
     val selectedTab: StateFlow<FeedTab> = _selectedTab.asStateFlow()
@@ -745,6 +747,22 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun togglePinPost(postId: Int) {
         repository.togglePinPost(postId)
+    }
+
+    fun loadMoreFeed() {
+        viewModelScope.launch {
+            repository.loadMoreFeed()
+        }
+    }
+
+    fun toggleSavePostOffline(post: Post) {
+        viewModelScope.launch {
+            val saved = repository.toggleSavePostOffline(post)
+            showStatus(
+                if (saved) "Publicación guardada completa para ver sin conexión"
+                else "Publicación quitada de guardados offline"
+            )
+        }
     }
 
     fun updateNasSettings(config: NasConfig) {

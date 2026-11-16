@@ -4,15 +4,16 @@ import com.example.model.CheckItem
 import com.example.model.DatabaseDiagnosticReport
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
+import com.example.model.FeedPageResult
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.NasConfig
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
+import com.example.ui.components.UnifiedTimelineHelper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -128,5 +129,59 @@ class ExampleUnitTest {
         assertEquals("s-1", story.id)
         assertEquals("http://nas/story1.jpg", story.mediaUrl)
         assertFalse(story.isViewed)
+    }
+
+    @Test
+    fun testUnifiedTimelineHelper_multiChunkOffsetsAndSeek() {
+        val durations = UnifiedTimelineHelper.buildChunkDurations(
+            chunkCount = 3,
+            explicitDurationsMs = listOf(8000L, 7500L, 4500L)
+        )
+        assertEquals(listOf(8000L, 7500L, 4500L), durations)
+
+        val offsets = UnifiedTimelineHelper.buildChunkOffsets(durations)
+        assertEquals(listOf(0L, 8000L, 15500L), offsets)
+        assertEquals(20000L, UnifiedTimelineHelper.totalDurationMs(durations))
+
+        // Posición en el segundo 3.2 del fragmento #1 -> 8000 + 3200 = 11200ms
+        assertEquals(11200L, UnifiedTimelineHelper.globalPositionMs(1, 3200L, offsets, durations))
+
+        // Seek global a 17000ms -> cae en el fragmento #2 con offset local de 1500ms
+        val (chunkIdx, localMs) = UnifiedTimelineHelper.seekTargetForGlobal(17000L, offsets, durations)
+        assertEquals(2, chunkIdx)
+        assertEquals(1500L, localMs)
+
+        // Dos fronteras internas entre 3 fragmentos
+        val boundaries = UnifiedTimelineHelper.boundaryFractions(offsets, 20000L)
+        assertEquals(2, boundaries.size)
+        assertEquals(0.4f, boundaries[0], 0.01f)
+        assertEquals(0.775f, boundaries[1], 0.01f)
+    }
+
+    @Test
+    fun testUnifiedTimelineHelper_fallbackEstimationAndLabelParsing() {
+        assertEquals(95000L, UnifiedTimelineHelper.parseDurationLabelMs("01:35"))
+        assertEquals(3665000L, UnifiedTimelineHelper.parseDurationLabelMs("01:01:05"))
+
+        val estimated = UnifiedTimelineHelper.buildChunkDurations(
+            chunkCount = 3,
+            explicitDurationsMs = emptyList(),
+            exoDurationsMs = emptyList(),
+            fallbackTotalMs = 24000L
+        )
+        assertEquals(listOf(8000L, 8000L, 8000L), estimated)
+    }
+
+    @Test
+    fun testFeedPageResult_paginationFields() {
+        val page = FeedPageResult(
+            posts = emptyList(),
+            hasMore = true,
+            totalCount = 34,
+            nextOffset = 10
+        )
+        assertTrue(page.hasMore)
+        assertEquals(34, page.totalCount)
+        assertEquals(10, page.nextOffset)
     }
 }

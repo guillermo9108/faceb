@@ -19,6 +19,7 @@ import java.util.UUID
 data class VideoChunkResult(
     val sessionId: String,
     val chunkFiles: List<File>,
+    val chunkDurationsMs: List<Long> = emptyList(),
     val thumbnailFile: File?,
     val totalDurationMs: Long,
     val durationLabel: String
@@ -32,7 +33,7 @@ object VideoChunkingManager {
     /**
      * Divide un vídeo en fragmentos MP4 pequeños e independientes alineados por fotogramas clave (I-frames)
      * sin recodificación (Zero-Transcoding), lo que resulta extremadamente rápido y eficiente.
-     * Emite progreso en tiempo real para visualizar la fase de fragmentación antes de la subida.
+     * Emite progreso en tiempo real y registra la duración exacta de cada fragmento para la barra unificada.
      */
     suspend fun sliceVideo(
         context: Context,
@@ -74,7 +75,7 @@ object VideoChunkingManager {
 
             val targetChunkMs = targetChunkDurationSec * 1000L
 
-            // 3. Si el vídeo es corto (menos de 10 segundos), no es necesario fragmentar
+            // 3. Si el vídeo es corto (menos de ~10 segundos), no es necesario fragmentar
             if (totalDurationMs <= targetChunkMs * 1.3f) {
                 val singleChunk = File(tempDir, "chunk_0000.mp4")
                 tempSourceFile.copyTo(singleChunk, overwrite = true)
@@ -83,6 +84,7 @@ object VideoChunkingManager {
                     VideoChunkResult(
                         sessionId = sessionId,
                         chunkFiles = listOf(singleChunk),
+                        chunkDurationsMs = listOf(totalDurationMs.coerceAtLeast(1L)),
                         thumbnailFile = if (thumbFile.exists()) thumbFile else null,
                         totalDurationMs = totalDurationMs,
                         durationLabel = durationLabel
@@ -91,7 +93,7 @@ object VideoChunkingManager {
             }
 
             // 4. Fragmentación en tramos con MediaExtractor y MediaMuxer
-            val chunkFiles = splitIntoIndependentMp4s(
+            val (chunkFiles, rawChunkDurations) = splitIntoIndependentMp4s(
                 sourceFile = tempSourceFile,
                 outputDir = tempDir,
                 targetChunkMs = targetChunkMs,
@@ -99,24 +101,34 @@ object VideoChunkingManager {
                 onProgress = onProgress
             )
 
-            onProgress(1.0f, chunkFiles.size.coerceAtLeast(1), chunkFiles.size.coerceAtLeast(1))
-
             // Si por compatibilidad de códec no se pudieron crear múltiples partes, usar el archivo completo
-            val finalChunks = if (chunkFiles.isNotEmpty()) {
-                chunkFiles
+            val finalChunks: List<File>
+            val finalDurations: List<Long>
+            if (chunkFiles.isNotEmpty()) {
+                finalChunks = chunkFiles
+                finalDurations = finalChunks.mapIndexed { idx, file ->
+                    val recorded = rawChunkDurations.getOrNull(idx) ?: 0L
+                    if (recorded > 0L) recorded else readFileDurationMs(file)
+                }
             } else {
                 val fallbackChunk = File(tempDir, "chunk_0000.mp4")
                 tempSourceFile.copyTo(fallbackChunk, overwrite = true)
-                listOf(fallbackChunk)
+                finalChunks = listOf(fallbackChunk)
+                finalDurations = listOf(totalDurationMs.coerceAtLeast(1L))
             }
+
+            onProgress(1.0f, finalChunks.size.coerceAtLeast(1), finalChunks.size.coerceAtLeast(1))
+
+            val computedTotalDurationMs = finalDurations.sum().takeIf { it > 0L } ?: totalDurationMs
 
             Result.success(
                 VideoChunkResult(
                     sessionId = sessionId,
                     chunkFiles = finalChunks,
+                    chunkDurationsMs = finalDurations,
                     thumbnailFile = if (thumbFile.exists()) thumbFile else null,
-                    totalDurationMs = totalDurationMs,
-                    durationLabel = durationLabel
+                    totalDurationMs = computedTotalDurationMs,
+                    durationLabel = VideoHelper.formatDuration(computedTotalDurationMs)
                 )
             )
         } catch (e: Exception) {
@@ -129,8 +141,20 @@ object VideoChunkingManager {
         }
     }
 
+    private fun readFileDurationMs(file: File): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            0L
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+    }
+
     /**
-     * Divide el flujo de vídeo y audio en fragmentos independientes MP4.
+     * Divide el flujo de vídeo y audio en fragmentos independientes MP4 y registra su duración exacta en ms.
      */
     private fun splitIntoIndependentMp4s(
         sourceFile: File,
@@ -138,8 +162,9 @@ object VideoChunkingManager {
         targetChunkMs: Long,
         totalDurationMs: Long,
         onProgress: (progress: Float, currentChunk: Int, estimatedTotal: Int) -> Unit = { _, _, _ -> }
-    ): List<File> {
+    ): Pair<List<File>, List<Long>> {
         val resultFiles = mutableListOf<File>()
+        val resultDurationsMs = mutableListOf<Long>()
         val extractor = MediaExtractor()
         extractor.setDataSource(sourceFile.absolutePath)
 
@@ -163,7 +188,7 @@ object VideoChunkingManager {
 
         if (videoTrackIndex == -1 || videoFormat == null) {
             extractor.release()
-            return emptyList()
+            return Pair(emptyList(), emptyList())
         }
 
         val buffer = ByteBuffer.allocateDirect(1024 * 1024 * 2) // 2 MB buffer
@@ -176,10 +201,11 @@ object VideoChunkingManager {
         var muxerVideoTrack = -1
         var muxerAudioTrack = -1
 
-        var chunkStartPtsUs = 0L
+        var chunkStartPtsUs = -1L
+        var chunkMaxRelPtsUs = 0L
         val targetChunkUs = targetChunkMs * 1000L
 
-        fun startNewChunk() {
+        fun closeCurrentChunk() {
             if (currentMuxer != null && muxerStarted) {
                 try {
                     currentMuxer?.stop()
@@ -187,8 +213,20 @@ object VideoChunkingManager {
                     Log.w(TAG, "Error deteniendo muxer previo: ${e.message}")
                 }
                 currentMuxer?.release()
-                currentFile?.let { resultFiles.add(it) }
+                currentMuxer = null
+                muxerStarted = false
+                currentFile?.let { file ->
+                    if (file.exists() && file.length() > 0L) {
+                        resultFiles.add(file)
+                        val recordedMs = (chunkMaxRelPtsUs / 1000L).coerceAtLeast(0L)
+                        resultDurationsMs.add(if (recordedMs > 0L) recordedMs else readFileDurationMs(file))
+                    }
+                }
             }
+        }
+
+        fun startNewChunk() {
+            closeCurrentChunk()
 
             val chunkName = String.format("chunk_%04d.mp4", currentChunkIndex++)
             currentFile = File(outputDir, chunkName)
@@ -203,6 +241,7 @@ object VideoChunkingManager {
             currentMuxer!!.start()
             muxerStarted = true
             chunkStartPtsUs = -1L
+            chunkMaxRelPtsUs = 0L
         }
 
         // Seleccionar pistas para extracción
@@ -253,8 +292,12 @@ object VideoChunkingManager {
                 }
 
                 // Ajustar timestamps relativos para que cada fragmento inicie en 0
-                val samplePtsUs = (bufferInfo.presentationTimeUs - (if (chunkStartPtsUs > 0) chunkStartPtsUs else 0L)).coerceAtLeast(0L)
+                val basePts = if (chunkStartPtsUs >= 0L) chunkStartPtsUs else bufferInfo.presentationTimeUs
+                val samplePtsUs = (bufferInfo.presentationTimeUs - basePts).coerceAtLeast(0L)
                 bufferInfo.presentationTimeUs = samplePtsUs
+                if (samplePtsUs > chunkMaxRelPtsUs) {
+                    chunkMaxRelPtsUs = samplePtsUs
+                }
 
                 val targetTrack = if (isVideo) muxerVideoTrack else muxerAudioTrack
                 if (targetTrack >= 0 && muxerStarted) {
@@ -269,22 +312,14 @@ object VideoChunkingManager {
             }
 
             // Cerrar el último fragmento
-            if (currentMuxer != null && muxerStarted) {
-                try {
-                    currentMuxer?.stop()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error finalizando último muxer: ${e.message}")
-                }
-                currentMuxer?.release()
-                currentFile?.let { resultFiles.add(it) }
-            }
+            closeCurrentChunk()
         } catch (e: Exception) {
             Log.e(TAG, "Error durante multiplexado: ${e.message}", e)
         } finally {
             extractor.release()
         }
 
-        return resultFiles
+        return Pair(resultFiles, resultDurationsMs)
     }
 
     /**

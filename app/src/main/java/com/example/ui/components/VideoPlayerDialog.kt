@@ -36,7 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,8 +53,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -62,7 +64,6 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.ui.theme.FacebookBlue
 import com.example.util.OfflineMediaManager
-import com.example.util.VideoHelper
 import kotlinx.coroutines.delay
 
 @OptIn(UnstableApi::class)
@@ -73,16 +74,20 @@ fun VideoPlayerDialog(
     authorName: String = "",
     durationLabel: String? = null,
     chunks: List<String> = emptyList(),
+    chunkDurationsMs: List<Long> = emptyList(),
+    totalDurationMsHint: Long = 0L,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
-    var currentPositionMs by remember { mutableLongStateOf(0L) }
-    var totalDurationMs by remember { mutableLongStateOf(0L) }
+    var localPositionMs by remember { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
-    var currentMediaItemIndex by remember { mutableStateOf(0) }
+    var currentMediaItemIndex by remember { mutableIntStateOf(0) }
+    var exoWindowDurationsMs by remember(chunks, videoUrl) {
+        mutableStateOf(List(chunks.size.coerceAtLeast(1)) { 0L })
+    }
 
     val exoPlayer = remember(context) {
         val loadControl = DefaultLoadControl.Builder()
@@ -97,13 +102,26 @@ fun VideoPlayerDialog(
             }
     }
 
+    fun syncWindowDurations() {
+        val timeline = exoPlayer.currentTimeline
+        val count = timeline.windowCount
+        if (count > 0) {
+            val window = Timeline.Window()
+            val list = MutableList(count) { idx ->
+                timeline.getWindow(idx, window)
+                val dur = window.durationMs
+                if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
+            }
+            exoWindowDurationsMs = list
+        }
+    }
+
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 isBuffering = (playbackState == Player.STATE_BUFFERING)
                 if (playbackState == Player.STATE_READY) {
-                    val dur = exoPlayer.duration
-                    if (dur > 0) totalDurationMs = dur
+                    syncWindowDurations()
                 }
                 if (playbackState == Player.STATE_ENDED) {
                     isPlaying = false
@@ -112,8 +130,13 @@ fun VideoPlayerDialog(
                 }
             }
 
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                syncWindowDurations()
+            }
+
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                currentMediaItemIndex = exoPlayer.currentMediaItemIndex
+                currentMediaItemIndex = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+                syncWindowDurations()
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -149,13 +172,13 @@ fun VideoPlayerDialog(
         exoPlayer.play()
     }
 
-    // Actualizador periódico de posición de reproducción
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            currentPositionMs = exoPlayer.currentPosition
-            val dur = exoPlayer.duration
-            if (dur > 0) totalDurationMs = dur
-            delay(250)
+    // Actualizador periódico de posición unificada
+    LaunchedEffect(isPlaying, showControls) {
+        while (isPlaying || showControls) {
+            currentMediaItemIndex = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+            localPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            syncWindowDurations()
+            delay(150)
         }
     }
 
@@ -165,6 +188,33 @@ fun VideoPlayerDialog(
             delay(3500)
             showControls = false
         }
+    }
+
+    val chunkCount = chunks.size.coerceAtLeast(1)
+    val fallbackTotalMs = totalDurationMsHint.takeIf { it > 0L }
+        ?: UnifiedTimelineHelper.parseDurationLabelMs(durationLabel)
+    val unifiedDurations = remember(chunkCount, chunkDurationsMs, exoWindowDurationsMs, fallbackTotalMs) {
+        UnifiedTimelineHelper.buildChunkDurations(
+            chunkCount = chunkCount,
+            explicitDurationsMs = chunkDurationsMs,
+            exoDurationsMs = exoWindowDurationsMs,
+            fallbackTotalMs = fallbackTotalMs
+        )
+    }
+    val unifiedOffsets = remember(unifiedDurations) {
+        UnifiedTimelineHelper.buildChunkOffsets(unifiedDurations)
+    }
+    val totalUnifiedDurationMs = remember(unifiedDurations) {
+        UnifiedTimelineHelper.totalDurationMs(unifiedDurations)
+    }
+    val globalPosMs = UnifiedTimelineHelper.globalPositionMs(
+        chunkIndex = currentMediaItemIndex,
+        localPositionMs = localPositionMs,
+        offsetsMs = unifiedOffsets,
+        durationsMs = unifiedDurations
+    )
+    val boundaries = remember(unifiedOffsets, totalUnifiedDurationMs) {
+        UnifiedTimelineHelper.boundaryFractions(unifiedOffsets, totalUnifiedDurationMs)
     }
 
     Dialog(
@@ -232,7 +282,7 @@ fun VideoPlayerDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.45f))
+                        .background(Color.Black.copy(alpha = 0.4f))
                 ) {
                     // Top Bar: Título, autor y botón cerrar '✕'
                     Row(
@@ -251,9 +301,9 @@ fun VideoPlayerDialog(
                                 ),
                                 maxLines = 1
                             )
-                            if (chunks.isNotEmpty()) {
+                            if (chunkCount > 1) {
                                 Text(
-                                    text = "⚡ Reproducción continua (Fragmento ${currentMediaItemIndex + 1} de ${chunks.size})",
+                                    text = "⚡ Reproducción unificada · Parte ${currentMediaItemIndex + 1} de $chunkCount",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = FacebookBlue,
                                         fontWeight = FontWeight.Bold,
@@ -274,7 +324,7 @@ fun VideoPlayerDialog(
                         IconButton(
                             onClick = onDismiss,
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.6f))
                         ) {
@@ -319,53 +369,44 @@ fun VideoPlayerDialog(
                         )
                     }
 
-                    // Bottom Bar: Slider de progreso, tiempo actual / tiempo total
-                    Column(
+                    // Barra Unificada Inferior para todas las partes del vídeo
+                    UnifiedVideoScrubberBar(
+                        globalPositionMs = globalPosMs,
+                        totalDurationMs = totalUnifiedDurationMs,
+                        isPlaying = isPlaying,
+                        currentChunkIndex = currentMediaItemIndex,
+                        totalChunks = chunkCount,
+                        chunkBoundaryFractions = boundaries,
+                        onTogglePlayPause = {
+                            if (isEnded) {
+                                exoPlayer.seekTo(0, 0)
+                                exoPlayer.play()
+                                isEnded = false
+                            } else if (isPlaying) {
+                                exoPlayer.pause()
+                            } else {
+                                exoPlayer.play()
+                            }
+                        },
+                        onSeekToGlobalMs = { targetGlobalMs ->
+                            val (targetChunk, localMs) = UnifiedTimelineHelper.seekTargetForGlobal(
+                                globalPosMs = targetGlobalMs,
+                                offsetsMs = unifiedOffsets,
+                                durationsMs = unifiedDurations
+                            )
+                            if (chunkCount > 1) {
+                                exoPlayer.seekTo(targetChunk, localMs)
+                            } else {
+                                exoPlayer.seekTo(localMs)
+                            }
+                            currentMediaItemIndex = targetChunk
+                            localPositionMs = localMs
+                            isEnded = false
+                        },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 20.dp)
-                    ) {
-                        val progressFraction = if (totalDurationMs > 0) {
-                            (currentPositionMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0f, 1f)
-                        } else 0f
-
-                        Slider(
-                            value = progressFraction,
-                            onValueChange = { fraction ->
-                                if (totalDurationMs > 0) {
-                                    val newPos = (fraction * totalDurationMs).toLong()
-                                    currentPositionMs = newPos
-                                    exoPlayer.seekTo(newPos)
-                                }
-                            },
-                            colors = SliderDefaults.colors(
-                                thumbColor = FacebookBlue,
-                                activeTrackColor = FacebookBlue,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = VideoHelper.formatDuration(currentPositionMs),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            )
-                            Text(
-                                text = if (totalDurationMs > 0) VideoHelper.formatDuration(totalDurationMs) else (durationLabel ?: "--:--"),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White.copy(alpha = 0.7f)
-                                )
-                            )
-                        }
-                    }
+                            .padding(bottom = 12.dp)
+                    )
                 }
             }
         }

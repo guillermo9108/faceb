@@ -10,6 +10,7 @@ import com.example.model.DatabaseDiagnosticReport
 import com.example.model.ErrorCategory
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
+import com.example.model.FeedPageResult
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.Post
@@ -526,12 +527,19 @@ class NasApiClient(
     }
 
     /**
-     * Obtiene el feed real de publicaciones desde el backend PHP en Synology Web Station.
+     * Obtiene una página del feed (10 publicaciones por defecto) desde Synology Web Station.
      */
-    suspend fun fetchFeed(ip: String, port: Int, path: String): Result<List<Post>> = withContext(Dispatchers.IO) {
+    suspend fun fetchFeedPage(
+        ip: String,
+        port: Int,
+        path: String,
+        limit: Int = 10,
+        offset: Int = 0
+    ): Result<FeedPageResult> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
-            var url = buildEndpointUrl(ip, port, currentPath, "feed")
+            val pageParams = "limit=$limit&offset=$offset"
+            var url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
@@ -539,7 +547,7 @@ class NasApiClient(
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
-                    url = buildEndpointUrl(ip, port, currentPath, "feed")
+                    url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
                 }
@@ -549,7 +557,7 @@ class NasApiClient(
                 if (body.contains("doesn't exist", ignoreCase = true) || body.contains("Base table", ignoreCase = true) || body.contains("Faltan tablas", ignoreCase = true)) {
                     val repairResult = repairDatabase(ip, port, currentPath)
                     if (repairResult.isSuccess) {
-                        url = buildEndpointUrl(ip, port, currentPath, "feed")
+                        url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
                         response = client.newCall(Request.Builder().url(url).get().build()).execute()
                         body = response.body?.string() ?: ""
                     }
@@ -571,10 +579,32 @@ class NasApiClient(
                 postsList.add(parsePostFromJson(p, baseUrl))
             }
 
-            Result.success(postsList)
+            val totalCount = jsonObject.optInt("total_count", offset + postsList.size)
+            val nextOffset = jsonObject.optInt("next_offset", offset + postsList.size)
+            val hasMore = if (jsonObject.has("has_more")) {
+                jsonObject.optBoolean("has_more", false)
+            } else {
+                postsList.size >= limit && (offset + postsList.size) < totalCount
+            }
+
+            Result.success(
+                FeedPageResult(
+                    posts = postsList,
+                    hasMore = hasMore,
+                    totalCount = totalCount,
+                    nextOffset = nextOffset
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Obtiene las primeras publicaciones del feed desde el backend PHP en Synology Web Station.
+     */
+    suspend fun fetchFeed(ip: String, port: Int, path: String): Result<List<Post>> {
+        return fetchFeedPage(ip, port, path, limit = 10, offset = 0).map { it.posts }
     }
 
     /**
@@ -629,6 +659,72 @@ class NasApiClient(
         }
     }
 
+    private fun resolveMediaUrl(rawPath: String, baseUrl: String): String {
+        val trimmed = rawPath.trim()
+        if (trimmed.isBlank()) return ""
+        return when {
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            trimmed.startsWith("index.php") -> "$baseUrl/$trimmed"
+            trimmed.startsWith("/") -> "$baseUrl$trimmed"
+            else -> "$baseUrl/$trimmed"
+        }
+    }
+
+    private fun parseChunksAndDurations(
+        obj: JSONObject,
+        baseUrl: String
+    ): Triple<List<String>, List<Long>, Long> {
+        val metaArray = obj.optJSONArray("chunks_meta")
+        val parsedChunks = mutableListOf<String>()
+        val parsedDurations = mutableListOf<Long>()
+
+        if (metaArray != null && metaArray.length() > 0) {
+            val indexed = mutableListOf<Triple<Int, String, Long>>()
+            for (idx in 0 until metaArray.length()) {
+                val item = metaArray.optJSONObject(idx) ?: continue
+                val cPath = item.optString("file_path", "")
+                if (cPath.isNotBlank()) {
+                    indexed.add(
+                        Triple(
+                            item.optInt("chunk_index", idx),
+                            resolveMediaUrl(cPath, baseUrl),
+                            item.optLong("duration_ms", 0L).coerceAtLeast(0L)
+                        )
+                    )
+                }
+            }
+            indexed.sortedBy { it.first }.forEach { (_, url, dur) ->
+                parsedChunks.add(url)
+                parsedDurations.add(dur)
+            }
+        }
+
+        if (parsedChunks.isEmpty()) {
+            val rawChunks = obj.optString("chunks_paths", "")
+            if (rawChunks.isNotBlank()) {
+                rawChunks.split("|||").filter { it.isNotBlank() }.forEach { relPath ->
+                    parsedChunks.add(resolveMediaUrl(relPath, baseUrl))
+                }
+            } else {
+                val chunksJsonArr = obj.optJSONArray("chunks")
+                if (chunksJsonArr != null) {
+                    for (idx in 0 until chunksJsonArr.length()) {
+                        val relPath = chunksJsonArr.optString(idx, "")
+                        if (relPath.isNotBlank()) {
+                            parsedChunks.add(resolveMediaUrl(relPath, baseUrl))
+                        }
+                    }
+                }
+            }
+        }
+
+        val totalMs = obj.optLong("total_duration_ms", 0L).takeIf { it > 0L }
+            ?: parsedDurations.sum().takeIf { it > 0L }
+            ?: 0L
+
+        return Triple(parsedChunks, parsedDurations, totalMs)
+    }
+
     private fun parsePostFromJson(p: JSONObject, baseUrl: String): Post {
         val postId = p.optInt("id", (1..99999).random())
         val author = FamilyMember(
@@ -641,46 +737,59 @@ class NasApiClient(
         )
 
         val mediaItems = mutableListOf<MediaItem>()
-        val filePath = p.optString("file_path", "")
-        if (filePath.isNotBlank()) {
-            val fullMediaUrl = when {
-                filePath.startsWith("http://") || filePath.startsWith("https://") -> filePath
-                filePath.startsWith("index.php") -> "$baseUrl/$filePath"
-                filePath.startsWith("/") -> "$baseUrl$filePath"
-                else -> "$baseUrl/$filePath"
-            }
-            val thumbPath = p.optString("thumb_path", filePath)
-            val fullThumbUrl = when {
-                thumbPath.startsWith("http://") || thumbPath.startsWith("https://") -> thumbPath
-                thumbPath.startsWith("index.php") -> "$baseUrl/$thumbPath"
-                thumbPath.startsWith("/") -> "$baseUrl$thumbPath"
-                else -> "$baseUrl/$thumbPath"
-            }
-            val mediaTypeStr = p.optString("media_type", "IMAGE")
-            val isChunked = p.optInt("is_chunked", 0) == 1
-            val rawChunks = p.optString("chunks_paths", "")
-            val chunksList = if (rawChunks.isNotBlank()) {
-                rawChunks.split("|||").map { relPath ->
-                    when {
-                        relPath.startsWith("http://") || relPath.startsWith("https://") -> relPath
-                        relPath.startsWith("index.php") -> "$baseUrl/$relPath"
-                        relPath.startsWith("/") -> "$baseUrl$relPath"
-                        else -> "$baseUrl/$relPath"
-                    }
-                }
-            } else emptyList()
+        val mediaItemsArray = p.optJSONArray("media_items")
+        if (mediaItemsArray != null && mediaItemsArray.length() > 0) {
+            for (mIdx in 0 until mediaItemsArray.length()) {
+                val mObj = mediaItemsArray.optJSONObject(mIdx) ?: continue
+                val filePath = mObj.optString("file_path", "")
+                if (filePath.isBlank()) continue
+                val fullMediaUrl = resolveMediaUrl(filePath, baseUrl)
+                val thumbPath = mObj.optString("thumb_path", filePath).ifBlank { filePath }
+                val fullThumbUrl = resolveMediaUrl(thumbPath, baseUrl)
+                val mediaTypeStr = mObj.optString("media_type", "IMAGE")
+                val (chunksList, chunkDurations, totalDurationMs) = parseChunksAndDurations(mObj, baseUrl)
+                val isChunked = mObj.optInt("is_chunked", 0) == 1 || chunksList.isNotEmpty()
 
-            mediaItems.add(
-                MediaItem(
-                    id = "m_$postId",
-                    type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
-                    url = fullMediaUrl,
-                    thumbnailUrl = fullThumbUrl,
-                    durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() },
-                    isChunked = isChunked,
-                    chunks = chunksList
+                mediaItems.add(
+                    MediaItem(
+                        id = "m_${postId}_${mObj.optInt("id", mIdx)}",
+                        type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                        url = fullMediaUrl,
+                        thumbnailUrl = fullThumbUrl,
+                        durationLabel = mObj.optString("duration_label").takeIf { it.isNotBlank() },
+                        isChunked = isChunked,
+                        chunks = chunksList,
+                        chunkDurationsMs = chunkDurations,
+                        totalDurationMs = totalDurationMs
+                    )
                 )
-            )
+            }
+        }
+
+        if (mediaItems.isEmpty()) {
+            val filePath = p.optString("file_path", "")
+            if (filePath.isNotBlank()) {
+                val fullMediaUrl = resolveMediaUrl(filePath, baseUrl)
+                val thumbPath = p.optString("thumb_path", filePath).ifBlank { filePath }
+                val fullThumbUrl = resolveMediaUrl(thumbPath, baseUrl)
+                val mediaTypeStr = p.optString("media_type", "IMAGE")
+                val (chunksList, chunkDurations, totalDurationMs) = parseChunksAndDurations(p, baseUrl)
+                val isChunked = p.optInt("is_chunked", 0) == 1 || chunksList.isNotEmpty()
+
+                mediaItems.add(
+                    MediaItem(
+                        id = "m_$postId",
+                        type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                        url = fullMediaUrl,
+                        thumbnailUrl = fullThumbUrl,
+                        durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() },
+                        isChunked = isChunked,
+                        chunks = chunksList,
+                        chunkDurationsMs = chunkDurations,
+                        totalDurationMs = totalDurationMs
+                    )
+                )
+            }
         }
 
         val likesCount = p.optInt("likes_count", 0)
@@ -700,7 +809,8 @@ class NasApiClient(
                             name = cObj.optString("display_name", "Familiar"),
                             role = cObj.optString("role", "Familiar"),
                             avatarEmoji = cObj.optString("avatar_emoji", "👤"),
-                            avatarColorHex = cObj.optLong("avatar_color_hex", 0xFF1E40AF)
+                            avatarColorHex = cObj.optLong("avatar_color_hex", 0xFF1E40AF),
+                            username = cObj.optString("username", "")
                         ),
                         text = cObj.optString("comment_text", ""),
                         createdAt = parseTimestamp(cObj.optString("created_at"))
@@ -1290,6 +1400,10 @@ class NasApiClient(
         chunkFile: File
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            if (!chunkFile.exists() || chunkFile.length() <= 0L) {
+                return@withContext Result.failure(Exception("El fragmento #$chunkIndex está vacío o no existe"))
+            }
+
             var currentPath = path
             var url = buildEndpointUrl(ip, port, currentPath, "video/upload_chunk")
 
@@ -1324,6 +1438,14 @@ class NasApiClient(
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
 
+            val json = parseJsonObjectSafely(body)
+            if (json.has("error")) {
+                return@withContext Result.failure(Exception(json.optString("error", "Error subiendo fragmento")))
+            }
+            if (json.has("received") && !json.optBoolean("received", true)) {
+                return@withContext Result.failure(Exception("El NAS no confirmó la recepción del fragmento #$chunkIndex"))
+            }
+
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
@@ -1346,7 +1468,9 @@ class NasApiClient(
         isShort: Boolean,
         groupId: Int?,
         totalChunks: Int,
-        thumbnailFile: File?
+        thumbnailFile: File?,
+        chunkDurationsMs: List<Long> = emptyList(),
+        totalDurationMs: Long = 0L
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
@@ -1358,6 +1482,15 @@ class NasApiClient(
                 .addFormDataPart("content_text", text)
                 .addFormDataPart("is_short", if (isShort) "1" else "0")
                 .addFormDataPart("total_chunks", totalChunks.toString())
+
+            if (chunkDurationsMs.isNotEmpty()) {
+                val arr = JSONArray()
+                chunkDurationsMs.forEach { arr.put(it) }
+                multipartBuilder.addFormDataPart("chunk_durations", arr.toString())
+            }
+            if (totalDurationMs > 0L) {
+                multipartBuilder.addFormDataPart("total_duration_ms", totalDurationMs.toString())
+            }
 
             feeling?.let { multipartBuilder.addFormDataPart("feeling", it) }
             location?.let { multipartBuilder.addFormDataPart("location", it) }
@@ -1394,6 +1527,9 @@ class NasApiClient(
             }
 
             val json = parseJsonObjectSafely(body)
+            if (json.has("error")) {
+                return@withContext Result.failure(Exception(json.optString("error", "Error finalizando vídeo en NAS")))
+            }
             val newPostId = json.optInt("post_id", (1..99999).random())
             Result.success(newPostId)
         } catch (e: Exception) {

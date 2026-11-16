@@ -28,5 +28,8 @@ data class PostEntity(
     val groupId: Int? = null,
     val groupName: String? = null,
     val isChunked: Boolean = false,
-    val chunksJson: String? = null
+    val chunksJson: String? = null,
+    val mediaItemsJson: String? = null,
+    val commentsJson: String? = null,
+    val isSavedOffline: Boolean = false
 )

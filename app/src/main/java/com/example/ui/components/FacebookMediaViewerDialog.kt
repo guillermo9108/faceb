@@ -276,15 +276,29 @@ private fun ZoomableMediaImage(
     mediaItem: MediaItem,
     modifier: Modifier = Modifier
 ) {
+    if (mediaItem.type == MediaType.VIDEO) {
+        FamilyVideoPlayer(
+            videoUrl = mediaItem.url,
+            chunks = mediaItem.chunks,
+            chunkDurationsMs = mediaItem.chunkDurationsMs,
+            totalDurationMsHint = mediaItem.totalDurationMs,
+            durationLabel = mediaItem.durationLabel,
+            isChunked = mediaItem.isChunked || mediaItem.chunks.isNotEmpty(),
+            autoPlay = true,
+            isLooping = false,
+            showUnifiedBar = true,
+            modifier = modifier.fillMaxSize()
+        )
+        return
+    }
+
     val context = LocalContext.current
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
 
     val displayModel = remember(mediaItem.url, mediaItem.thumbnailUrl) {
-        val isVid = mediaItem.type == MediaType.VIDEO
-        val raw = if (isVid) mediaItem.thumbnailUrl.ifBlank { mediaItem.url } else mediaItem.url
-        OfflineMediaManager.getDisplayModel(context, raw, isVid)
+        OfflineMediaManager.getDisplayModel(context, mediaItem.url, isVideo = false)
     }
 
     Box(

@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de trabajo detallado para incorporar la edición visual de config.php, exportación del paquete ZIP preconfigurado para Synology Web Station y MariaDB 10, publicación multimagen y cuadrículas estilo Facebook con visor en pantalla dividida (foto + comentarios en vivo).",
-  "updatedAt":  "2026-11-10T17:55:56.476776164Z",
+  "summary":  "Plan de trabajo integral para paginacion progresiva del muro (10 en 10), cache offline avanzada de publicaciones y miniaturas, mejoras en subida y reproduccion multiparte de videos en todos los sectores, barra de progreso unificada continua y correcciones clave detectadas en el servidor y cliente.",
+  "updatedAt":  "2026-11-16T16:04:40.808873617Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -1021,10 +1021,149 @@ object SynologyScripts {
             exit;
         }
 
-        // 3. OBTENER FEED COMPLETO (Excluye vídeos subidos solo a Shorts)
+        function hydratePostsWithDetails(PDO ${D}db, array ${D}posts) {
+            if (empty(${D}posts)) return [];
+
+            ${D}postIds = [];
+            foreach (${D}posts as ${D}row) {
+                ${D}postIds[] = (int)${D}row['id'];
+            }
+            ${D}placeholders = implode(',', array_fill(0, count(${D}postIds), '?'));
+
+            // 1. Hidratar multimedia (todas las fotos y vídeos asociados a cada post, sin duplicar posts)
+            ${D}mediaByPost = [];
+            try {
+                ${D}mStmt = ${D}db->prepare("SELECT id, post_id, media_type, file_path, thumb_path, duration_label, is_chunked FROM media WHERE post_id IN (${D}placeholders) ORDER BY id ASC");
+                ${D}mStmt->execute(${D}postIds);
+                while (${D}mRow = ${D}mStmt->fetch()) {
+                    ${D}pid = (int)${D}mRow['post_id'];
+                    if (!isset(${D}mediaByPost[${D}pid])) ${D}mediaByPost[${D}pid] = [];
+                    ${D}mediaByPost[${D}pid][] = ${D}mRow;
+                }
+            } catch (Exception ${D}eM) {}
+
+            // 2. Hidratar fragmentos de vídeo con su duración exacta en milisegundos
+            ${D}chunksByPost = [];
+            try {
+                ${D}cStmt = ${D}db->prepare("SELECT post_id, chunk_index, file_path, duration_ms FROM media_chunks WHERE post_id IN (${D}placeholders) ORDER BY post_id ASC, chunk_index ASC");
+                ${D}cStmt->execute(${D}postIds);
+                while (${D}cRow = ${D}cStmt->fetch()) {
+                    ${D}pid = (int)${D}cRow['post_id'];
+                    if (!isset(${D}chunksByPost[${D}pid])) ${D}chunksByPost[${D}pid] = [];
+                    ${D}chunksByPost[${D}pid][] = [
+                        "chunk_index" => (int)${D}cRow['chunk_index'],
+                        "file_path" => ${D}cRow['file_path'],
+                        "duration_ms" => (int)(${D}cRow['duration_ms'] ?? 0)
+                    ];
+                }
+            } catch (Exception ${D}eC) {
+                try {
+                    ${D}cStmt = ${D}db->prepare("SELECT post_id, chunk_index, file_path FROM media_chunks WHERE post_id IN (${D}placeholders) ORDER BY post_id ASC, chunk_index ASC");
+                    ${D}cStmt->execute(${D}postIds);
+                    while (${D}cRow = ${D}cStmt->fetch()) {
+                        ${D}pid = (int)${D}cRow['post_id'];
+                        if (!isset(${D}chunksByPost[${D}pid])) ${D}chunksByPost[${D}pid] = [];
+                        ${D}chunksByPost[${D}pid][] = [
+                            "chunk_index" => (int)${D}cRow['chunk_index'],
+                            "file_path" => ${D}cRow['file_path'],
+                            "duration_ms" => 0
+                        ];
+                    }
+                } catch (Exception ${D}eC2) {}
+            }
+
+            // 3. Hidratar comentarios recientes para vista dividida y modo offline
+            ${D}commentsByPost = [];
+            try {
+                ${D}cmStmt = ${D}db->prepare("
+                    SELECT c.*, COALESCE(u.display_name, 'Familiar') as display_name,
+                           COALESCE(u.role, 'Familiar') as role,
+                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex
+                    FROM comments c
+                    LEFT JOIN users u ON c.user_id = u.id
+                    WHERE c.post_id IN (${D}placeholders)
+                    ORDER BY c.created_at ASC
+                ");
+                ${D}cmStmt->execute(${D}postIds);
+                while (${D}cmRow = ${D}cmStmt->fetch()) {
+                    ${D}pid = (int)${D}cmRow['post_id'];
+                    if (!isset(${D}commentsByPost[${D}pid])) ${D}commentsByPost[${D}pid] = [];
+                    ${D}commentsByPost[${D}pid][] = ${D}cmRow;
+                }
+                foreach (${D}commentsByPost as ${D}pid => ${D}cList) {
+                    if (count(${D}cList) > 10) {
+                        ${D}commentsByPost[${D}pid] = array_slice(${D}cList, -10);
+                    }
+                }
+            } catch (Exception ${D}eCm) {}
+
+            foreach (${D}posts as &${D}post) {
+                ${D}pid = (int)${D}post['id'];
+                ${D}mList = ${D}mediaByPost[${D}pid] ?? [];
+                ${D}pChunks = ${D}chunksByPost[${D}pid] ?? [];
+                ${D}chunkPathsList = [];
+                ${D}totalChunksDurMs = 0;
+                foreach (${D}pChunks as ${D}ch) {
+                    ${D}chunkPathsList[] = ${D}ch['file_path'];
+                    ${D}totalChunksDurMs += (int)${D}ch['duration_ms'];
+                }
+                ${D}chunksPathsJoined = implode('|||', ${D}chunkPathsList);
+
+                ${D}hydratedMedia = [];
+                foreach (${D}mList as ${D}m) {
+                    ${D}isVid = strtoupper(${D}m['media_type'] ?? 'IMAGE') === 'VIDEO';
+                    ${D}isChunkedItem = ((int)(${D}m['is_chunked'] ?? 0) === 1) || (${D}isVid && !empty(${D}pChunks));
+                    ${D}itemChunksMeta = ${D}isVid ? ${D}pChunks : [];
+                    ${D}itemChunksPaths = ${D}isVid ? ${D}chunksPathsJoined : '';
+                    ${D}hydratedMedia[] = [
+                        "id" => (int)${D}m['id'],
+                        "media_type" => ${D}m['media_type'],
+                        "file_path" => ${D}m['file_path'],
+                        "thumb_path" => !empty(${D}m['thumb_path']) ? ${D}m['thumb_path'] : ${D}m['file_path'],
+                        "duration_label" => ${D}m['duration_label'],
+                        "is_chunked" => ${D}isChunkedItem ? 1 : 0,
+                        "chunks_paths" => ${D}itemChunksPaths,
+                        "chunks_meta" => ${D}itemChunksMeta,
+                        "total_duration_ms" => ${D}isVid ? ${D}totalChunksDurMs : 0
+                    ];
+                }
+
+                ${D}post['media_items'] = ${D}hydratedMedia;
+                ${D}post['comments'] = ${D}commentsByPost[${D}pid] ?? [];
+
+                if (!empty(${D}hydratedMedia)) {
+                    ${D}firstM = ${D}hydratedMedia[0];
+                    ${D}post['media_type'] = ${D}firstM['media_type'];
+                    ${D}post['file_path'] = ${D}firstM['file_path'];
+                    ${D}post['thumb_path'] = ${D}firstM['thumb_path'];
+                    ${D}post['duration_label'] = ${D}firstM['duration_label'];
+                    ${D}post['is_chunked'] = ${D}firstM['is_chunked'];
+                    ${D}post['chunks_paths'] = ${D}firstM['chunks_paths'];
+                    ${D}post['chunks_meta'] = ${D}firstM['chunks_meta'];
+                    ${D}post['total_duration_ms'] = ${D}firstM['total_duration_ms'];
+                } else {
+                    ${D}post['media_type'] = null;
+                    ${D}post['file_path'] = '';
+                    ${D}post['thumb_path'] = '';
+                    ${D}post['duration_label'] = null;
+                    ${D}post['is_chunked'] = 0;
+                    ${D}post['chunks_paths'] = '';
+                    ${D}post['chunks_meta'] = [];
+                    ${D}post['total_duration_ms'] = 0;
+                }
+            }
+            unset(${D}post);
+            return ${D}posts;
+        }
+
+        // 3. OBTENER FEED PAGINADO (10 en 10 por defecto, sin duplicar posts multifoto)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts'))) {
+            ${D}limit = max(1, min(50, (int)(${D}_GET['limit'] ?? 10)));
+            ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
             try {
                 ${D}db = getDB();
+                ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, 
                            COALESCE(u.display_name, 'Familiar') as display_name,
@@ -1032,24 +1171,30 @@ object SynologyScripts {
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
-                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    LEFT JOIN media m ON m.post_id = p.id
                     WHERE (p.is_short = 0 OR p.is_short IS NULL)
                     ORDER BY p.is_pinned DESC, p.created_at DESC
-                    LIMIT 50
+                    LIMIT ${D}limit OFFSET ${D}offset
                 ");
-                ${D}posts = ${D}stmt->fetchAll();
-                echo json_encode(["posts" => ${D}posts]);
+                ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                ${D}nextOffset = ${D}offset + count(${D}rows);
+                echo json_encode([
+                    "posts" => ${D}rows,
+                    "total_count" => ${D}totalCount,
+                    "limit" => ${D}limit,
+                    "offset" => ${D}offset,
+                    "next_offset" => ${D}nextOffset,
+                    "has_more" => (${D}nextOffset < ${D}totalCount)
+                ]);
             } catch (Exception ${D}e) {
                 if (str_contains(${D}e->getMessage(), "doesn't exist") || str_contains(${D}e->getMessage(), "Base table") || str_contains(${D}e->getMessage(), "Unknown column")) {
                     try {
                         autoBootstrapDatabase(${D}db);
+                        ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
                         ${D}stmt = ${D}db->query("
                             SELECT p.*, 
                                    COALESCE(u.display_name, 'Familiar') as display_name,
@@ -1057,20 +1202,25 @@ object SynologyScripts {
                                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                                    g.name as group_name,
-                                   m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
-                                   (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                             FROM posts p
                             LEFT JOIN users u ON p.user_id = u.id
                             LEFT JOIN family_groups g ON g.id = p.group_id
-                            LEFT JOIN media m ON m.post_id = p.id
                             WHERE (p.is_short = 0 OR p.is_short IS NULL)
                             ORDER BY p.is_pinned DESC, p.created_at DESC
-                            LIMIT 50
+                            LIMIT ${D}limit OFFSET ${D}offset
                         ");
-                        ${D}posts = ${D}stmt->fetchAll();
-                        echo json_encode(["posts" => ${D}posts]);
+                        ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                        ${D}nextOffset = ${D}offset + count(${D}rows);
+                        echo json_encode([
+                            "posts" => ${D}rows,
+                            "total_count" => ${D}totalCount,
+                            "limit" => ${D}limit,
+                            "offset" => ${D}offset,
+                            "next_offset" => ${D}nextOffset,
+                            "has_more" => (${D}nextOffset < ${D}totalCount)
+                        ]);
                         exit;
                     } catch (Exception ${D}retryEx) {
                         http_response_code(500);
@@ -1086,8 +1236,11 @@ object SynologyScripts {
 
         // 3.0. OBTENER SHORTS (VÍDEOS VERTICALES Y MARCADOS COMO SHORTS)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'shorts') || str_ends_with(${D}uri, '/shorts'))) {
+            ${D}limit = max(1, min(100, (int)(${D}_GET['limit'] ?? 30)));
+            ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
             try {
                 ${D}db = getDB();
+                ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE is_short = 1")->fetchColumn();
                 ${D}stmt = ${D}db->query("
                     SELECT p.*, 
                            COALESCE(u.display_name, 'Familiar') as display_name,
@@ -1095,19 +1248,23 @@ object SynologyScripts {
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
-                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    LEFT JOIN media m ON m.post_id = p.id
                     WHERE p.is_short = 1
                     ORDER BY p.created_at DESC
-                    LIMIT 100
+                    LIMIT ${D}limit OFFSET ${D}offset
                 ");
-                echo json_encode(["shorts" => ${D}stmt->fetchAll()]);
+                ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                ${D}nextOffset = ${D}offset + count(${D}rows);
+                echo json_encode([
+                    "shorts" => ${D}rows,
+                    "total_count" => ${D}totalCount,
+                    "has_more" => (${D}nextOffset < ${D}totalCount),
+                    "next_offset" => ${D}nextOffset
+                ]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
@@ -1177,8 +1334,14 @@ object SynologyScripts {
         // 3.4. OBTENER PUBLICACIONES DE UN GRUPO
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'group/posts') || str_ends_with(${D}uri, '/group/posts'))) {
             ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
+            ${D}limit = max(1, min(100, (int)(${D}_GET['limit'] ?? 30)));
+            ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
             try {
                 ${D}db = getDB();
+                ${D}cntStmt = ${D}db->prepare("SELECT COUNT(*) FROM posts WHERE group_id = ?");
+                ${D}cntStmt->execute([${D}groupId]);
+                ${D}totalCount = (int)${D}cntStmt->fetchColumn();
+
                 ${D}stmt = ${D}db->prepare("
                     SELECT p.*, 
                            COALESCE(u.display_name, 'Familiar') as display_name,
@@ -1186,20 +1349,26 @@ object SynologyScripts {
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
-                           m.media_type, m.file_path, m.thumb_path, m.duration_label, m.is_chunked,
-                           (SELECT GROUP_CONCAT(c.file_path ORDER BY c.chunk_index ASC SEPARATOR '|||') FROM media_chunks c WHERE c.post_id = p.id) as chunks_paths,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    LEFT JOIN media m ON m.post_id = p.id
                     WHERE p.group_id = ?
-                    ORDER BY p.created_at DESC
-                    LIMIT 100
+                    ORDER BY p.is_pinned DESC, p.created_at DESC
+                    LIMIT ${D}limit OFFSET ${D}offset
                 ");
                 ${D}stmt->execute([${D}groupId]);
-                echo json_encode(["posts" => ${D}stmt->fetchAll()]);
+                ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                ${D}nextOffset = ${D}offset + count(${D}rows);
+                echo json_encode([
+                    "posts" => ${D}rows,
+                    "total_count" => ${D}totalCount,
+                    "limit" => ${D}limit,
+                    "offset" => ${D}offset,
+                    "next_offset" => ${D}nextOffset,
+                    "has_more" => (${D}nextOffset < ${D}totalCount)
+                ]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
@@ -1570,17 +1739,23 @@ object SynologyScripts {
             }
 
             ${D}chunkDir = __DIR__ . '/uploads/chunks/' . ${D}sessionId;
-            if (!is_dir(${D}chunkDir)) mkdir(${D}chunkDir, 0777, true);
+            if (!is_dir(${D}chunkDir)) @mkdir(${D}chunkDir, 0777, true);
 
             ${D}chunkName = sprintf("chunk_%04d.mp4", ${D}chunkIndex);
             ${D}targetPath = ${D}chunkDir . '/' . ${D}chunkName;
 
-            move_uploaded_file(${D}_FILES[${D}fileKey]['tmp_name'], ${D}targetPath);
+            ${D}moved = move_uploaded_file(${D}_FILES[${D}fileKey]['tmp_name'], ${D}targetPath);
+            if (!${D}moved || !file_exists(${D}targetPath) || filesize(${D}targetPath) <= 0) {
+                http_response_code(500);
+                echo json_encode(["error" => "No se pudo guardar el fragmento #{${D}chunkIndex} en el NAS"]);
+                exit;
+            }
 
             echo json_encode([
                 "status" => "OK",
                 "session_id" => ${D}sessionId,
                 "chunk_index" => ${D}chunkIndex,
+                "bytes" => filesize(${D}targetPath),
                 "received" => true
             ]);
             exit;
@@ -1596,7 +1771,10 @@ object SynologyScripts {
             ${D}durationLabel = trim(${D}_POST['duration_label'] ?? '');
             ${D}isShort = (int)(${D}_POST['is_short'] ?? 0);
             ${D}groupId = !empty(${D}_POST['group_id']) ? (int)${D}_POST['group_id'] : null;
-            ${D}totalChunks = (int)(${D}_POST['total_chunks'] ?? 1);
+            ${D}totalChunks = max(1, (int)(${D}_POST['total_chunks'] ?? 1));
+            ${D}chunkDurationsRaw = ${D}_POST['chunk_durations'] ?? '[]';
+            ${D}chunkDurations = json_decode(${D}chunkDurationsRaw, true);
+            if (!is_array(${D}chunkDurations)) ${D}chunkDurations = [];
 
             ${D}chunkDir = __DIR__ . '/uploads/chunks/' . ${D}sessionId;
             if (empty(${D}sessionId) || !is_dir(${D}chunkDir)) {
@@ -1629,11 +1807,20 @@ object SynologyScripts {
                 ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
                 ${D}stmtMedia->execute([${D}postId, ${D}firstChunkRel, ${D}thumbRel, ${D}durationLabel ?: null]);
 
-                // Registrar cada fragmento en media_chunks
-                ${D}stmtChunk = ${D}db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
-                for (${D}i = 0; ${D}i < ${D}totalChunks; ${D}i++) {
-                    ${D}relPath = sprintf("uploads/chunks/%s/chunk_%04d.mp4", ${D}sessionId, ${D}i);
-                    ${D}stmtChunk->execute([${D}postId, ${D}i, ${D}totalChunks, ${D}relPath]);
+                // Registrar cada fragmento y su duración en media_chunks
+                try {
+                    ${D}stmtChunk = ${D}db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path, duration_ms) VALUES (?, ?, ?, ?, ?)");
+                    for (${D}i = 0; ${D}i < ${D}totalChunks; ${D}i++) {
+                        ${D}relPath = sprintf("uploads/chunks/%s/chunk_%04d.mp4", ${D}sessionId, ${D}i);
+                        ${D}durMs = isset(${D}chunkDurations[${D}i]) ? max(0, (int)${D}chunkDurations[${D}i]) : 0;
+                        ${D}stmtChunk->execute([${D}postId, ${D}i, ${D}totalChunks, ${D}relPath, ${D}durMs]);
+                    }
+                } catch (Exception ${D}eChunkCol) {
+                    ${D}stmtChunkFallback = ${D}db->prepare("INSERT INTO media_chunks (post_id, chunk_index, total_chunks, file_path) VALUES (?, ?, ?, ?)");
+                    for (${D}i = 0; ${D}i < ${D}totalChunks; ${D}i++) {
+                        ${D}relPath = sprintf("uploads/chunks/%s/chunk_%04d.mp4", ${D}sessionId, ${D}i);
+                        ${D}stmtChunkFallback->execute([${D}postId, ${D}i, ${D}totalChunks, ${D}relPath]);
+                    }
                 }
 
                 ${D}db->commit();

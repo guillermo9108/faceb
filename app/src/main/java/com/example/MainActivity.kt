@@ -84,7 +84,9 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         val title: String,
         val author: String = "",
         val duration: String? = null,
-        val chunks: List<String> = emptyList()
+        val chunks: List<String> = emptyList(),
+        val chunkDurationsMs: List<Long> = emptyList(),
+        val totalDurationMs: Long = 0L
     )
 
     var activeVideoToPlay by remember { mutableStateOf<ActiveVideoPlayInfo?>(null) }
@@ -93,6 +95,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
 
     val familyMembers by viewModel.familyMembers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val hasMoreFeedPosts by viewModel.hasMoreFeedPosts.collectAsState()
+    val isLoadingMoreFeed by viewModel.isLoadingMoreFeed.collectAsState()
     val isUserLoggedIn by viewModel.isUserLoggedIn.collectAsState()
     val shorts by viewModel.shorts.collectAsState()
     val isProfileDialogOpen by viewModel.isProfileDialogOpen.collectAsState()
@@ -202,12 +206,16 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onPlayVideo = { url, title, author, dur, chunks ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
+                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
                         },
                         onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
                         onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
-                        onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) }
+                        onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) },
+                        hasMorePosts = hasMoreFeedPosts,
+                        isLoadingMore = isLoadingMoreFeed,
+                        onLoadMore = { viewModel.loadMoreFeed() },
+                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
                     )
                 }
                 FeedTab.WATCH -> {
@@ -218,9 +226,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                         onDeletePost = { postId -> viewModel.deletePost(postId) },
                         onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                        onPlayVideo = { url, title, author, dur, chunks ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks)
-                        }
+                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
+                        },
+                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
                     )
                 }
                 FeedTab.SHORTS -> {
@@ -248,11 +257,12 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onRefreshGroups = { viewModel.refreshGroups() },
                         onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
                         onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                        onPlayVideo = { url, title, author, dur, chunks ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author.name, dur, chunks)
+                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author.name, dur, chunks, chunkDurations, totalDur)
                         },
                         onTogglePin = { postId -> viewModel.togglePinPost(postId) },
-                        onDeletePost = { postId -> viewModel.deletePost(postId) }
+                        onDeletePost = { postId -> viewModel.deletePost(postId) },
+                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
                     )
                 }
                 FeedTab.MEMBERS -> {
@@ -368,6 +378,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             authorName = info.author,
             durationLabel = info.duration,
             chunks = info.chunks,
+            chunkDurationsMs = info.chunkDurationsMs,
+            totalDurationMsHint = info.totalDurationMs,
             onDismiss = { activeVideoToPlay = null }
         )
     }

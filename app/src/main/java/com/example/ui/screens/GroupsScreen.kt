@@ -74,9 +74,10 @@ fun GroupsScreen(
     onRefreshGroups: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?, List<String>) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long) -> Unit,
     onTogglePin: (Int) -> Unit = {},
-    onDeletePost: (Int) -> Unit = {}
+    onDeletePost: (Int) -> Unit = {},
+    onToggleSaveOffline: (Post) -> Unit = {}
 ) {
     val isAdmin = currentMember.role.equals("Administrador", ignoreCase = true) ||
             currentMember.name.equals("Administrador", ignoreCase = true) ||
@@ -98,7 +99,8 @@ fun GroupsScreen(
             onCommentClick = onCommentClick,
             onPlayVideo = onPlayVideo,
             onTogglePin = onTogglePin,
-            onDeletePost = onDeletePost
+            onDeletePost = onDeletePost,
+            onToggleSaveOffline = onToggleSaveOffline
         )
     } else {
         GroupsListView(
@@ -456,9 +458,10 @@ private fun GroupDetailView(
     onBack: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?, List<String>) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long) -> Unit,
     onTogglePin: (Int) -> Unit,
-    onDeletePost: (Int) -> Unit
+    onDeletePost: (Int) -> Unit,
+    onToggleSaveOffline: (Post) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier
@@ -592,7 +595,10 @@ private fun GroupDetailView(
                     onCommentClick = { onCommentClick(post) },
                     onTogglePin = { onTogglePin(post.id) },
                     onDeletePost = { onDeletePost(post.id) },
-                    onPlayVideo = { url, title, _, dur, chunks -> onPlayVideo(url, title, post.author, dur, chunks) }
+                    onPlayVideo = { url, title, _, dur, chunks, chunkDurations, totalDur ->
+                        onPlayVideo(url, title, post.author, dur, chunks, chunkDurations, totalDur)
+                    },
+                    onToggleSaveOffline = { onToggleSaveOffline(post) }
                 )
             }
         }

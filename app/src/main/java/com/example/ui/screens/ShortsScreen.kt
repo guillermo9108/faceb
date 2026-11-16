@@ -42,6 +42,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,17 +61,24 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.model.FamilyMember
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.ui.components.UnifiedTimelineHelper
+import com.example.ui.components.UnifiedVideoScrubberBar
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.ReactionLoveRed
+import com.example.util.OfflineMediaManager
+import kotlinx.coroutines.delay
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -182,26 +191,95 @@ private fun ShortItemPage(
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
+    var isBuffering by remember { mutableStateOf(true) }
+    var currentChunkIndex by remember { mutableIntStateOf(0) }
+    var localPositionMs by remember { mutableLongStateOf(0L) }
     val mediaItem = post.mediaItems.firstOrNull()
 
-    val rawVideoUrl = mediaItem?.url ?: ""
-    val resolvedUrl = remember(rawVideoUrl, baseUrl) {
-        if (rawVideoUrl.startsWith("http://") || rawVideoUrl.startsWith("https://") || rawVideoUrl.startsWith("content://")) {
-            rawVideoUrl
+    fun resolveShortUrl(raw: String): String {
+        if (raw.isBlank()) return ""
+        return if (raw.startsWith("http://") || raw.startsWith("https://") ||
+            raw.startsWith("content://") || raw.startsWith("file://")
+        ) {
+            raw
         } else {
             val cleanBase = baseUrl.trimEnd('/')
-            val cleanPath = rawVideoUrl.trimStart('/')
+            val cleanPath = raw.trimStart('/')
             "$cleanBase/$cleanPath"
         }
     }
 
-    val exoPlayer = remember(resolvedUrl) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
-            if (resolvedUrl.isNotBlank()) {
-                setMediaItem(ExoMediaItem.fromUri(Uri.parse(resolvedUrl)))
-                prepare()
+    val rawVideoUrl = mediaItem?.url ?: ""
+    val resolvedUrl = remember(rawVideoUrl, baseUrl) { resolveShortUrl(rawVideoUrl) }
+    val resolvedChunks = remember(mediaItem?.chunks, baseUrl) {
+        mediaItem?.chunks?.map { resolveShortUrl(it) }?.filter { it.isNotBlank() } ?: emptyList()
+    }
+    var exoWindowDurationsMs by remember(resolvedUrl, resolvedChunks) {
+        mutableStateOf(List(resolvedChunks.size.coerceAtLeast(1)) { 0L })
+    }
+
+    val exoPlayer = remember(resolvedUrl, resolvedChunks) {
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(1000, 30000, 500, 1000)
+            .build()
+
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
+                repeatMode = Player.REPEAT_MODE_ALL
+                if (resolvedChunks.isNotEmpty()) {
+                    val items = resolvedChunks.map { chunkUrl ->
+                        ExoMediaItem.fromUri(OfflineMediaManager.getPlayableMediaUri(context, chunkUrl))
+                    }
+                    setMediaItems(items)
+                    prepare()
+                } else if (resolvedUrl.isNotBlank()) {
+                    setMediaItem(ExoMediaItem.fromUri(OfflineMediaManager.getPlayableMediaUri(context, resolvedUrl)))
+                    prepare()
+                }
             }
+    }
+
+    fun syncWindowDurations() {
+        val timeline = exoPlayer.currentTimeline
+        val count = timeline.windowCount
+        if (count > 0) {
+            val window = Timeline.Window()
+            exoWindowDurationsMs = MutableList(count) { idx ->
+                timeline.getWindow(idx, window)
+                val dur = window.durationMs
+                if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
+            }
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                isBuffering = (playbackState == Player.STATE_BUFFERING)
+                if (playbackState == Player.STATE_READY) {
+                    syncWindowDurations()
+                }
+            }
+
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                syncWindowDurations()
+            }
+
+            override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {
+                currentChunkIndex = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+                syncWindowDurations()
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                if (playing) isBuffering = false
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
         }
     }
 
@@ -213,10 +291,40 @@ private fun ShortItemPage(
         }
     }
 
-    DisposableEffect(resolvedUrl) {
-        onDispose {
-            exoPlayer.release()
+    LaunchedEffect(isActive, isPlaying) {
+        while (isActive) {
+            currentChunkIndex = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+            localPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            syncWindowDurations()
+            delay(150)
         }
+    }
+
+    val chunkCount = resolvedChunks.size.coerceAtLeast(1)
+    val fallbackTotalMs = (mediaItem?.totalDurationMs ?: 0L).takeIf { it > 0L }
+        ?: UnifiedTimelineHelper.parseDurationLabelMs(mediaItem?.durationLabel)
+    val unifiedDurations = remember(chunkCount, mediaItem?.chunkDurationsMs, exoWindowDurationsMs, fallbackTotalMs) {
+        UnifiedTimelineHelper.buildChunkDurations(
+            chunkCount = chunkCount,
+            explicitDurationsMs = mediaItem?.chunkDurationsMs ?: emptyList(),
+            exoDurationsMs = exoWindowDurationsMs,
+            fallbackTotalMs = fallbackTotalMs
+        )
+    }
+    val unifiedOffsets = remember(unifiedDurations) {
+        UnifiedTimelineHelper.buildChunkOffsets(unifiedDurations)
+    }
+    val totalUnifiedDurationMs = remember(unifiedDurations) {
+        UnifiedTimelineHelper.totalDurationMs(unifiedDurations)
+    }
+    val globalPosMs = UnifiedTimelineHelper.globalPositionMs(
+        chunkIndex = currentChunkIndex,
+        localPositionMs = localPositionMs,
+        offsetsMs = unifiedOffsets,
+        durationsMs = unifiedDurations
+    )
+    val boundaries = remember(unifiedOffsets, totalUnifiedDurationMs) {
+        UnifiedTimelineHelper.boundaryFractions(unifiedOffsets, totalUnifiedDurationMs)
     }
 
     Box(
@@ -233,7 +341,7 @@ private fun ShortItemPage(
                 )
             }
     ) {
-        // Reproductor de vídeo nativo ExoPlayer
+        // Reproductor de vídeo nativo ExoPlayer (soporta fragmentos + caché offline)
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
@@ -245,11 +353,46 @@ private fun ShortItemPage(
             modifier = Modifier.fillMaxSize()
         )
 
+        AnimatedVisibility(
+            visible = isBuffering,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            CircularProgressIndicator(
+                color = Color.White,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(44.dp)
+            )
+        }
+
+        AnimatedVisibility(
+            visible = !isPlaying && !isBuffering,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = "Reproducir Short",
+                    tint = Color.White,
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+        }
+
         // Degradado inferior para legibilidad de subtítulos
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(240.dp)
+                .height(260.dp)
                 .align(Alignment.BottomCenter)
                 .background(
                     Brush.verticalGradient(
@@ -262,7 +405,7 @@ private fun ShortItemPage(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, end = 80.dp, bottom = 24.dp)
+                .padding(start = 16.dp, end = 80.dp, bottom = 78.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -304,7 +447,7 @@ private fun ShortItemPage(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 28.dp),
+                .padding(end = 16.dp, bottom = 82.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
@@ -353,5 +496,32 @@ private fun ShortItemPage(
                 )
             }
         }
+
+        // Barra unificada compacta en la parte inferior del Short
+        UnifiedVideoScrubberBar(
+            globalPositionMs = globalPosMs,
+            totalDurationMs = totalUnifiedDurationMs,
+            isPlaying = isPlaying,
+            currentChunkIndex = currentChunkIndex,
+            totalChunks = chunkCount,
+            chunkBoundaryFractions = boundaries,
+            onTogglePlayPause = { isPlaying = !isPlaying },
+            onSeekToGlobalMs = { targetGlobalMs ->
+                val (targetChunk, localMs) = UnifiedTimelineHelper.seekTargetForGlobal(
+                    globalPosMs = targetGlobalMs,
+                    offsetsMs = unifiedOffsets,
+                    durationsMs = unifiedDurations
+                )
+                if (chunkCount > 1) {
+                    exoPlayer.seekTo(targetChunk, localMs)
+                } else {
+                    exoPlayer.seekTo(localMs)
+                }
+                currentChunkIndex = targetChunk
+                localPositionMs = localMs
+            },
+            compact = true,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }

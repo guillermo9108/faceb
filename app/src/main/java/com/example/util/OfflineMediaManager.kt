@@ -64,9 +64,39 @@ object OfflineMediaManager {
     }
 
     private fun getExtensionFromUrl(url: String): String {
-        val clean = url.substringBefore('?').substringBefore('#')
-        val ext = clean.substringAfterLast('.', "")
-        return if (ext.isNotEmpty() && ext.length <= 5) ext.lowercase() else "bin"
+        val pathParam = try {
+            Uri.parse(url).getQueryParameter("path")
+        } catch (_: Exception) {
+            null
+        }
+        val candidate = if (!pathParam.isNullOrBlank()) {
+            pathParam.substringBefore('?').substringBefore('#')
+        } else {
+            url.substringBefore('?').substringBefore('#')
+        }
+        val ext = candidate.substringAfterLast('.', "")
+        return if (ext.isNotEmpty() && ext.length <= 5 && ext.all { it.isLetterOrDigit() }) {
+            ext.lowercase()
+        } else {
+            "bin"
+        }
+    }
+
+    private fun isVideoExtension(url: String): Boolean {
+        val ext = getExtensionFromUrl(url)
+        return ext in setOf("mp4", "mov", "mkv", "webm", "3gp", "avi", "m4v")
+    }
+
+    private fun resolveFullUrl(baseUrl: String, raw: String): String? {
+        if (raw.isBlank()) return null
+        if (raw.startsWith("http://") || raw.startsWith("https://") ||
+            raw.startsWith("file://") || raw.startsWith("content://")
+        ) {
+            return raw
+        }
+        val cleanBase = baseUrl.trimEnd('/')
+        if (cleanBase.isBlank()) return null
+        return "$cleanBase/${raw.trimStart('/')}"
     }
 
     fun getLocalCacheFile(context: Context, url: String?): File? {
@@ -78,7 +108,15 @@ object OfflineMediaManager {
         val ext = getExtensionFromUrl(url)
         val filename = "cached_${hashUrl(url)}.$ext"
         val file = File(dir, filename)
-        return if (file.exists() && file.length() > 0) file else null
+        if (file.exists() && file.length() > 0) {
+            return file
+        }
+        // Compatibilidad con caché legacy guardada con extensión .php/.bin
+        if (ext != "php") {
+            val legacyPhp = File(dir, "cached_${hashUrl(url)}.php")
+            if (legacyPhp.exists() && legacyPhp.length() > 0) return legacyPhp
+        }
+        return null
     }
 
     fun isCached(context: Context, url: String?): Boolean {
@@ -98,7 +136,6 @@ object OfflineMediaManager {
         return if (cached != null) {
             Uri.fromFile(cached)
         } else {
-            // Reproducir en streaming directo sin descargar archivos pesados automáticamente
             Uri.parse(url)
         }
     }
@@ -169,26 +206,30 @@ object OfflineMediaManager {
 
     /**
      * Retorna el objeto adecuado para Coil (File si está en caché offline local, String si es remoto).
-     * Si es un vídeo sin miniatura previa, prioriza la miniatura local generada o desencadena su extracción perezosa en segundo plano.
+     * Distingue si el recurso proporcionado es una imagen/poster ya cacheable directamente o una URL de vídeo
+     * que requiere extracción perezosa de fotograma en .offline_media/thumbs.
      */
     fun getDisplayModel(context: Context, url: String?, isVideo: Boolean = false): Any? {
         if (url.isNullOrBlank()) return null
 
-        // 1. Si es vídeo, comprobar primero si ya existe la miniatura local generada en .offline_media/thumbs
-        if (isVideo) {
+        val cachedImage = getLocalCacheFile(context, url)
+        if (cachedImage != null && !isVideoExtension(url)) {
+            return cachedImage
+        }
+
+        if (isVideo || isVideoExtension(url)) {
             val vThumb = getVideoThumbnailFile(context, url)
             if (vThumb != null) return vThumb
 
-            // Desencadenar la extracción perezosa en segundo plano a medida que el usuario hace scroll
-            val appContext = context.applicationContext
-            scope.launch {
-                getOrGenerateVideoThumbnail(appContext, url)
+            if (isVideoExtension(url)) {
+                val appContext = context.applicationContext
+                scope.launch {
+                    getOrGenerateVideoThumbnail(appContext, url)
+                }
             }
         }
 
-        // 2. Si es imagen o miniatura descargada previamente en la carpeta oculta (.offline_media)
-        val cached = getLocalCacheFile(context, url)
-        return cached ?: url
+        return cachedImage ?: url
     }
 
     /**
@@ -200,11 +241,13 @@ object OfflineMediaManager {
         }
 
         val existing = getLocalCacheFile(context, url)
-        if (existing != null) return@withContext existing
+        if (existing != null) {
+            existing.setLastModified(System.currentTimeMillis())
+            return@withContext existing
+        }
 
         val key = hashUrl(url)
         if (!downloadingSet.add(key)) {
-            // Ya hay una descarga en curso para este archivo
             return@withContext null
         }
 
@@ -223,7 +266,6 @@ object OfflineMediaManager {
             val body = response.body ?: return@withContext null
             val contentLength = body.contentLength()
             if (maxBytesLimit > 0 && contentLength > maxBytesLimit) {
-                // Abortar descarga: archivo demasiado pesado para el modo offline automático
                 body.close()
                 return@withContext null
             }
@@ -236,13 +278,15 @@ object OfflineMediaManager {
             if (partFile.exists() && partFile.length() > 0) {
                 if (finalFile.exists()) finalFile.delete()
                 val renamed = partFile.renameTo(finalFile)
-                if (renamed) {
+                val out = if (renamed) {
                     finalFile
                 } else {
                     partFile.copyTo(finalFile, overwrite = true)
                     partFile.delete()
                     finalFile
                 }
+                out.setLastModified(System.currentTimeMillis())
+                out
             } else {
                 partFile.delete()
                 null
@@ -264,93 +308,130 @@ object OfflineMediaManager {
     }
 
     /**
-     * Precarga ligera en segundo plano protegida contra saturación de red.
-     * Siguiendo la política de optimización: SOLO descarga miniaturas y el primer fragmento (preview chunk)
-     * de los vídeos en publicaciones y grupos, permitiendo inicio instantáneo sin saturar la red ni la memoria.
+     * Precarga progresiva por página (10 publicaciones):
+     * Descarga todas las miniaturas y fotografías del lote recibido para lectura offline inmediata,
+     * SIN descargar vídeos completos en segundo plano ni saturar la red.
      */
-    fun prefetchPostsMedia(context: Context, baseUrl: String, posts: List<Post>) {
+    fun prefetchPageMedia(
+        context: Context,
+        baseUrl: String,
+        pagePosts: List<Post>,
+        maxCacheBytes: Long = 1024L * 1024L * 1024L,
+        protectedUrls: Set<String> = emptySet()
+    ) {
         val appContext = context.applicationContext
         scope.launch {
             val urls = mutableListOf<String>()
-            posts.forEach { post ->
+            pagePosts.forEach { post ->
                 post.mediaItems.forEach { media ->
                     val isVideo = media.type == com.example.model.MediaType.VIDEO
 
-                    // 1. Siempre precargar la miniatura
-                    val thumbUrl = if (media.thumbnailUrl.startsWith("http://") || media.thumbnailUrl.startsWith("https://")) {
-                        media.thumbnailUrl
-                    } else if (media.thumbnailUrl.isNotBlank() && baseUrl.isNotBlank()) {
-                        "$baseUrl/${media.thumbnailUrl.trimStart('/')}"
-                    } else null
-                    thumbUrl?.let { urls.add(it) }
-
-                    if (!isVideo) {
-                        // Para fotos familiares normales: precargar imagen completa
-                        val imgUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
-                            media.url
-                        } else if (media.url.isNotBlank() && baseUrl.isNotBlank()) {
-                            "$baseUrl/${media.url.trimStart('/')}"
-                        } else null
-                        imgUrl?.let { urls.add(it) }
-                    } else {
-                        // Para VÍDEOS: Solo descargar el PRIMER FRAGMENTO si está fragmentado (trozos ligeros de 2-4MB)
-                        // NUNCA descargar archivos de vídeo completos ni pesados no fragmentados en segundo plano
-                        if (media.isChunked && media.chunks.isNotEmpty()) {
-                            val firstChunkUrl = media.chunks.first()
-                            val fullFirstChunk = if (firstChunkUrl.startsWith("http://") || firstChunkUrl.startsWith("https://")) {
-                                firstChunkUrl
-                            } else if (baseUrl.isNotBlank()) {
-                                "$baseUrl/${firstChunkUrl.trimStart('/')}"
-                            } else null
-                            fullFirstChunk?.let { urls.add(it) }
+                    // 1. Miniatura (si es imagen/poster)
+                    resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { thumb ->
+                        if (!isVideoExtension(thumb)) {
+                            urls.add(thumb)
                         }
+                    }
+
+                    // 2. Fotos completas del mosaico
+                    if (!isVideo) {
+                        resolveFullUrl(baseUrl, media.url)?.let { urls.add(it) }
                     }
                 }
             }
 
-            // Descargar progresivamente solo estos elementos ligeros
             urls.distinct().forEach { url ->
                 if (!isCached(appContext, url)) {
-                    downloadAndCache(appContext, url, maxBytesLimit = 25 * 1024 * 1024L) // Límite de seguridad 25MB
+                    downloadAndCache(appContext, url, maxBytesLimit = 25 * 1024 * 1024L)
                 }
             }
+
+            enforceCacheLimit(appContext, maxCacheBytes, protectedUrls)
         }
     }
 
-    /**
-     * Descarga bajo demanda la totalidad de fragmentos de un vídeo cuando el usuario
-     * solicita explícitamente guardar la publicación completa para modo offline sin restricciones.
-     */
-    fun downloadFullPostMedia(context: Context, baseUrl: String, post: Post) {
-        val appContext = context.applicationContext
-        scope.launch {
-            val urls = mutableListOf<String>()
-            post.mediaItems.forEach { media ->
-                if (media.chunks.isNotEmpty()) {
-                    media.chunks.forEach { chunkUrl ->
-                        val fullChunk = if (chunkUrl.startsWith("http://") || chunkUrl.startsWith("https://")) {
-                            chunkUrl
-                        } else if (chunkUrl.isNotBlank() && baseUrl.isNotBlank()) {
-                            "$baseUrl/${chunkUrl.trimStart('/')}"
-                        } else null
-                        fullChunk?.let { urls.add(it) }
-                    }
-                } else if (media.url.isNotBlank()) {
-                    val fullUrl = if (media.url.startsWith("http://") || media.url.startsWith("https://")) {
-                        media.url
-                    } else if (baseUrl.isNotBlank()) {
-                        "$baseUrl/${media.url.trimStart('/')}"
-                    } else null
-                    fullUrl?.let { urls.add(it) }
+    fun prefetchPostsMedia(context: Context, baseUrl: String, posts: List<Post>) {
+        prefetchPageMedia(context, baseUrl, posts)
+    }
+
+    fun collectPostMediaUrls(baseUrl: String, post: Post): Set<String> {
+        val urls = linkedSetOf<String>()
+        post.mediaItems.forEach { media ->
+            resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { urls.add(it) }
+            if (media.chunks.isNotEmpty()) {
+                media.chunks.forEach { chunkUrl ->
+                    resolveFullUrl(baseUrl, chunkUrl)?.let { urls.add(it) }
                 }
             }
-
-            urls.distinct().forEach { url ->
-                if (!isCached(appContext, url)) {
-                    downloadAndCache(appContext, url)
-                }
+            if (media.url.isNotBlank()) {
+                resolveFullUrl(baseUrl, media.url)?.let { urls.add(it) }
             }
         }
+        return urls
+    }
+
+    /**
+     * Descarga explícita de toda la publicación (fotos, miniaturas y todos los fragmentos de vídeo)
+     * cuando el usuario pulsa "Guardar offline".
+     */
+    suspend fun downloadFullPostMedia(
+        context: Context,
+        baseUrl: String,
+        post: Post,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> }
+    ): Boolean = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        val urls = collectPostMediaUrls(baseUrl, post).toList()
+        if (urls.isEmpty()) return@withContext true
+
+        var completed = 0
+        var allSucceeded = true
+        urls.forEach { url ->
+            val ok = isCached(appContext, url) || downloadAndCache(appContext, url) != null
+            if (!ok) allSucceeded = false
+            completed++
+            onProgress(completed, urls.size)
+        }
+        allSucceeded
+    }
+
+    /**
+     * Mantiene la caché bajo el límite máximo (1 GB por defecto) eliminando los archivos más antiguos
+     * mediante política LRU, protegiendo siempre los archivos pertenecientes a publicaciones guardadas offline.
+     */
+    fun enforceCacheLimit(
+        context: Context,
+        maxBytes: Long = 1024L * 1024L * 1024L,
+        protectedUrls: Set<String> = emptySet()
+    ) {
+        try {
+            val dir = getOfflineDir(context)
+            val protectedHashes = protectedUrls.map { hashUrl(it) }.toSet()
+
+            val mainFiles = dir.listFiles { f ->
+                f.isFile && !f.name.equals(".nomedia") && !f.name.endsWith(".part")
+            } ?: emptyArray()
+            val thumbFiles = getThumbsDir(context).listFiles { f ->
+                f.isFile && !f.name.endsWith(".part")
+            } ?: emptyArray()
+
+            val allFiles = (mainFiles + thumbFiles).toList()
+            var totalSize = allFiles.sumOf { it.length() }
+            if (totalSize <= maxBytes) return
+
+            val evictable = allFiles.filter { file ->
+                val hashMatch = protectedHashes.any { h -> file.name.contains(h) }
+                !hashMatch
+            }.sortedBy { it.lastModified() }
+
+            for (file in evictable) {
+                if (totalSize <= maxBytes) break
+                val len = file.length()
+                if (file.delete()) {
+                    totalSize -= len
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     /**
@@ -358,7 +439,9 @@ object OfflineMediaManager {
      */
     fun getCacheStats(context: Context): OfflineCacheStats {
         val dir = getOfflineDir(context)
-        val files = dir.listFiles { f -> f.isFile && !f.name.equals(".nomedia") && !f.name.endsWith(".part") } ?: emptyArray()
+        val mainFiles = dir.listFiles { f -> f.isFile && !f.name.equals(".nomedia") && !f.name.endsWith(".part") } ?: emptyArray()
+        val thumbFiles = getThumbsDir(context).listFiles { f -> f.isFile && !f.name.endsWith(".part") } ?: emptyArray()
+        val files = mainFiles + thumbFiles
         val totalBytes = files.sumOf { it.length() }
         val mb = totalBytes / (1024.0 * 1024.0)
         val formatted = if (mb >= 1.0) "%.1f MB".format(mb) else "%.0f KB".format(totalBytes / 1024.0)
@@ -376,7 +459,9 @@ object OfflineMediaManager {
         val dir = getOfflineDir(context)
         var allOk = true
         dir.listFiles()?.forEach { file ->
-            if (file.name != ".nomedia") {
+            if (file.isDirectory) {
+                file.listFiles()?.forEach { sub -> if (!sub.delete()) allOk = false }
+            } else if (file.name != ".nomedia") {
                 if (!file.delete()) allOk = false
             }
         }

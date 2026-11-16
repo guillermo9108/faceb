@@ -29,9 +29,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 class FamilyRepository(
     private val context: Context,
@@ -179,6 +182,14 @@ class FamilyRepository(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private val _hasMoreFeedPosts = MutableStateFlow(true)
+    val hasMoreFeedPosts: StateFlow<Boolean> = _hasMoreFeedPosts.asStateFlow()
+
+    private val _isLoadingMoreFeed = MutableStateFlow(false)
+    val isLoadingMoreFeed: StateFlow<Boolean> = _isLoadingMoreFeed.asStateFlow()
+
+    private var loadedRemoteOffset = 0
+
     init {
         AppErrorLogger.initialize(context)
 
@@ -190,27 +201,38 @@ class FamilyRepository(
             }
         }
 
-        // Cargar publicaciones y shorts en caché local (Room) primero para modo offline
+        // Cargar las primeras 10 publicaciones, shorts y grupos desde Room para inicio instantáneo / offline
         scope.launch {
-            database.postDao().getFeedPosts().collect { cachedList ->
-                if (_posts.value.isEmpty() && cachedList.isNotEmpty()) {
-                    _posts.value = cachedList.map { it.toDomainPost(findMember(it.authorId)) }
+            try {
+                val cachedFeed = database.postDao().getFeedPostsPaged(10, 0)
+                if (_posts.value.isEmpty() && cachedFeed.isNotEmpty()) {
+                    val domainPosts = cachedFeed.map { entity ->
+                        entity.toDomainPost(findMember(entity.authorId)).also { domain ->
+                            if (domain.comments.isNotEmpty()) {
+                                _commentsByPostId.putIfAbsent(domain.id, domain.comments)
+                            }
+                        }
+                    }
+                    _posts.value = domainPosts
+                    _hasMoreFeedPosts.value = cachedFeed.size >= 10
                 }
-            }
+            } catch (_: Exception) {}
         }
         scope.launch {
-            database.postDao().getShortsPosts().collect { cachedShorts ->
+            try {
+                val cachedShorts = database.postDao().getShortsPosts().first()
                 if (_shorts.value.isEmpty() && cachedShorts.isNotEmpty()) {
                     _shorts.value = rankShorts(cachedShorts.map { it.toDomainPost(findMember(it.authorId)) })
                 }
-            }
+            } catch (_: Exception) {}
         }
         scope.launch {
-            database.groupDao().getAllGroups().collect { cachedGroups ->
+            try {
+                val cachedGroups = database.groupDao().getAllGroups().first()
                 if (_groups.value.isEmpty() && cachedGroups.isNotEmpty()) {
                     _groups.value = cachedGroups.map { it.toDomainGroup() }
                 }
-            }
+            } catch (_: Exception) {}
         }
     }
 
@@ -394,26 +416,67 @@ class FamilyRepository(
             }
     }
 
+    private fun buildBaseUrl(config: NasConfig): String {
+        val cleanPath = config.path.trim().trimEnd('/')
+        return if (config.port == 80) "http://${config.ip}$cleanPath" else "http://${config.ip}:${config.port}$cleanPath"
+    }
+
+    private suspend fun getSavedOfflinePostIds(): Set<Int> {
+        return try {
+            database.postDao().getSavedOfflinePosts().map { it.id }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    private suspend fun getProtectedOfflineUrls(baseUrl: String): Set<String> {
+        return try {
+            val savedEntities = database.postDao().getSavedOfflinePosts()
+            val urls = linkedSetOf<String>()
+            savedEntities.forEach { entity ->
+                val domain = entity.toDomainPost(findMember(entity.authorId))
+                urls.addAll(com.example.util.OfflineMediaManager.collectPostMediaUrls(baseUrl, domain))
+            }
+            urls
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
     suspend fun refreshShorts(): Result<List<Post>> {
         val config = _nasConfig.value
         val result = apiClient.fetchShorts(config.ip, config.port, config.path)
         result.onSuccess { list ->
-            _shorts.value = rankShorts(list)
+            val savedIds = getSavedOfflinePostIds()
+            val merged = list.map { p ->
+                val isSaved = p.isSavedOffline || savedIds.contains(p.id)
+                val cachedComments = _commentsByPostId[p.id] ?: p.comments
+                p.copy(comments = cachedComments, isSavedOffline = isSaved)
+            }
+            val ranked = rankShorts(merged)
+            _shorts.value = ranked
             updateNotifications()
-            // Persistir shorts en Room para que estén disponibles sin conexión
+
+            val baseUrl = buildBaseUrl(config)
             scope.launch {
-                val entities = list.map { it.toEntity() }
-                database.postDao().insertPosts(entities)
+                database.postDao().insertPosts(merged.map { it.toEntity() })
+                val protected = getProtectedOfflineUrls(baseUrl)
+                com.example.util.OfflineMediaManager.prefetchPageMedia(
+                    context = context,
+                    baseUrl = baseUrl,
+                    pagePosts = ranked.take(10),
+                    protectedUrls = protected
+                )
             }
         }
         result.onFailure {
-            // Modo offline: cargar los shorts guardados previamente en Room
             scope.launch {
-                database.postDao().getShortsPosts().collect { cached ->
+                try {
+                    val cached = database.postDao().getShortsPosts().first()
                     if (cached.isNotEmpty() && _shorts.value.isEmpty()) {
                         _shorts.value = rankShorts(cached.map { it.toDomainPost(findMember(it.authorId)) })
                     }
-                }
+                } catch (_: Exception) {}
             }
         }
         return result
@@ -430,11 +493,12 @@ class FamilyRepository(
         }
         result.onFailure {
             scope.launch {
-                database.groupDao().getAllGroups().collect { cached ->
+                try {
+                    val cached = database.groupDao().getAllGroups().first()
                     if (cached.isNotEmpty() && _groups.value.isEmpty()) {
                         _groups.value = cached.map { it.toDomainGroup() }
                     }
-                }
+                } catch (_: Exception) {}
             }
         }
         return result
@@ -444,18 +508,34 @@ class FamilyRepository(
         val config = _nasConfig.value
         val result = apiClient.fetchGroupPosts(config.ip, config.port, config.path, groupId)
         result.onSuccess { list ->
-            scope.launch {
-                database.postDao().insertPosts(list.map { it.toEntity() })
+            val savedIds = getSavedOfflinePostIds()
+            val merged = list.map { p ->
+                val isSaved = p.isSavedOffline || savedIds.contains(p.id)
+                p.copy(isSavedOffline = isSaved)
             }
-        }
-        result.onFailure {
+            val baseUrl = buildBaseUrl(config)
             scope.launch {
-                database.postDao().getPostsByGroupId(groupId).collect { cached ->
-                    // Cargar publicaciones cacheadas si offline
-                }
+                database.postDao().insertPosts(merged.map { it.toEntity() })
+                val protected = getProtectedOfflineUrls(baseUrl)
+                com.example.util.OfflineMediaManager.prefetchPageMedia(
+                    context = context,
+                    baseUrl = baseUrl,
+                    pagePosts = merged.take(10),
+                    protectedUrls = protected
+                )
             }
+            return Result.success(merged)
         }
-        return result
+        return try {
+            val cached = database.postDao().getPostsByGroupId(groupId).first()
+            if (cached.isNotEmpty()) {
+                Result.success(cached.map { it.toDomainPost(findMember(it.authorId)) })
+            } else {
+                result
+            }
+        } catch (_: Exception) {
+            result
+        }
     }
 
     private val _detectedVolumes = MutableStateFlow<List<com.example.model.NasStorageVolume>>(emptyList())
@@ -886,11 +966,13 @@ class FamilyRepository(
     }
 
     /**
-     * Sincronización real con Synology Web Station y MariaDB 10.
+     * Sincronización inicial paginada (10 publicaciones) con Synology Web Station y MariaDB 10.
      */
     suspend fun refreshFeed(): Result<List<Post>> {
         _isLoading.value = true
+        _isLoadingMoreFeed.value = false
         val config = _nasConfig.value
+        val baseUrl = buildBaseUrl(config)
 
         // Sincronizar usuarios de MariaDB si están disponibles
         apiClient.fetchUsers(config.ip, config.port, config.path).onSuccess { realUsers ->
@@ -906,35 +988,45 @@ class FamilyRepository(
             }
         }
 
-        // Obtener publicaciones reales del NAS
-        val result = apiClient.fetchFeed(config.ip, config.port, config.path)
+        // Obtener la primera página (10 publicaciones) desde el NAS
+        val result = apiClient.fetchFeedPage(config.ip, config.port, config.path, limit = 10, offset = 0)
         _isLoading.value = false
 
         return result.fold(
-            onSuccess = { realPosts ->
-                // Preservar comentarios previamente cargados o en caché para cada publicación
-                val mergedPosts = realPosts.map { post ->
+            onSuccess = { page ->
+                val savedIds = getSavedOfflinePostIds()
+                val mergedPosts = page.posts.map { post ->
                     val existingComments = _commentsByPostId[post.id]
                         ?: _posts.value.find { it.id == post.id }?.comments
                         ?: post.comments
                     if (existingComments.isNotEmpty()) {
                         _commentsByPostId[post.id] = existingComments
                     }
-                    post.copy(comments = existingComments)
+                    post.copy(
+                        comments = existingComments,
+                        isSavedOffline = post.isSavedOffline || savedIds.contains(post.id)
+                    )
                 }
+
+                loadedRemoteOffset = page.nextOffset
+                _hasMoreFeedPosts.value = page.hasMore
                 _posts.value = mergedPosts
                 _nasConfig.update { it.copy(isConnected = true, lastError = null) }
                 updateNotifications()
 
-                // Guardar progresivamente en Room sin borrar todo para mantener caché y no perder miniaturas
                 scope.launch {
-                    val entities = mergedPosts.map { it.toEntity() }
-                    database.postDao().insertPosts(entities)
+                    database.postDao().insertPosts(mergedPosts.map { it.toEntity() })
+                    val protected = getProtectedOfflineUrls(baseUrl)
+                    com.example.util.OfflineMediaManager.prefetchPageMedia(
+                        context = context,
+                        baseUrl = baseUrl,
+                        pagePosts = mergedPosts,
+                        protectedUrls = protected
+                    )
                 }
 
-                // Si aún no hay historias independientes en la tabla de historias, generar a partir de fotos recientes
                 if (_stories.value.isEmpty()) {
-                    val fallbackStories = mergedPosts.filter { it.mediaItems.isNotEmpty() }.take(5).mapIndexed { idx, post ->
+                    val fallbackStories = mergedPosts.filter { it.mediaItems.isNotEmpty() }.take(5).map { post ->
                         FamilyStory(
                             id = "story_${post.id}",
                             author = post.author,
@@ -952,17 +1044,118 @@ class FamilyRepository(
             },
             onFailure = { error ->
                 _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
-                // Modo offline: recuperar publicaciones del Muro desde Room si no hay nada en memoria
-                scope.launch {
-                    database.postDao().getFeedPosts().collect { cached ->
-                        if (cached.isNotEmpty() && _posts.value.isEmpty()) {
-                            _posts.value = cached.map { it.toDomainPost(findMember(it.authorId)) }
-                        }
+                // Modo offline: cargar las primeras 10 publicaciones desde Room
+                try {
+                    val cached = database.postDao().getFeedPostsPaged(10, 0)
+                    if (cached.isNotEmpty() && _posts.value.isEmpty()) {
+                        _posts.value = cached.map { it.toDomainPost(findMember(it.authorId)) }
+                        _hasMoreFeedPosts.value = cached.size >= 10
                     }
-                }
+                } catch (_: Exception) {}
                 Result.failure(error)
             }
         )
+    }
+
+    /**
+     * Paginación incremental de 10 en 10 al hacer scroll (tanto en red LAN como desde caché offline Room).
+     */
+    suspend fun loadMoreFeed(): Result<List<Post>> {
+        if (_isLoadingMoreFeed.value || !_hasMoreFeedPosts.value) {
+            return Result.success(emptyList())
+        }
+        _isLoadingMoreFeed.value = true
+        val config = _nasConfig.value
+        val baseUrl = buildBaseUrl(config)
+
+        val result = apiClient.fetchFeedPage(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            limit = 10,
+            offset = loadedRemoteOffset
+        )
+
+        return result.fold(
+            onSuccess = { page ->
+                val savedIds = getSavedOfflinePostIds()
+                val mergedPage = page.posts.map { post ->
+                    val existingComments = _commentsByPostId[post.id]
+                        ?: _posts.value.find { it.id == post.id }?.comments
+                        ?: post.comments
+                    if (existingComments.isNotEmpty()) {
+                        _commentsByPostId[post.id] = existingComments
+                    }
+                    post.copy(
+                        comments = existingComments,
+                        isSavedOffline = post.isSavedOffline || savedIds.contains(post.id)
+                    )
+                }
+
+                loadedRemoteOffset = page.nextOffset
+                _hasMoreFeedPosts.value = page.hasMore
+                _posts.update { current -> (current + mergedPage).distinctBy { it.id } }
+                _nasConfig.update { it.copy(isConnected = true, lastError = null) }
+                _isLoadingMoreFeed.value = false
+
+                scope.launch {
+                    if (mergedPage.isNotEmpty()) {
+                        database.postDao().insertPosts(mergedPage.map { it.toEntity() })
+                        val protected = getProtectedOfflineUrls(baseUrl)
+                        com.example.util.OfflineMediaManager.prefetchPageMedia(
+                            context = context,
+                            baseUrl = baseUrl,
+                            pagePosts = mergedPage,
+                            protectedUrls = protected
+                        )
+                    }
+                }
+
+                Result.success(mergedPage)
+            },
+            onFailure = { error ->
+                _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
+                val currentOffset = _posts.value.size
+                val cachedPage = try {
+                    database.postDao().getFeedPostsPaged(10, currentOffset)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                if (cachedPage.isNotEmpty()) {
+                    val domainPage = cachedPage.map { it.toDomainPost(findMember(it.authorId)) }
+                    _posts.update { current -> (current + domainPage).distinctBy { it.id } }
+                    _hasMoreFeedPosts.value = cachedPage.size >= 10
+                    _isLoadingMoreFeed.value = false
+                    Result.success(domainPage)
+                } else {
+                    _hasMoreFeedPosts.value = false
+                    _isLoadingMoreFeed.value = false
+                    Result.failure(error)
+                }
+            }
+        )
+    }
+
+    /**
+     * Descarga o libera explícitamente una publicación completa (fotos y todos los fragmentos de vídeo) para modo offline.
+     */
+    suspend fun toggleSavePostOffline(post: Post): Boolean {
+        val targetSaved = !post.isSavedOffline
+        val baseUrl = buildBaseUrl(_nasConfig.value)
+
+        if (targetSaved) {
+            com.example.util.OfflineMediaManager.downloadFullPostMedia(context, baseUrl, post)
+        }
+
+        val updatedPost = post.copy(isSavedOffline = targetSaved)
+        try {
+            database.postDao().insertPosts(listOf(updatedPost.toEntity()))
+            database.postDao().updateSavedOffline(post.id, targetSaved)
+        } catch (_: Exception) {}
+
+        _posts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
+        _shorts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
+        return targetSaved
     }
 
     /**
@@ -982,6 +1175,14 @@ class FamilyRepository(
                 list.map { post ->
                     if (post.id == postId) post.copy(comments = comments) else post
                 }
+            }
+            scope.launch {
+                try {
+                    val cJson = serializeComments(comments)
+                    if (cJson != null) {
+                        database.postDao().updateCommentsAndCount(postId, cJson, comments.size)
+                    }
+                } catch (_: Exception) {}
             }
         }
         return result
@@ -1245,7 +1446,9 @@ class FamilyRepository(
                 isShort = isShort,
                 groupId = groupId,
                 totalChunks = totalChunks,
-                thumbnailFile = sliceData.thumbnailFile
+                thumbnailFile = sliceData.thumbnailFile,
+                chunkDurationsMs = sliceData.chunkDurationsMs,
+                totalDurationMs = sliceData.totalDurationMs
             )
 
             finalizeResult.onSuccess { postId ->
@@ -1256,7 +1459,9 @@ class FamilyRepository(
                         url = videoUri.toString(),
                         thumbnailUrl = sliceData.thumbnailFile?.absolutePath ?: videoUri.toString(),
                         durationLabel = sliceData.durationLabel,
-                        isChunked = true
+                        isChunked = true,
+                        chunkDurationsMs = sliceData.chunkDurationsMs,
+                        totalDurationMs = sliceData.totalDurationMs
                     )
                 )
 
@@ -1475,15 +1680,130 @@ class FamilyRepository(
     }
 }
 
-private fun PostEntity.toDomainPost(author: FamilyMember): Post {
-    val chunksList: List<String> = if (!chunksJson.isNullOrBlank()) {
-        try {
-            val arr = org.json.JSONArray(chunksJson)
-            (0 until arr.length()).map { arr.getString(it) }
-        } catch (_: Exception) { emptyList() }
-    } else emptyList()
+private fun serializeComments(comments: List<Comment>): String? {
+    if (comments.isEmpty()) return null
+    val arr = JSONArray()
+    comments.takeLast(15).forEach { c ->
+        val obj = JSONObject()
+        obj.put("id", c.id)
+        obj.put("postId", c.postId)
+        obj.put("userId", c.author.id)
+        obj.put("userName", c.author.name)
+        obj.put("userRole", c.author.role)
+        obj.put("userEmoji", c.author.avatarEmoji)
+        obj.put("userColorHex", c.author.avatarColorHex)
+        obj.put("text", c.text)
+        obj.put("createdAt", c.createdAt)
+        arr.put(obj)
+    }
+    return arr.toString()
+}
 
-    val mediaList = if (!mediaUrl.isNullOrBlank()) {
+private fun deserializeComments(json: String?): List<Comment> {
+    if (json.isNullOrBlank()) return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        (0 until arr.length()).mapNotNull { idx ->
+            val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
+            Comment(
+                id = obj.optInt("id", idx + 1),
+                postId = obj.optInt("postId", 0),
+                author = FamilyMember(
+                    id = obj.optInt("userId", 1),
+                    name = obj.optString("userName", "Familiar"),
+                    role = obj.optString("userRole", "Familiar"),
+                    avatarEmoji = obj.optString("userEmoji", "👤"),
+                    avatarColorHex = obj.optLong("userColorHex", 0xFF1E40AF)
+                ),
+                text = obj.optString("text", ""),
+                createdAt = obj.optLong("createdAt", 0L)
+            )
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun serializeMediaItems(items: List<MediaItem>): String? {
+    if (items.isEmpty()) return null
+    val arr = JSONArray()
+    items.forEach { m ->
+        val obj = JSONObject()
+        obj.put("id", m.id)
+        obj.put("type", m.type.name)
+        obj.put("url", m.url)
+        obj.put("thumbnailUrl", m.thumbnailUrl)
+        obj.put("caption", m.caption)
+        obj.put("durationLabel", m.durationLabel ?: "")
+        obj.put("isChunked", m.isChunked)
+        obj.put("totalDurationMs", m.totalDurationMs)
+        obj.put("chunks", JSONArray(m.chunks))
+        val durArr = JSONArray()
+        m.chunkDurationsMs.forEach { durArr.put(it) }
+        obj.put("chunkDurationsMs", durArr)
+        arr.put(obj)
+    }
+    return arr.toString()
+}
+
+private fun deserializeMediaItems(json: String?): List<MediaItem> {
+    if (json.isNullOrBlank()) return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        (0 until arr.length()).mapNotNull { idx ->
+            val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
+            val url = obj.optString("url", "")
+            if (url.isBlank()) return@mapNotNull null
+            val typeStr = obj.optString("type", "IMAGE")
+            val chunksArr = obj.optJSONArray("chunks")
+            val chunks = if (chunksArr != null) {
+                (0 until chunksArr.length()).mapNotNull { cIdx ->
+                    chunksArr.optString(cIdx).takeIf { it.isNotBlank() }
+                }
+            } else emptyList()
+            val durArr = obj.optJSONArray("chunkDurationsMs")
+            val durations = if (durArr != null) {
+                (0 until durArr.length()).map { dIdx -> durArr.optLong(dIdx, 0L) }
+            } else emptyList()
+
+            MediaItem(
+                id = obj.optString("id", "m_$idx"),
+                type = if (typeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                url = url,
+                thumbnailUrl = obj.optString("thumbnailUrl", url),
+                caption = obj.optString("caption", ""),
+                durationLabel = obj.optString("durationLabel").takeIf { it.isNotBlank() },
+                isChunked = obj.optBoolean("isChunked", chunks.isNotEmpty()),
+                chunks = chunks,
+                chunkDurationsMs = durations,
+                totalDurationMs = obj.optLong("totalDurationMs", 0L)
+            )
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun PostEntity.toDomainPost(author: FamilyMember): Post {
+    val resolvedAuthor = if (author.name.startsWith("Familiar #") && authorName.isNotBlank()) {
+        author.copy(
+            name = authorName,
+            role = authorRole,
+            avatarEmoji = authorEmoji,
+            avatarColorHex = authorColorHex
+        )
+    } else author
+
+    val parsedMediaList = deserializeMediaItems(mediaItemsJson)
+    val mediaList = if (parsedMediaList.isNotEmpty()) {
+        parsedMediaList
+    } else if (!mediaUrl.isNullOrBlank()) {
+        val chunksList: List<String> = if (!chunksJson.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(chunksJson)
+                (0 until arr.length()).map { arr.getString(it) }
+            } catch (_: Exception) { emptyList() }
+        } else emptyList()
         listOf(
             MediaItem(
                 id = "m_$id",
@@ -1499,27 +1819,30 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
     } else emptyList()
 
     val rxMap = if (likesCount > 0) mapOf(ReactionType.LIKE to likesCount) else emptyMap()
+    val parsedComments = deserializeComments(commentsJson)
 
     return Post(
         id = id,
-        author = author,
+        author = resolvedAuthor,
         contentText = contentText,
         createdAt = createdAt,
         mediaItems = mediaList,
         reactions = rxMap,
+        comments = parsedComments,
         feeling = feeling,
         location = location,
         isPinned = isPinned,
         isShort = isShort,
         groupId = groupId,
-        groupName = groupName
+        groupName = groupName,
+        isSavedOffline = isSavedOffline
     )
 }
 
 private fun Post.toEntity(): PostEntity {
     val firstMedia = mediaItems.firstOrNull()
     val chunksJsonStr = if (firstMedia?.chunks?.isNotEmpty() == true) {
-        org.json.JSONArray(firstMedia.chunks).toString()
+        JSONArray(firstMedia.chunks).toString()
     } else null
 
     return PostEntity(
@@ -1546,6 +1869,9 @@ private fun Post.toEntity(): PostEntity {
         groupId = groupId,
         groupName = groupName,
         isChunked = firstMedia?.isChunked ?: false,
-        chunksJson = chunksJsonStr
+        chunksJson = chunksJsonStr,
+        mediaItemsJson = serializeMediaItems(mediaItems),
+        commentsJson = serializeComments(comments),
+        isSavedOffline = isSavedOffline
     )
 }
