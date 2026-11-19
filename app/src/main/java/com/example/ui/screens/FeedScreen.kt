@@ -90,6 +90,8 @@ fun FeedScreen(
     isLoadingMore: Boolean = false,
     onLoadMore: () -> Unit = {},
     onToggleSaveOffline: (Post) -> Unit = {},
+    savedOfflineOnly: Boolean = false,
+    onClearOfflineFilter: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -266,7 +268,7 @@ fun FeedScreen(
         }
 
         // Active filter badge if any
-        if (selectedMemberFilter != null || searchQuery.isNotBlank()) {
+        if (selectedMemberFilter != null || searchQuery.isNotBlank() || savedOfflineOnly) {
             item {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -285,6 +287,7 @@ fun FeedScreen(
                         Text(
                             text = buildString {
                                 append("Filtro activo: ")
+                                if (savedOfflineOnly) append("Guardados offline ")
                                 if (selectedMemberFilter != null) append("Solo ${selectedMemberFilter.name} ")
                                 if (searchQuery.isNotBlank()) append("'$searchQuery'")
                             },
@@ -293,8 +296,11 @@ fun FeedScreen(
                         )
 
                         IconButton(
-                            onClick = { onFilterMember(null) },
-                            modifier = Modifier.size(24.dp)
+                            onClick = {
+                                onFilterMember(null)
+                                onClearOfflineFilter()
+                            },
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
@@ -321,19 +327,23 @@ fun FeedScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(text = "🏡", fontSize = 48.sp)
+                        Text(text = if (savedOfflineOnly) "☁️" else "🏡", fontSize = 48.sp)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (!nasConfig.isConnected) "Esperando conexión con el Synology NAS" else "No hay publicaciones en el NAS todavía",
+                            text = when {
+                                savedOfflineOnly -> "No tienes publicaciones guardadas offline"
+                                !nasConfig.isConnected -> "Esperando conexión con el Synology NAS"
+                                else -> "No hay publicaciones en el NAS todavía"
+                            },
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = if (!nasConfig.isConnected) {
-                                "Verifica que el Synology NAS esté encendido en la red Wi-Fi y que el servicio Web Station en el puerto ${nasConfig.port} esté iniciado."
-                            } else {
-                                "¡Sé el primero en compartir un momento, foto o vídeo familiar en el muro local!"
+                            text = when {
+                                savedOfflineOnly -> "Pulsa \"Descargar\" en cualquier publicación para guardarla completa en tu dispositivo."
+                                !nasConfig.isConnected -> "Verifica que el Synology NAS esté encendido en la red Wi-Fi y que el servicio Web Station en el puerto ${nasConfig.port} esté iniciado."
+                                else -> "¡Sé el primero en compartir un momento, foto o vídeo familiar en el muro local!"
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

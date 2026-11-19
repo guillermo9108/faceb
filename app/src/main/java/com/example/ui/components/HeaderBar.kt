@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,9 +11,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,14 +27,12 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OndemandVideo
-import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.OndemandVideo
-import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -52,17 +53,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.FamilyMember
 import com.example.model.NasConfig
 import com.example.ui.theme.FacebookBadgeRed
 import com.example.ui.theme.FacebookBlue
-import com.example.ui.theme.FacebookButtonBgDark
-import com.example.ui.theme.FacebookButtonBgLight
+import com.example.ui.theme.LanOfflineAmber
 import com.example.ui.theme.LanOnlineGreen
 import com.example.viewmodel.FeedTab
 
@@ -91,8 +92,7 @@ fun HeaderBar(
                 .fillMaxWidth()
                 .statusBarsPadding()
         ) {
-
-            // ROW 1: Facebook-style Logotype ("familiar") + Circular Actions (+, 🔍, 🔄)
+            // Compact Top App Row: "familiar" wordmark + LAN indicator + Circular Quick Actions
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -100,10 +100,12 @@ fun HeaderBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Facebook Logo Typography
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { onTabSelected(FeedTab.FEED) }
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onTabSelected(FeedTab.FEED) }
+                        .padding(vertical = 2.dp, horizontal = 2.dp)
                 ) {
                     Text(
                         text = "familiar",
@@ -117,12 +119,11 @@ fun HeaderBar(
 
                     Spacer(modifier = Modifier.width(6.dp))
 
-                    // Small LAN indicator dot
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .size(9.dp)
                             .clip(CircleShape)
-                            .background(if (nasConfig.isConnected) LanOnlineGreen else Color(0xFFF59E0B))
+                            .background(if (nasConfig.isConnected) LanOnlineGreen else LanOfflineAmber)
                     )
                 }
 
@@ -131,11 +132,10 @@ fun HeaderBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // 1. Quick Add (+) Button
                     IconButton(
                         onClick = onOpenCreatePost,
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .testTag("fb_quick_add_button")
@@ -148,11 +148,10 @@ fun HeaderBar(
                         )
                     }
 
-                    // 2. Search (🔍) Button
                     IconButton(
                         onClick = { isSearchExpanded = !isSearchExpanded },
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .testTag("search_toggle_button")
@@ -165,11 +164,10 @@ fun HeaderBar(
                         )
                     }
 
-                    // 3. Refresh Synology Feed Button (🔄)
                     IconButton(
                         onClick = onRefreshFeed,
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .testTag("fb_refresh_button")
@@ -221,84 +219,6 @@ fun HeaderBar(
                 }
             }
 
-            // ROW 2: The Iconic 5 Facebook Top Tabs
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Tab 1: Inicio / Muro (Home)
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.FEED,
-                    onClick = { onTabSelected(FeedTab.FEED) },
-                    iconSelected = Icons.Rounded.Home,
-                    iconUnselected = Icons.Outlined.Home,
-                    contentDescription = "Inicio",
-                    modifier = Modifier.weight(1f).testTag("tab_feed")
-                )
-
-                // Tab 2: Watch / Videos del NAS
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.WATCH,
-                    onClick = { onTabSelected(FeedTab.WATCH) },
-                    iconSelected = Icons.Default.OndemandVideo,
-                    iconUnselected = Icons.Outlined.OndemandVideo,
-                    contentDescription = "Videos",
-                    modifier = Modifier.weight(1f).testTag("tab_watch")
-                )
-
-                // Tab: Shorts
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.SHORTS,
-                    onClick = { onTabSelected(FeedTab.SHORTS) },
-                    iconSelected = Icons.Default.ElectricBolt,
-                    iconUnselected = Icons.Default.ElectricBolt,
-                    contentDescription = "Shorts",
-                    modifier = Modifier.weight(1f).testTag("tab_shorts")
-                )
-
-                // Tab: Grupos Familiares
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.GROUPS,
-                    onClick = { onTabSelected(FeedTab.GROUPS) },
-                    iconSelected = Icons.Default.Groups,
-                    iconUnselected = Icons.Outlined.Groups,
-                    contentDescription = "Grupos",
-                    modifier = Modifier.weight(1f).testTag("tab_groups")
-                )
-
-                // Tab 3: Familia / Perfiles
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.MEMBERS,
-                    onClick = { onTabSelected(FeedTab.MEMBERS) },
-                    iconSelected = Icons.Default.People,
-                    iconUnselected = Icons.Outlined.People,
-                    contentDescription = "Familia",
-                    modifier = Modifier.weight(1f).testTag("tab_members")
-                )
-
-                // Tab 4: Notificaciones / Novedades
-                FacebookTabItem(
-                    selected = selectedTab == FeedTab.NOTIFICATIONS,
-                    onClick = { onTabSelected(FeedTab.NOTIFICATIONS) },
-                    iconSelected = Icons.Default.Notifications,
-                    iconUnselected = Icons.Outlined.Notifications,
-                    contentDescription = "Notificaciones",
-                    badgeText = if (unreadNotificationsCount > 0) unreadNotificationsCount.toString() else null,
-                    modifier = Modifier.weight(1f).testTag("tab_notifications")
-                )
-
-                // Tab 5: Menú (Avatar actual + ☰)
-                FacebookMenuTabItem(
-                    selected = selectedTab == FeedTab.MENU,
-                    onClick = { onTabSelected(FeedTab.MENU) },
-                    currentMember = currentMember,
-                    modifier = Modifier.weight(1f).testTag("tab_menu")
-                )
-            }
-
             HorizontalDivider(
                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
                 thickness = 0.5.dp
@@ -308,64 +228,164 @@ fun HeaderBar(
 }
 
 @Composable
-private fun FacebookTabItem(
+fun FacebookBottomNavBar(
+    currentMember: FamilyMember,
+    selectedTab: FeedTab,
+    unreadNotificationsCount: Int,
+    onTabSelected: (FeedTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 10.dp,
+        tonalElevation = 2.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+        ) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                thickness = 0.6.dp
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BottomNavItem(
+                    selected = selectedTab == FeedTab.FEED,
+                    onClick = { onTabSelected(FeedTab.FEED) },
+                    iconSelected = Icons.Rounded.Home,
+                    iconUnselected = Icons.Outlined.Home,
+                    label = "Inicio",
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_feed")
+                )
+
+                BottomNavItem(
+                    selected = selectedTab == FeedTab.WATCH,
+                    onClick = { onTabSelected(FeedTab.WATCH) },
+                    iconSelected = Icons.Default.OndemandVideo,
+                    iconUnselected = Icons.Outlined.OndemandVideo,
+                    label = "Watch",
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_watch")
+                )
+
+                BottomNavItem(
+                    selected = selectedTab == FeedTab.SHORTS,
+                    onClick = { onTabSelected(FeedTab.SHORTS) },
+                    iconSelected = Icons.Default.ElectricBolt,
+                    iconUnselected = Icons.Default.ElectricBolt,
+                    label = "Shorts",
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_shorts")
+                )
+
+                BottomNavItem(
+                    selected = selectedTab == FeedTab.GROUPS,
+                    onClick = { onTabSelected(FeedTab.GROUPS) },
+                    iconSelected = Icons.Default.Groups,
+                    iconUnselected = Icons.Outlined.Groups,
+                    label = "Grupos",
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_groups")
+                )
+
+                BottomNavItem(
+                    selected = selectedTab == FeedTab.NOTIFICATIONS,
+                    onClick = { onTabSelected(FeedTab.NOTIFICATIONS) },
+                    iconSelected = Icons.Default.Notifications,
+                    iconUnselected = Icons.Outlined.Notifications,
+                    label = "Alertas",
+                    badgeText = if (unreadNotificationsCount > 0) unreadNotificationsCount.toString() else null,
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_notifications")
+                )
+
+                BottomMenuNavItem(
+                    selected = selectedTab == FeedTab.MENU,
+                    onClick = { onTabSelected(FeedTab.MENU) },
+                    currentMember = currentMember,
+                    modifier = Modifier.weight(1f).testTag("bottom_tab_menu")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomNavItem(
     selected: Boolean,
     onClick: () -> Unit,
-    iconSelected: androidx.compose.ui.graphics.vector.ImageVector,
-    iconUnselected: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
+    iconSelected: ImageVector,
+    iconUnselected: ImageVector,
+    label: String,
     badgeText: String? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
-            .clickable { onClick() }
-            .padding(top = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .heightIn(min = 56.dp)
+            .clickable(onClick = onClick)
+            .padding(bottom = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            if (badgeText != null) {
-                BadgedBox(
-                    badge = {
-                        Badge(
-                            containerColor = FacebookBadgeRed,
-                            contentColor = Color.White
-                        ) {
-                            Text(badgeText, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                ) {
-                    Icon(
-                        imageVector = if (selected) iconSelected else iconUnselected,
-                        contentDescription = contentDescription,
-                        tint = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-            } else {
-                Icon(
-                    imageVector = if (selected) iconSelected else iconUnselected,
-                    contentDescription = contentDescription,
-                    tint = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(26.dp)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Blue Underline Indicator when active
+        // Active Top Indicator Bar (Facebook mobile bottom bar style)
         Box(
             modifier = Modifier
-                .fillMaxWidth()
+                .width(34.dp)
                 .height(3.dp)
+                .clip(RoundedCornerShape(bottomStart = 3.dp, bottomEnd = 3.dp))
                 .background(if (selected) FacebookBlue else Color.Transparent)
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        if (badgeText != null) {
+            BadgedBox(
+                badge = {
+                    Badge(
+                        containerColor = FacebookBadgeRed,
+                        contentColor = Color.White
+                    ) {
+                        Text(badgeText, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            ) {
+                Icon(
+                    imageVector = if (selected) iconSelected else iconUnselected,
+                    contentDescription = label,
+                    tint = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        } else {
+            Icon(
+                imageVector = if (selected) iconSelected else iconUnselected,
+                contentDescription = label,
+                tint = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
 
 @Composable
-private fun FacebookMenuTabItem(
+private fun BottomMenuNavItem(
     selected: Boolean,
     onClick: () -> Unit,
     currentMember: FamilyMember,
@@ -373,30 +393,45 @@ private fun FacebookMenuTabItem(
 ) {
     Column(
         modifier = modifier
-            .clickable { onClick() }
-            .padding(top = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .heightIn(min = 56.dp)
+            .clickable(onClick = onClick)
+            .padding(bottom = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top
     ) {
         Box(
-            modifier = Modifier.size(28.dp),
+            modifier = Modifier
+                .width(34.dp)
+                .height(3.dp)
+                .clip(RoundedCornerShape(bottomStart = 3.dp, bottomEnd = 3.dp))
+                .background(if (selected) FacebookBlue else Color.Transparent)
+        )
+
+        Spacer(modifier = Modifier.height(5.dp))
+
+        Box(
+            modifier = Modifier.size(26.dp),
             contentAlignment = Alignment.Center
         ) {
-            // Member avatar with hamburger mini overlay
             Box(
                 modifier = Modifier
-                    .size(26.dp)
+                    .size(24.dp)
                     .clip(CircleShape)
-                    .background(Color(currentMember.avatarColorHex)),
+                    .background(Color(currentMember.avatarColorHex))
+                    .border(
+                        width = if (selected) 1.5.dp else 0.5.dp,
+                        color = if (selected) FacebookBlue else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        shape = CircleShape
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = currentMember.avatarEmoji, fontSize = 14.sp)
+                Text(text = currentMember.avatarEmoji, fontSize = 13.sp)
             }
 
-            // Mini hamburger badge
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(13.dp)
+                    .size(12.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
@@ -405,18 +440,19 @@ private fun FacebookMenuTabItem(
                     imageVector = Icons.Default.Menu,
                     contentDescription = "Menú",
                     tint = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(10.dp)
+                    modifier = Modifier.size(9.dp)
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(2.dp))
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .background(if (selected) FacebookBlue else Color.Transparent)
+        Text(
+            text = "Menú",
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
         )
     }
 }

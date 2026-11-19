@@ -3,9 +3,11 @@ package com.example.ui.components
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,14 +25,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.PushPin
@@ -80,6 +80,7 @@ import com.example.ui.theme.ReactionHahaYellow
 import com.example.ui.theme.ReactionLikeBlue
 import com.example.ui.theme.ReactionLoveRed
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PostCard(
     post: Post,
@@ -102,7 +103,8 @@ fun PostCard(
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 0.5.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = 1.dp,
         modifier = modifier
             .fillMaxWidth()
             .testTag("post_card_${post.id}")
@@ -115,8 +117,8 @@ fun PostCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(FacebookBlue.copy(alpha = 0.08f))
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .background(FacebookBlue.copy(alpha = 0.09f))
+                        .padding(horizontal = 16.dp, vertical = 7.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PushPin,
@@ -130,43 +132,62 @@ fun PostCard(
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             color = FacebookBlue,
-                            fontSize = 11.sp
+                            fontSize = 11.5.sp
                         )
                     )
                 }
             }
 
-            // 1. Post Header: Avatar, Name, Relative Time, Privacy Globe, Options
+            // 1. Post Header: Avatar, Name, Group / Subtitle, Relative Time, Options
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Author Avatar (40dp circle)
+                // Author Avatar (44dp circle with crisp subtle border)
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(44.dp)
                         .clip(CircleShape)
-                        .background(Color(post.author.avatarColorHex)),
+                        .background(Color(post.author.avatarColorHex))
+                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(text = post.author.avatarEmoji, fontSize = 20.sp)
+                    Text(text = post.author.avatarEmoji, fontSize = 22.sp)
                 }
 
                 Spacer(modifier = Modifier.width(10.dp))
 
                 // Name & Subtitle
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
                         Text(
                             text = post.author.name,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
+                                fontSize = 15.5.sp
                             ),
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
+                        if (!post.groupName.isNullOrBlank()) {
+                            Text(
+                                text = "▸ ${post.groupName}",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                ),
+                                color = FacebookBlue,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
 
                     // Feeling or Location
@@ -304,13 +325,13 @@ fun PostCard(
                 Text(
                     text = post.contentText,
                     style = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = 15.sp,
-                        lineHeight = 21.sp
+                        fontSize = 15.5.sp,
+                        lineHeight = 22.sp
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
                 )
             }
 
@@ -493,72 +514,91 @@ fun PostCard(
 
             // 4. Reactions & Engagement Stats Bar (Facebook style)
             val totalReactions = post.reactions.values.sum()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Left: Overlapping circular reaction badges (👍 ❤️ 😆) + Count
-                if (totalReactions > 0) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Badge 1: Like Thumb
-                        Box(
+            if (totalReactions > 0 || post.comments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // Left: Overlapping circular reaction badges (up to top 3) + Count
+                    if (totalReactions > 0) {
+                        val topReactions = remember(post.reactions) {
+                            post.reactions.entries
+                                .filter { it.value > 0 }
+                                .sortedByDescending { it.value }
+                                .take(3)
+                                .map { it.key }
+                                .ifEmpty { listOf(ReactionType.LIKE) }
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .size(18.dp)
-                                .clip(CircleShape)
-                                .background(ReactionLikeBlue),
-                            contentAlignment = Alignment.Center
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showReactionPicker = !showReactionPicker }
+                                .padding(vertical = 2.dp, horizontal = 2.dp)
                         ) {
-                            Text("👍", fontSize = 11.sp)
-                        }
-
-                        // Badge 2: Love Heart (if active)
-                        if (post.reactions.containsKey(ReactionType.LOVE)) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(start = 2.dp)
-                                    .size(18.dp)
-                                    .clip(CircleShape)
-                                    .background(ReactionLoveRed),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("❤️", fontSize = 10.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy((-4).dp)) {
+                                topReactions.forEach { rx ->
+                                    val badgeColor = when (rx) {
+                                        ReactionType.LIKE -> ReactionLikeBlue
+                                        ReactionType.LOVE -> ReactionLoveRed
+                                        else -> ReactionHahaYellow
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(badgeColor)
+                                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(rx.emoji, fontSize = 10.sp)
+                                    }
+                                }
                             }
+
+                            Spacer(modifier = Modifier.width(7.dp))
+
+                            Text(
+                                text = totalReactions.toString(),
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 13.sp
+                                )
+                            )
                         }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
+                    }
 
-                        Spacer(modifier = Modifier.width(6.dp))
-
+                    // Right: Comments count ("X comentarios")
+                    if (post.comments.isNotEmpty()) {
+                        val label = if (post.comments.size == 1) "1 comentario" else "${post.comments.size} comentarios"
                         Text(
-                            text = totalReactions.toString(),
+                            text = label,
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Medium,
                                 fontSize = 13.sp
-                            )
+                            ),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onCommentClick() }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
                         )
                     }
-                } else {
-                    Spacer(modifier = Modifier.width(1.dp))
                 }
-
-                // Right: Comments count ("X comentarios")
-                if (post.comments.isNotEmpty()) {
-                    Text(
-                        text = "${post.comments.size} comentarios",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 13.sp
-                        ),
-                        modifier = Modifier.clickable { onCommentClick() }
-                    )
-                }
+            } else {
+                Spacer(modifier = Modifier.height(6.dp))
             }
 
             HorizontalDivider(
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
-                thickness = 0.5.dp,
-                modifier = Modifier.padding(horizontal = 14.dp)
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                thickness = 0.6.dp,
+                modifier = Modifier.padding(horizontal = 16.dp)
             )
 
             // Animated Facebook Reactions Capsule Popup
@@ -605,32 +645,36 @@ fun PostCard(
                 }
             }
 
-            // 5. The 3 Iconic Facebook Action Buttons (Me gusta, Comentar, Compartir)
+            // 5. The 3 Action Buttons: Me gusta (tap or long-press reactions), Comentar, Descargar Offline
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val hasUserReacted = post.userReaction != null
                 val userRx = post.userReaction
 
-                // 1. Me gusta (Like Button)
+                // 1. Me gusta (Tap: Like, Long-press: Selector de reacciones Facebook)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            if (hasUserReacted) {
-                                onReactionClick(userRx!!)
-                            } else {
-                                onReactionClick(ReactionType.LIKE)
-                            }
-                        }
-                        .padding(vertical = 8.dp)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .combinedClickable(
+                            onClick = {
+                                if (hasUserReacted) {
+                                    onReactionClick(userRx!!)
+                                } else {
+                                    onReactionClick(ReactionType.LIKE)
+                                }
+                            },
+                            onLongClick = { showReactionPicker = !showReactionPicker }
+                        )
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
                         .testTag("reaction_button_${post.id}")
                 ) {
                     if (hasUserReacted) {
@@ -638,6 +682,8 @@ fun PostCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = userRx.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = when (userRx) {
@@ -651,13 +697,14 @@ fun PostCard(
                     } else {
                         Icon(
                             imageVector = Icons.Outlined.ThumbUp,
-                            contentDescription = "Me gusta",
+                            contentDescription = "Me gusta (mantén pulsado para más reacciones)",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(19.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "Me gusta",
+                            maxLines = 1,
                             style = MaterialTheme.typography.labelMedium.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = FontWeight.SemiBold,
@@ -673,9 +720,10 @@ fun PostCard(
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable { onCommentClick() }
-                        .padding(vertical = 8.dp)
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
                         .testTag("comment_button_${post.id}")
                 ) {
                     Icon(
@@ -687,6 +735,7 @@ fun PostCard(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Comentar",
+                        maxLines = 1,
                         style = MaterialTheme.typography.labelMedium.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold,
@@ -695,28 +744,36 @@ fun PostCard(
                     )
                 }
 
-                // 3. Compartir (Share Button)
+                // 3. Descarga Offline (Reemplaza a Compartir)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable { showReactionPicker = !showReactionPicker }
-                        .padding(vertical = 8.dp)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (post.isSavedOffline) LanOnlineGreen.copy(alpha = 0.08f)
+                            else Color.Transparent
+                        )
+                        .clickable { onToggleSaveOffline() }
+                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                        .testTag("offline_download_button_${post.id}")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Reply,
-                        contentDescription = "Compartir / Reaccionar",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        imageVector = if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload,
+                        contentDescription = if (post.isSavedOffline) "Guardado offline" else "Descargar para ver offline",
+                        tint = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(19.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Compartir",
+                        text = if (post.isSavedOffline) "Guardado" else "Descargar",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.SemiBold,
+                            color = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (post.isSavedOffline) FontWeight.Bold else FontWeight.SemiBold,
                             fontSize = 13.sp
                         )
                     )

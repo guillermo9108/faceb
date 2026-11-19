@@ -5,13 +5,36 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -19,7 +42,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ReactionType
 import com.example.model.NotificationType
@@ -28,6 +60,7 @@ import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
 import com.example.ui.components.ErrorLogsDialog
+import com.example.ui.components.FacebookBottomNavBar
 import com.example.ui.components.HeaderBar
 import com.example.ui.components.NasIpConfirmationDialog
 import com.example.ui.components.ProfileSettingsDialog
@@ -46,6 +79,7 @@ import com.example.ui.screens.WatchScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.FamilyFeedViewModel
 import com.example.viewmodel.FeedTab
+import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +149,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val diagnosticReport by viewModel.diagnosticReport.collectAsState()
     val isRunningDiagnostics by viewModel.isRunningDiagnostics.collectAsState()
     val detectedVolumes by viewModel.detectedVolumes.collectAsState()
+    val savedOfflineOnly by viewModel.savedOfflineOnlyFilter.collectAsState()
+    val savedOfflineCount by viewModel.savedOfflineCount.collectAsState()
 
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
@@ -159,174 +195,339 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         return
     }
 
-    // Manejo de retroceso para volver al feed principal
-    BackHandler(enabled = selectedTab != FeedTab.FEED) {
-        viewModel.setSelectedTab(FeedTab.FEED)
+    // Pestañas principales navegables con swipe lateral y barra inferior
+    val primaryTabs = remember {
+        listOf(
+            FeedTab.FEED,
+            FeedTab.WATCH,
+            FeedTab.SHORTS,
+            FeedTab.GROUPS,
+            FeedTab.NOTIFICATIONS,
+            FeedTab.MENU
+        )
+    }
+    val initialPrimaryIndex = remember { primaryTabs.indexOf(selectedTab).coerceAtLeast(0) }
+    val pagerState = rememberPagerState(initialPage = initialPrimaryIndex, pageCount = { primaryTabs.size })
+
+    // Visibilidad automática de la barra inferior al hacer scroll vertical (estilo Facebook)
+    var isBottomBarVisible by remember { mutableStateOf(true) }
+
+    LaunchedEffect(selectedTab) {
+        isBottomBarVisible = (selectedTab != FeedTab.SHORTS)
+        val targetIndex = primaryTabs.indexOf(selectedTab)
+        if (targetIndex >= 0 && pagerState.currentPage != targetIndex) {
+            pagerState.animateScrollToPage(targetIndex)
+        }
     }
 
-    Scaffold(
-        topBar = {
-            HeaderBar(
-                currentMember = currentMember,
-                nasConfig = nasConfig,
-                selectedTab = selectedTab,
-                onTabSelected = { viewModel.setSelectedTab(it) },
-                searchQuery = searchQuery,
-                onSearchQueryChange = { viewModel.setSearchQuery(it) },
-                onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                onRefreshFeed = { viewModel.refreshFeed() },
-                unreadNotificationsCount = unreadNotificationsCount
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        modifier = Modifier.fillMaxSize()
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (selectedTab) {
-                FeedTab.FEED -> {
-                    FeedScreen(
+    LaunchedEffect(pagerState.settledPage) {
+        if (selectedTab in primaryTabs) {
+            val settledTab = primaryTabs[pagerState.settledPage]
+            if (selectedTab != settledTab) {
+                viewModel.setSelectedTab(settledTab)
+            }
+        }
+    }
+
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (abs(available.y) > abs(available.x)) {
+                    if (available.y < -12f) {
+                        isBottomBarVisible = false
+                    } else if (available.y > 12f) {
+                        isBottomBarVisible = true
+                    }
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
+    // Manejo de retroceso: subrutas vuelven al Menú, otras pestañas vuelven al Inicio
+    val isSecondaryScreen = selectedTab !in primaryTabs
+    BackHandler(enabled = selectedTab != FeedTab.FEED) {
+        if (isSecondaryScreen) {
+            viewModel.setSelectedTab(FeedTab.MENU)
+        } else {
+            viewModel.setSelectedTab(FeedTab.FEED)
+        }
+    }
+
+    val showBottomBar = isBottomBarVisible && selectedTab != FeedTab.SHORTS && selectedTab in primaryTabs
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .nestedScroll(nestedScrollConnection)
+    ) {
+        Scaffold(
+            topBar = {
+                AnimatedVisibility(
+                    visible = selectedTab != FeedTab.SHORTS,
+                    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+                ) {
+                    HeaderBar(
                         currentMember = currentMember,
-                        familyMembers = familyMembers,
-                        userStoryGroups = groupedStories,
-                        posts = posts,
                         nasConfig = nasConfig,
-                        isLoading = isLoading,
-                        selectedMemberFilter = selectedMemberFilter,
+                        selectedTab = selectedTab,
+                        onTabSelected = { viewModel.setSelectedTab(it) },
                         searchQuery = searchQuery,
-                        onFilterMember = { viewModel.setMemberFilter(it) },
+                        onSearchQueryChange = { viewModel.setSearchQuery(it) },
+                        onOpenCreatePost = { viewModel.openCreatePostDialog() },
                         onRefreshFeed = { viewModel.refreshFeed() },
-                        onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                        onOpenCreateStory = { viewModel.openCreateStoryDialog() },
-                        onStoryClick = { group -> viewModel.openStoryViewer(group) },
-                        onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
-                        onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                        onTogglePin = { postId -> viewModel.togglePinPost(postId) },
-                        onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
-                        },
-                        onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
-                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
-                        onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) },
-                        hasMorePosts = hasMoreFeedPosts,
-                        isLoadingMore = isLoadingMoreFeed,
-                        onLoadMore = { viewModel.loadMoreFeed() },
-                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
+                        unreadNotificationsCount = unreadNotificationsCount
                     )
                 }
-                FeedTab.WATCH -> {
-                    WatchScreen(
-                        posts = posts,
-                        onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
-                        onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                        onTogglePin = { postId -> viewModel.togglePinPost(postId) },
-                        onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
-                        },
-                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
-                    )
-                }
-                FeedTab.SHORTS -> {
-                    ShortsScreen(
-                        shorts = shorts,
-                        members = familyMembers,
-                        baseUrl = nasConfig.baseUrl,
-                        onLikePost = { postId -> viewModel.reactToPost(postId, ReactionType.LIKE) },
-                        onOpenComments = { post -> viewModel.openCommentsSheet(post) },
-                        onOpenCreateShort = { viewModel.openCreatePostDialog(isShortMode = true) },
-                        onRefresh = { viewModel.refreshShorts() },
-                        onShortViewed = { viewModel.markShortAsViewed(it) }
-                    )
-                }
-                FeedTab.GROUPS -> {
-                    GroupsScreen(
-                        currentMember = currentMember,
-                        groups = groups,
-                        selectedGroup = selectedGroupForViewing,
-                        groupPosts = groupPosts,
-                        baseUrl = nasConfig.baseUrl,
-                        onSelectGroup = { group -> viewModel.openGroup(group) },
-                        onCloseGroupDetail = { viewModel.closeGroup() },
-                        onOpenScanDialog = { viewModel.openScanFoldersDialog() },
-                        onRefreshGroups = { viewModel.refreshGroups() },
-                        onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
-                        onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                        onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
-                            activeVideoToPlay = ActiveVideoPlayInfo(url, title, author.name, dur, chunks, chunkDurations, totalDur)
-                        },
-                        onTogglePin = { postId -> viewModel.togglePinPost(postId) },
-                        onDeletePost = { postId -> viewModel.deletePost(postId) },
-                        onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
-                    )
-                }
-                FeedTab.MEMBERS -> {
-                    FamilyMembersScreen(
-                        currentMember = currentMember,
-                        familyMembers = familyMembers,
-                        onSelectMember = { member ->
-                            viewModel.setMemberFilter(member)
-                            viewModel.setSelectedTab(FeedTab.FEED)
-                        },
-                        onViewMemberPosts = { member ->
-                            viewModel.setMemberFilter(member)
-                            viewModel.setSelectedTab(FeedTab.FEED)
+            },
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .padding(bottom = if (showBottomBar) 68.dp else 12.dp)
+                )
+            },
+            modifier = Modifier.fillMaxSize()
+        ) { innerPadding ->
+            if (!isSecondaryScreen) {
+                HorizontalPager(
+                    state = pagerState,
+                    beyondViewportPageCount = 1,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = innerPadding.calculateTopPadding())
+                ) { pageIndex ->
+                    when (primaryTabs[pageIndex]) {
+                        FeedTab.FEED -> {
+                            FeedScreen(
+                                currentMember = currentMember,
+                                familyMembers = familyMembers,
+                                userStoryGroups = groupedStories,
+                                posts = posts,
+                                nasConfig = nasConfig,
+                                isLoading = isLoading,
+                                selectedMemberFilter = selectedMemberFilter,
+                                searchQuery = searchQuery,
+                                onFilterMember = { viewModel.setMemberFilter(it) },
+                                onRefreshFeed = { viewModel.refreshFeed() },
+                                onOpenCreatePost = { viewModel.openCreatePostDialog() },
+                                onOpenCreateStory = { viewModel.openCreateStoryDialog() },
+                                onStoryClick = { group -> viewModel.openStoryViewer(group) },
+                                onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
+                                onCommentClick = { post -> viewModel.openCommentsSheet(post) },
+                                onTogglePin = { postId -> viewModel.togglePinPost(postId) },
+                                onDeletePost = { postId -> viewModel.deletePost(postId) },
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                    activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
+                                },
+                                onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
+                                onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
+                                onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) },
+                                hasMorePosts = hasMoreFeedPosts,
+                                isLoadingMore = isLoadingMoreFeed,
+                                onLoadMore = { viewModel.loadMoreFeed() },
+                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) },
+                                savedOfflineOnly = savedOfflineOnly,
+                                onClearOfflineFilter = { viewModel.setSavedOfflineFilter(false) }
+                            )
                         }
-                    )
+                        FeedTab.WATCH -> {
+                            WatchScreen(
+                                posts = posts,
+                                onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
+                                onCommentClick = { post -> viewModel.openCommentsSheet(post) },
+                                onTogglePin = { postId -> viewModel.togglePinPost(postId) },
+                                onDeletePost = { postId -> viewModel.deletePost(postId) },
+                                onOpenCreatePost = { viewModel.openCreatePostDialog() },
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                    activeVideoToPlay = ActiveVideoPlayInfo(url, title, author, dur, chunks, chunkDurations, totalDur)
+                                },
+                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
+                            )
+                        }
+                        FeedTab.SHORTS -> {
+                            ShortsScreen(
+                                shorts = shorts,
+                                members = familyMembers,
+                                baseUrl = nasConfig.baseUrl,
+                                onLikePost = { postId -> viewModel.reactToPost(postId, ReactionType.LIKE) },
+                                onOpenComments = { post -> viewModel.openCommentsSheet(post) },
+                                onOpenCreateShort = { viewModel.openCreatePostDialog(isShortMode = true) },
+                                onRefresh = { viewModel.refreshShorts() },
+                                onShortViewed = { viewModel.markShortAsViewed(it) },
+                                isScreenActive = (selectedTab == FeedTab.SHORTS && pagerState.currentPage == 2),
+                                onBackClick = { viewModel.setSelectedTab(FeedTab.FEED) }
+                            )
+                        }
+                        FeedTab.GROUPS -> {
+                            GroupsScreen(
+                                currentMember = currentMember,
+                                groups = groups,
+                                selectedGroup = selectedGroupForViewing,
+                                groupPosts = groupPosts,
+                                baseUrl = nasConfig.baseUrl,
+                                onSelectGroup = { group -> viewModel.openGroup(group) },
+                                onCloseGroupDetail = { viewModel.closeGroup() },
+                                onOpenScanDialog = { viewModel.openScanFoldersDialog() },
+                                onRefreshGroups = { viewModel.refreshGroups() },
+                                onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
+                                onCommentClick = { post -> viewModel.openCommentsSheet(post) },
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                    activeVideoToPlay = ActiveVideoPlayInfo(url, title, author.name, dur, chunks, chunkDurations, totalDur)
+                                },
+                                onTogglePin = { postId -> viewModel.togglePinPost(postId) },
+                                onDeletePost = { postId -> viewModel.deletePost(postId) },
+                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) }
+                            )
+                        }
+                        FeedTab.NOTIFICATIONS -> {
+                            NotificationsScreen(
+                                currentMember = currentMember,
+                                notifications = notifications,
+                                onMarkAllAsRead = { viewModel.markAllNotificationsAsRead() },
+                                onNotificationClick = { notif ->
+                                    viewModel.markNotificationAsRead(notif.id)
+                                    if (notif.type == NotificationType.SHORT) {
+                                        viewModel.setSelectedTab(FeedTab.SHORTS)
+                                    } else {
+                                        viewModel.setSelectedTab(FeedTab.FEED)
+                                    }
+                                }
+                            )
+                        }
+                        FeedTab.MENU -> {
+                            MenuScreen(
+                                currentMember = currentMember,
+                                nasConfig = nasConfig,
+                                familyMembers = familyMembers,
+                                groups = groups,
+                                savedOfflineCount = savedOfflineCount,
+                                onOpenGroup = { group ->
+                                    viewModel.openGroup(group)
+                                    viewModel.setSelectedTab(FeedTab.GROUPS)
+                                },
+                                onFilterMember = { member ->
+                                    viewModel.setMemberFilter(member)
+                                    viewModel.setSavedOfflineFilter(false)
+                                    viewModel.setSelectedTab(FeedTab.FEED)
+                                },
+                                onNavigateToSavedOffline = {
+                                    viewModel.setSavedOfflineFilter(true)
+                                    viewModel.setSelectedTab(FeedTab.FEED)
+                                },
+                                onOpenCreatePost = { viewModel.openCreatePostDialog() },
+                                onNavigateToNotifications = { viewModel.setSelectedTab(FeedTab.NOTIFICATIONS) },
+                                onNavigateToPhotos = { viewModel.setSelectedTab(FeedTab.PHOTOS) },
+                                onNavigateToNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
+                                onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
+                                onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
+                                onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
+                                onNavigateToGroups = { viewModel.setSelectedTab(FeedTab.GROUPS) },
+                                onNavigateToErrorLogs = { viewModel.openErrorLogsDialog() },
+                                onOpenScanFolders = { viewModel.openScanFoldersDialog() },
+                                onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
+                                onRepairDatabase = { viewModel.repairNasDatabase() },
+                                errorCount = errorLogs.size,
+                                onOpenProfileSettings = { viewModel.openProfileDialog() },
+                                onLogout = { viewModel.logout() }
+                            )
+                        }
+                        else -> Unit
+                    }
                 }
-                FeedTab.NOTIFICATIONS -> {
-                    NotificationsScreen(
-                        currentMember = currentMember,
-                        notifications = notifications,
-                        onMarkAllAsRead = { viewModel.markAllNotificationsAsRead() },
-                        onNotificationClick = { notif ->
-                            viewModel.markNotificationAsRead(notif.id)
-                            if (notif.type == NotificationType.SHORT) {
-                                viewModel.setSelectedTab(FeedTab.SHORTS)
-                            } else {
-                                viewModel.setSelectedTab(FeedTab.FEED)
+            } else {
+                // Pantallas secundarias abiertas desde el Menú (Miembros, Fotos, Ajustes NAS)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = innerPadding.calculateTopPadding())
+                        .navigationBarsPadding()
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable { viewModel.setSelectedTab(FeedTab.MENU) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("secondary_back_to_menu")
+                        ) {
+                            IconButton(onClick = { viewModel.setSelectedTab(FeedTab.MENU) }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Volver al Menú"
+                                )
                             }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = selectedTab.label,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
                         }
-                    )
-                }
-                FeedTab.MENU -> {
-                    MenuScreen(
-                        currentMember = currentMember,
-                        nasConfig = nasConfig,
-                        onNavigateToPhotos = { viewModel.setSelectedTab(FeedTab.PHOTOS) },
-                        onNavigateToNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
-                        onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
-                        onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
-                        onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
-                        onNavigateToGroups = { viewModel.setSelectedTab(FeedTab.GROUPS) },
-                        onNavigateToErrorLogs = { viewModel.openErrorLogsDialog() },
-                        errorCount = errorLogs.size,
-                        onOpenProfileSettings = { viewModel.openProfileDialog() },
-                        onLogout = { viewModel.logout() }
-                    )
-                }
-                FeedTab.PHOTOS -> {
-                    PhotosScreen(posts = posts)
-                }
-                FeedTab.NAS_SETTINGS -> {
-                    NasConfigScreen(
-                        nasConfig = nasConfig,
-                        onSaveConfig = { updatedConfig -> viewModel.updateNasSettings(updatedConfig) },
-                        onTestConnection = { viewModel.testNasConnection() },
-                        onRepairDatabase = { viewModel.repairNasDatabase() },
-                        onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
-                        onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
-                        errorCount = errorLogs.size,
-                        isRepairing = isRepairingDb,
-                        isRunningDiagnostics = isRunningDiagnostics
-                    )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        when (selectedTab) {
+                            FeedTab.MEMBERS -> {
+                                FamilyMembersScreen(
+                                    currentMember = currentMember,
+                                    familyMembers = familyMembers,
+                                    onSelectMember = { member ->
+                                        viewModel.setMemberFilter(member)
+                                        viewModel.setSelectedTab(FeedTab.FEED)
+                                    },
+                                    onViewMemberPosts = { member ->
+                                        viewModel.setMemberFilter(member)
+                                        viewModel.setSelectedTab(FeedTab.FEED)
+                                    }
+                                )
+                            }
+                            FeedTab.PHOTOS -> {
+                                PhotosScreen(posts = posts)
+                            }
+                            FeedTab.NAS_SETTINGS -> {
+                                NasConfigScreen(
+                                    nasConfig = nasConfig,
+                                    onSaveConfig = { updatedConfig -> viewModel.updateNasSettings(updatedConfig) },
+                                    onTestConnection = { viewModel.testNasConnection() },
+                                    onRepairDatabase = { viewModel.repairNasDatabase() },
+                                    onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
+                                    onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
+                                    errorCount = errorLogs.size,
+                                    isRepairing = isRepairingDb,
+                                    isRunningDiagnostics = isRunningDiagnostics
+                                )
+                            }
+                            else -> Unit
+                        }
+                    }
                 }
             }
+        }
+
+        // Barra de Navegación Inferior flotante (se oculta al hacer scroll abajo o en Shorts)
+        AnimatedVisibility(
+            visible = showBottomBar,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            FacebookBottomNavBar(
+                currentMember = currentMember,
+                selectedTab = selectedTab,
+                unreadNotificationsCount = unreadNotificationsCount,
+                onTabSelected = { tab ->
+                    isBottomBarVisible = true
+                    viewModel.setSelectedTab(tab)
+                }
+            )
         }
     }
 

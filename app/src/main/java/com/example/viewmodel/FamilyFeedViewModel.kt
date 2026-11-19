@@ -63,6 +63,13 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedMemberFilter = MutableStateFlow<FamilyMember?>(null)
     val selectedMemberFilter: StateFlow<FamilyMember?> = _selectedMemberFilter.asStateFlow()
 
+    private val _savedOfflineOnlyFilter = MutableStateFlow(false)
+    val savedOfflineOnlyFilter: StateFlow<Boolean> = _savedOfflineOnlyFilter.asStateFlow()
+
+    val savedOfflineCount: StateFlow<Int> = repository.posts
+        .map { list -> list.count { it.isSavedOffline } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     private val _selectedPostForComments = MutableStateFlow<Post?>(null)
     val selectedPostForComments: StateFlow<Post?> = _selectedPostForComments.asStateFlow()
 
@@ -329,12 +336,13 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Feed filtrado dinámico según búsqueda y autor seleccionado
+    // Feed filtrado dinámico según búsqueda, autor y filtro offline seleccionado
     val filteredPosts: StateFlow<List<Post>> = combine(
         repository.posts,
         _searchQuery,
-        _selectedMemberFilter
-    ) { posts, query, memberFilter ->
+        _selectedMemberFilter,
+        _savedOfflineOnlyFilter
+    ) { posts, query, memberFilter, offlineOnly ->
         posts.filter { post ->
             val matchesQuery = query.isBlank() ||
                     post.contentText.contains(query, ignoreCase = true) ||
@@ -343,8 +351,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                     (post.location?.contains(query, ignoreCase = true) == true)
 
             val matchesMember = memberFilter == null || post.author.id == memberFilter.id
+            val matchesOffline = !offlineOnly || post.isSavedOffline
 
-            matchesQuery && matchesMember
+            matchesQuery && matchesMember && matchesOffline
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -358,6 +367,10 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setMemberFilter(member: FamilyMember?) {
         _selectedMemberFilter.value = member
+    }
+
+    fun setSavedOfflineFilter(enabled: Boolean) {
+        _savedOfflineOnlyFilter.value = enabled
     }
 
     fun openCreatePostDialog(isShortMode: Boolean = false) {

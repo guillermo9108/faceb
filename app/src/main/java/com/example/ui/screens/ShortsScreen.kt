@@ -16,14 +16,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Favorite
@@ -90,15 +93,38 @@ fun ShortsScreen(
     onOpenComments: (Post) -> Unit,
     onOpenCreateShort: () -> Unit,
     onRefresh: () -> Unit,
-    onShortViewed: (Int) -> Unit
+    onShortViewed: (Int) -> Unit,
+    isScreenActive: Boolean = true,
+    onBackClick: (() -> Unit)? = null
 ) {
     if (shorts.isEmpty()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .background(Color.Black)
+                .statusBarsPadding()
+                .navigationBarsPadding(),
             contentAlignment = Alignment.Center
         ) {
+            if (onBackClick != null) {
+                IconButton(
+                    onClick = onBackClick,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(16.dp)
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.14f))
+                        .testTag("shorts_back_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver",
+                        tint = Color.White
+                    )
+                }
+            }
+
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -147,7 +173,7 @@ fun ShortsScreen(
             modifier = Modifier.fillMaxSize()
         ) { page ->
             val shortPost = shorts[page]
-            val isCurrentPage = pagerState.currentPage == page
+            val isCurrentPage = isScreenActive && (pagerState.currentPage == page)
 
             LaunchedEffect(isCurrentPage) {
                 if (isCurrentPage) {
@@ -164,18 +190,56 @@ fun ShortsScreen(
             )
         }
 
-        // Botón FAB para crear nuevo Short
-        FloatingActionButton(
-            onClick = onOpenCreateShort,
-            containerColor = FacebookBlue,
-            contentColor = Color.White,
+        // Top Bar overlay (Back + Title on Left, Create + FAB on Right)
+        Row(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp)
-                .size(48.dp)
-                .testTag("create_short_fab")
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .align(Alignment.TopCenter),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(Icons.Default.Add, contentDescription = "Nuevo Short")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (onBackClick != null) {
+                    IconButton(
+                        onClick = onBackClick,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.45f))
+                            .testTag("shorts_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Volver del modo Shorts",
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Shorts",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
+
+            FloatingActionButton(
+                onClick = onOpenCreateShort,
+                containerColor = FacebookBlue,
+                contentColor = Color.White,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("create_short_fab")
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Nuevo Short")
+            }
         }
     }
 }
@@ -405,6 +469,7 @@ private fun ShortItemPage(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
+                .navigationBarsPadding()
                 .padding(start = 16.dp, end = 80.dp, bottom = 78.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -447,6 +512,7 @@ private fun ShortItemPage(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
                 .padding(end = 16.dp, bottom = 82.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -521,7 +587,9 @@ private fun ShortItemPage(
                 localPositionMs = localMs
             },
             compact = true,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
         )
     }
 }
