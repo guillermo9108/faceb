@@ -240,7 +240,7 @@ class NasApiClient(
 
             val dbExists = authObj?.optBoolean("database_exists", false) ?: false
             val tablesCount = authObj?.optInt("tables_count", 0) ?: 0
-            val expectedTablesCount = authObj?.optInt("expected_tables_count", 8) ?: 8
+            val expectedTablesCount = authObj?.optInt("expected_tables_count", 9) ?: 9
 
             val tablesList = mutableListOf<String>()
             val tablesArray = authObj?.optJSONArray("tables")
@@ -534,11 +534,18 @@ class NasApiClient(
         port: Int,
         path: String,
         limit: Int = 10,
-        offset: Int = 0
+        offset: Int = 0,
+        userId: Int? = null,
+        onlyFollowed: Boolean = false
     ): Result<FeedPageResult> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
-            val pageParams = "limit=$limit&offset=$offset"
+            val pageParams = buildString {
+                append("limit=$limit&offset=$offset")
+                if (userId != null && userId > 0) {
+                    append("&user_id=$userId&only_followed=${if (onlyFollowed) 1 else 0}")
+                }
+            }
             var url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
@@ -744,16 +751,21 @@ class NasApiClient(
                 val filePath = mObj.optString("file_path", "")
                 if (filePath.isBlank()) continue
                 val fullMediaUrl = resolveMediaUrl(filePath, baseUrl)
-                val thumbPath = mObj.optString("thumb_path", filePath).ifBlank { filePath }
-                val fullThumbUrl = resolveMediaUrl(thumbPath, baseUrl)
                 val mediaTypeStr = mObj.optString("media_type", "IMAGE")
+                val isVideoItem = mediaTypeStr.equals("VIDEO", ignoreCase = true)
+                val rawThumb = mObj.optString("thumb_path", "")
+                val fullThumbUrl = if (isVideoItem) {
+                    if (rawThumb.isBlank()) "" else resolveMediaUrl(rawThumb, baseUrl)
+                } else {
+                    resolveMediaUrl(rawThumb.ifBlank { filePath }, baseUrl)
+                }
                 val (chunksList, chunkDurations, totalDurationMs) = parseChunksAndDurations(mObj, baseUrl)
                 val isChunked = mObj.optInt("is_chunked", 0) == 1 || chunksList.isNotEmpty()
 
                 mediaItems.add(
                     MediaItem(
                         id = "m_${postId}_${mObj.optInt("id", mIdx)}",
-                        type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                        type = if (isVideoItem) MediaType.VIDEO else MediaType.IMAGE,
                         url = fullMediaUrl,
                         thumbnailUrl = fullThumbUrl,
                         durationLabel = mObj.optString("duration_label").takeIf { it.isNotBlank() },
@@ -770,16 +782,21 @@ class NasApiClient(
             val filePath = p.optString("file_path", "")
             if (filePath.isNotBlank()) {
                 val fullMediaUrl = resolveMediaUrl(filePath, baseUrl)
-                val thumbPath = p.optString("thumb_path", filePath).ifBlank { filePath }
-                val fullThumbUrl = resolveMediaUrl(thumbPath, baseUrl)
                 val mediaTypeStr = p.optString("media_type", "IMAGE")
+                val isVideoItem = mediaTypeStr.equals("VIDEO", ignoreCase = true)
+                val rawThumb = p.optString("thumb_path", "")
+                val fullThumbUrl = if (isVideoItem) {
+                    if (rawThumb.isBlank()) "" else resolveMediaUrl(rawThumb, baseUrl)
+                } else {
+                    resolveMediaUrl(rawThumb.ifBlank { filePath }, baseUrl)
+                }
                 val (chunksList, chunkDurations, totalDurationMs) = parseChunksAndDurations(p, baseUrl)
                 val isChunked = p.optInt("is_chunked", 0) == 1 || chunksList.isNotEmpty()
 
                 mediaItems.add(
                     MediaItem(
                         id = "m_$postId",
-                        type = if (mediaTypeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                        type = if (isVideoItem) MediaType.VIDEO else MediaType.IMAGE,
                         url = fullMediaUrl,
                         thumbnailUrl = fullThumbUrl,
                         durationLabel = p.optString("duration_label").takeIf { it.isNotBlank() },
@@ -907,12 +924,20 @@ class NasApiClient(
     }
 
     /**
-     * Obtiene las publicaciones asociadas a un grupo familiar específico.
+     * Obtiene una página de publicaciones asociadas a un grupo familiar específico (10 en 10 por defecto).
      */
-    suspend fun fetchGroupPosts(ip: String, port: Int, path: String, groupId: Int): Result<List<Post>> = withContext(Dispatchers.IO) {
+    suspend fun fetchGroupPostsPage(
+        ip: String,
+        port: Int,
+        path: String,
+        groupId: Int,
+        limit: Int = 10,
+        offset: Int = 0
+    ): Result<FeedPageResult> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
-            var url = buildEndpointUrl(ip, port, currentPath, "group/posts", "group_id=$groupId")
+            val params = "group_id=$groupId&limit=$limit&offset=$offset"
+            var url = buildEndpointUrl(ip, port, currentPath, "group/posts", params)
             var response = client.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
@@ -920,7 +945,82 @@ class NasApiClient(
                 val detected = probeNasServer(ip, port, currentPath).getOrNull()
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
-                    url = buildEndpointUrl(ip, port, currentPath, "group/posts", "group_id=$groupId")
+                    url = buildEndpointUrl(ip, port, currentPath, "group/posts", params)
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val postsArray = jsonObject.optJSONArray("posts") ?: JSONArray()
+            val postsList = mutableListOf<Post>()
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+
+            for (i in 0 until postsArray.length()) {
+                val p = postsArray.getJSONObject(i)
+                postsList.add(parsePostFromJson(p, baseUrl))
+            }
+
+            val totalCount = jsonObject.optInt("total_count", offset + postsList.size)
+            val nextOffset = jsonObject.optInt("next_offset", offset + postsList.size)
+            val hasMore = if (jsonObject.has("has_more")) {
+                jsonObject.optBoolean("has_more", false)
+            } else {
+                postsList.size >= limit && (offset + postsList.size) < totalCount
+            }
+
+            Result.success(
+                FeedPageResult(
+                    posts = postsList,
+                    hasMore = hasMore,
+                    totalCount = totalCount,
+                    nextOffset = nextOffset
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchGroupPosts(ip: String, port: Int, path: String, groupId: Int): Result<List<Post>> {
+        return fetchGroupPostsPage(ip, port, path, groupId, limit = 10, offset = 0).map { it.posts }
+    }
+
+    /**
+     * Búsqueda ligera en toda la base de datos MariaDB 10 (global o acotada a un grupo).
+     */
+    suspend fun searchPosts(
+        ip: String,
+        port: Int,
+        path: String,
+        query: String,
+        groupId: Int? = null
+    ): Result<List<Post>> = withContext(Dispatchers.IO) {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) return@withContext Result.success(emptyList())
+        try {
+            var currentPath = path
+            val encodedQ = java.net.URLEncoder.encode(cleanQuery, "UTF-8")
+            val params = buildString {
+                append("q=$encodedQ")
+                if (groupId != null && groupId > 0) {
+                    append("&group_id=$groupId")
+                }
+            }
+            var url = buildEndpointUrl(ip, port, currentPath, "search", params)
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "search", params)
                     response = client.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
                 }
@@ -941,6 +1041,151 @@ class NasApiClient(
                 postsList.add(parsePostFromJson(p, baseUrl))
             }
             Result.success(postsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Obtiene los IDs de usuarios y grupos seguidos por el usuario en MariaDB 10.
+     */
+    suspend fun fetchFollows(
+        ip: String,
+        port: Int,
+        path: String,
+        userId: Int
+    ): Result<Pair<Set<Int>, Set<Int>>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "follows", "user_id=$userId")
+            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "follows", "user_id=$userId")
+                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val uSet = mutableSetOf<Int>()
+            val uArr = json.optJSONArray("followed_user_ids")
+            if (uArr != null) {
+                for (i in 0 until uArr.length()) uSet.add(uArr.optInt(i))
+            }
+            val gSet = mutableSetOf<Int>()
+            val gArr = json.optJSONArray("followed_group_ids")
+            if (gArr != null) {
+                for (i in 0 until gArr.length()) gSet.add(gArr.optInt(i))
+            }
+            Result.success(Pair(uSet, gSet))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Alterna seguir/dejar de seguir a un usuario o grupo en MariaDB 10.
+     */
+    suspend fun toggleFollow(
+        ip: String,
+        port: Int,
+        path: String,
+        userId: Int,
+        targetType: String,
+        targetId: Int
+    ): Result<Triple<Boolean, Set<Int>, Set<Int>>> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "follow/toggle")
+            val jsonBody = JSONObject().apply {
+                put("user_id", userId)
+                put("target_type", targetType)
+                put("target_id", targetId)
+            }
+            val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            var response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "follow/toggle")
+                    response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            val following = json.optBoolean("following", false)
+            val uSet = mutableSetOf<Int>()
+            val uArr = json.optJSONArray("followed_user_ids")
+            if (uArr != null) {
+                for (i in 0 until uArr.length()) uSet.add(uArr.optInt(i))
+            }
+            val gSet = mutableSetOf<Int>()
+            val gArr = json.optJSONArray("followed_group_ids")
+            if (gArr != null) {
+                for (i in 0 until gArr.length()) gSet.add(gArr.optInt(i))
+            }
+            Result.success(Triple(following, uSet, gSet))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Sube al NAS la miniatura generada localmente cuando un usuario reproduce un vídeo.
+     */
+    suspend fun uploadVideoThumbnail(
+        ip: String,
+        port: Int,
+        path: String,
+        postId: Int,
+        thumbFile: File
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (!thumbFile.exists() || thumbFile.length() <= 0L) {
+            return@withContext Result.failure(Exception("Archivo de miniatura vacío"))
+        }
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "video/upload_thumb")
+            val bodyBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("post_id", postId.toString())
+                .addFormDataPart("thumbnail", thumbFile.name, thumbFile.asRequestBody("image/jpeg".toMediaTypeOrNull()))
+            val req = Request.Builder().url(url).post(bodyBuilder.build()).build()
+            var response = client.newCall(req).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "video/upload_thumb")
+                    response = client.newCall(Request.Builder().url(url).post(bodyBuilder.build()).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("HTTP ${response.code}"))
+            }
+            val json = parseJsonObjectSafely(body)
+            Result.success(json.optString("thumb_path", ""))
         } catch (e: Exception) {
             Result.failure(e)
         }

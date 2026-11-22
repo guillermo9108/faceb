@@ -382,12 +382,14 @@ fun FamilyVideoPlayer(
     onFullscreenClick: (() -> Unit)? = null,
     onCloseClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null,
-    onBufferingChanged: ((Boolean) -> Unit)? = null
+    onBufferingChanged: ((Boolean) -> Unit)? = null,
+    onVideoStarted: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var isBuffering by remember { mutableStateOf(true) }
     var isUserPaused by remember { mutableStateOf(!autoPlay) }
     var isActuallyPlaying by remember { mutableStateOf(autoPlay) }
+    var hasNotifiedThumbExtract by remember(videoUrl, chunks) { mutableStateOf(false) }
     var currentChunkIndex by remember { mutableIntStateOf(0) }
     var currentLocalPosMs by remember { mutableLongStateOf(0L) }
     var exoWindowDurationsMs by remember(chunks, videoUrl) {
@@ -498,6 +500,13 @@ fun FamilyVideoPlayer(
             exoPlayer.pause()
         } else {
             exoPlayer.play()
+        }
+    }
+
+    LaunchedEffect(isActuallyPlaying, isBuffering, videoUrl) {
+        if (isActuallyPlaying && !isBuffering && !hasNotifiedThumbExtract) {
+            hasNotifiedThumbExtract = true
+            onVideoStarted?.invoke()
         }
     }
 

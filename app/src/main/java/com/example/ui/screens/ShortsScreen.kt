@@ -95,6 +95,8 @@ fun ShortsScreen(
     onRefresh: () -> Unit,
     onShortViewed: (Int) -> Unit,
     isScreenActive: Boolean = true,
+    initialShortId: Int? = null,
+    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     onBackClick: (() -> Unit)? = null
 ) {
     if (shorts.isEmpty()) {
@@ -165,7 +167,20 @@ fun ShortsScreen(
         return
     }
 
-    val pagerState = rememberPagerState(pageCount = { shorts.size })
+    val initialPageIndex = remember(shorts, initialShortId) {
+        if (initialShortId == null) 0
+        else shorts.indexOfFirst { it.id == initialShortId }.coerceAtLeast(0)
+    }
+    val pagerState = rememberPagerState(initialPage = initialPageIndex, pageCount = { shorts.size })
+
+    LaunchedEffect(initialShortId, shorts) {
+        if (initialShortId != null) {
+            val targetIdx = shorts.indexOfFirst { it.id == initialShortId }
+            if (targetIdx >= 0 && pagerState.currentPage != targetIdx) {
+                pagerState.scrollToPage(targetIdx)
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         VerticalPager(
@@ -186,7 +201,10 @@ fun ShortsScreen(
                 baseUrl = baseUrl,
                 isActive = isCurrentPage,
                 onLike = { onLikePost(shortPost.id) },
-                onComments = { onOpenComments(shortPost) }
+                onComments = { onOpenComments(shortPost) },
+                onVideoStarted = { vUrl, chunkUrl ->
+                    onVideoStarted?.invoke(shortPost.id, vUrl, chunkUrl)
+                }
             )
         }
 
@@ -251,11 +269,13 @@ private fun ShortItemPage(
     baseUrl: String,
     isActive: Boolean,
     onLike: () -> Unit,
-    onComments: () -> Unit
+    onComments: () -> Unit,
+    onVideoStarted: (videoUrl: String, fallbackChunkUrl: String?) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
+    var hasNotifiedThumbExtract by remember(post.id) { mutableStateOf(false) }
     var currentChunkIndex by remember { mutableIntStateOf(0) }
     var localPositionMs by remember { mutableLongStateOf(0L) }
     val mediaItem = post.mediaItems.firstOrNull()
@@ -344,6 +364,13 @@ private fun ShortItemPage(
         onDispose {
             exoPlayer.removeListener(listener)
             exoPlayer.release()
+        }
+    }
+
+    LaunchedEffect(isActive, isPlaying, isBuffering, resolvedUrl) {
+        if (isActive && isPlaying && !isBuffering && !hasNotifiedThumbExtract && resolvedUrl.isNotBlank()) {
+            hasNotifiedThumbExtract = true
+            onVideoStarted(resolvedUrl, resolvedChunks.firstOrNull())
         }
     }
 

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +61,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,9 +94,12 @@ fun PostCard(
     onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long) -> Unit = { _, _, _, _, _, _, _ -> },
     onSendComment: (text: String) -> Unit = {},
     onToggleSaveOffline: () -> Unit = {},
+    fallbackFolderImageUrl: String? = null,
+    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val thumbTick by com.example.util.OfflineMediaManager.thumbnailTick.collectAsState()
     var showMenu by remember { mutableStateOf(false) }
     var showReactionPicker by remember { mutableStateOf(false) }
     var isPlayingInline by remember { mutableStateOf(false) }
@@ -341,9 +347,14 @@ fun PostCard(
                 if (post.mediaItems.size == 1) {
                     val media = post.mediaItems.first()
                     val isVideo = media.type == MediaType.VIDEO
-                    val imageModel = remember(media.thumbnailUrl, media.url) {
-                        val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
-                        com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
+                    val imageModel = remember(media.thumbnailUrl, media.url, fallbackFolderImageUrl, thumbTick) {
+                        com.example.util.OfflineMediaManager.getDisplayModel(
+                            context = context,
+                            url = if (isVideo) media.thumbnailUrl else media.url,
+                            isVideo = isVideo,
+                            fallbackFolderImageUrl = fallbackFolderImageUrl,
+                            videoUrl = media.url
+                        )
                     }
                     val isChunked = media.isChunked && media.chunks.isNotEmpty()
 
@@ -365,6 +376,9 @@ fun PostCard(
                                 autoPlay = true,
                                 isLooping = true,
                                 showUnifiedBar = true,
+                                onVideoStarted = {
+                                    onVideoStarted?.invoke(post.id, media.url, media.chunks.firstOrNull())
+                                },
                                 onFullscreenClick = {
                                     isPlayingInline = false
                                     isPaused = true
@@ -386,25 +400,61 @@ fun PostCard(
                             )
                         }
                     } else if (isVideo) {
-                        // Video preview with play overlay
+                        // Video preview with play overlay (usa miniatura generada o imagen de la carpeta; nunca descarga el vídeo)
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(16f / 9f)
-                                .background(Color.Black.copy(alpha = 0.08f))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(Color(0xFF141B29), Color(0xFF1E293B))
+                                    )
+                                )
                         ) {
-                            AsyncImage(
-                                model = imageModel,
-                                contentDescription = media.caption.ifBlank { "Miniatura de vídeo" },
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clickable {
-                                        isPlayingInline = true
-                                        isBuffering = true
-                                        isPaused = false
+                            if (imageModel != null) {
+                                AsyncImage(
+                                    model = imageModel,
+                                    contentDescription = media.caption.ifBlank { "Miniatura de vídeo" },
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clickable {
+                                            isPlayingInline = true
+                                            isBuffering = true
+                                            isPaused = false
+                                        }
+                                )
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.Start
+                                ) {
+                                    Surface(
+                                        color = Color.White.copy(alpha = 0.14f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Movie,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Text(
+                                                text = "Reproduce para generar vista previa",
+                                                color = Color.White.copy(alpha = 0.9f),
+                                                fontSize = 11.sp
+                                            )
+                                        }
                                     }
-                            )
+                                }
+                            }
 
                             Box(
                                 modifier = Modifier
@@ -507,6 +557,8 @@ fun PostCard(
                     // Multi-photo Facebook Dynamic Mosaic Grid
                     FacebookMediaGrid(
                         mediaItems = post.mediaItems,
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onMediaClick = { index -> activeMediaViewerIndex = index }
                     )
                 }
@@ -797,6 +849,8 @@ fun PostCard(
 @Composable
 private fun FacebookMediaGrid(
     mediaItems: List<com.example.model.MediaItem>,
+    fallbackFolderImageUrl: String?,
+    thumbTick: Int,
     onMediaClick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -811,11 +865,15 @@ private fun FacebookMediaGrid(
             ) {
                 FacebookGridItem(
                     media = mediaItems[0],
+                    fallbackFolderImageUrl = fallbackFolderImageUrl,
+                    thumbTick = thumbTick,
                     onClick = { onMediaClick(0) },
                     modifier = Modifier.weight(1f).fillMaxHeight()
                 )
                 FacebookGridItem(
                     media = mediaItems[1],
+                    fallbackFolderImageUrl = fallbackFolderImageUrl,
+                    thumbTick = thumbTick,
                     onClick = { onMediaClick(1) },
                     modifier = Modifier.weight(1f).fillMaxHeight()
                 )
@@ -828,6 +886,8 @@ private fun FacebookMediaGrid(
             ) {
                 FacebookGridItem(
                     media = mediaItems[0],
+                    fallbackFolderImageUrl = fallbackFolderImageUrl,
+                    thumbTick = thumbTick,
                     onClick = { onMediaClick(0) },
                     modifier = Modifier.fillMaxWidth().height(200.dp)
                 )
@@ -837,11 +897,15 @@ private fun FacebookMediaGrid(
                 ) {
                     FacebookGridItem(
                         media = mediaItems[1],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(1) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     FacebookGridItem(
                         media = mediaItems[2],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(2) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
@@ -855,6 +919,8 @@ private fun FacebookMediaGrid(
             ) {
                 FacebookGridItem(
                     media = mediaItems[0],
+                    fallbackFolderImageUrl = fallbackFolderImageUrl,
+                    thumbTick = thumbTick,
                     onClick = { onMediaClick(0) },
                     modifier = Modifier.fillMaxWidth().height(200.dp)
                 )
@@ -864,16 +930,22 @@ private fun FacebookMediaGrid(
                 ) {
                     FacebookGridItem(
                         media = mediaItems[1],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(1) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     FacebookGridItem(
                         media = mediaItems[2],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(2) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     FacebookGridItem(
                         media = mediaItems[3],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(3) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
@@ -888,6 +960,8 @@ private fun FacebookMediaGrid(
             ) {
                 FacebookGridItem(
                     media = mediaItems[0],
+                    fallbackFolderImageUrl = fallbackFolderImageUrl,
+                    thumbTick = thumbTick,
                     onClick = { onMediaClick(0) },
                     modifier = Modifier.fillMaxWidth().height(200.dp)
                 )
@@ -897,16 +971,22 @@ private fun FacebookMediaGrid(
                 ) {
                     FacebookGridItem(
                         media = mediaItems[1],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(1) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     FacebookGridItem(
                         media = mediaItems[2],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(2) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                     FacebookGridItem(
                         media = mediaItems[3],
+                        fallbackFolderImageUrl = fallbackFolderImageUrl,
+                        thumbTick = thumbTick,
                         onClick = { onMediaClick(3) },
                         overlayText = "+$remainingCount",
                         modifier = Modifier.weight(1f).fillMaxHeight()
@@ -920,28 +1000,46 @@ private fun FacebookMediaGrid(
 @Composable
 private fun FacebookGridItem(
     media: com.example.model.MediaItem,
+    fallbackFolderImageUrl: String?,
+    thumbTick: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     overlayText: String? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val isVideo = media.type == MediaType.VIDEO
-    val imageModel = remember(media.thumbnailUrl, media.url) {
-        val raw = if (isVideo) media.thumbnailUrl.ifBlank { media.url } else media.url
-        com.example.util.OfflineMediaManager.getDisplayModel(context, raw, isVideo)
+    val imageModel = remember(media.thumbnailUrl, media.url, fallbackFolderImageUrl, thumbTick) {
+        com.example.util.OfflineMediaManager.getDisplayModel(
+            context = context,
+            url = if (isVideo) media.thumbnailUrl else media.url,
+            isVideo = isVideo,
+            fallbackFolderImageUrl = fallbackFolderImageUrl,
+            videoUrl = media.url
+        )
     }
 
     Box(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.08f))
+            .background(if (isVideo && imageModel == null) Color(0xFF141B29) else Color.Black.copy(alpha = 0.08f))
             .clickable(onClick = onClick)
     ) {
-        AsyncImage(
-            model = imageModel,
-            contentDescription = media.caption.ifBlank { "Foto de publicación" },
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        if (imageModel != null) {
+            AsyncImage(
+                model = imageModel,
+                contentDescription = media.caption.ifBlank { "Foto de publicación" },
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Movie,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.25f),
+                modifier = Modifier
+                    .size(34.dp)
+                    .align(Alignment.Center)
+            )
+        }
 
         if (isVideo) {
             Box(

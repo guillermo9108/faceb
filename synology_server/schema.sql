@@ -116,6 +116,17 @@ CREATE TABLE IF NOT EXISTS stories (
     INDEX idx_story_created (created_at DESC)
 ) ENGINE=InnoDB;
 
+-- 7. Tabla de Seguimientos (Usuarios y Grupos seguidos por cada miembro)
+CREATE TABLE IF NOT EXISTS user_follows (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    follower_id INT NOT NULL,
+    target_type VARCHAR(20) NOT NULL,
+    target_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_follow (follower_id, target_type, target_id),
+    INDEX idx_follower (follower_id)
+) ENGINE=InnoDB;
+
 -- Usuario administrador inicial por defecto
 INSERT IGNORE INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES
 (1, 'admin', 'Administrador', 'Administrador', 'admin', '👑', 4280391411, 'Cuenta administradora familiar');

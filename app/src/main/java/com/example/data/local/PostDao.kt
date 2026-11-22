@@ -18,8 +18,43 @@ interface PostDao {
     @Query("SELECT * FROM cached_posts WHERE groupId = :groupId ORDER BY isPinned DESC, createdAt DESC")
     fun getPostsByGroupId(groupId: Int): Flow<List<PostEntity>>
 
+    @Query("SELECT * FROM cached_posts WHERE groupId = :groupId ORDER BY isPinned DESC, createdAt DESC LIMIT :limit OFFSET :offset")
+    suspend fun getPostsByGroupIdPaged(groupId: Int, limit: Int, offset: Int): List<PostEntity>
+
     @Query("SELECT * FROM cached_posts WHERE isShort = 0 ORDER BY isPinned DESC, createdAt DESC LIMIT :limit OFFSET :offset")
     suspend fun getFeedPostsPaged(limit: Int, offset: Int): List<PostEntity>
+
+    @Query("SELECT * FROM cached_posts WHERE isShort = 0 ORDER BY isPinned DESC, createdAt DESC")
+    suspend fun getFeedPostsSync(): List<PostEntity>
+
+    @Query("""
+        SELECT * FROM cached_posts
+        WHERE (
+            contentText LIKE :pattern
+            OR authorName LIKE :pattern
+            OR IFNULL(feeling, '') LIKE :pattern
+            OR IFNULL(location, '') LIKE :pattern
+            OR IFNULL(groupName, '') LIKE :pattern
+        )
+        ORDER BY isPinned DESC, createdAt DESC
+        LIMIT 200
+    """)
+    suspend fun searchPostsGlobal(pattern: String): List<PostEntity>
+
+    @Query("""
+        SELECT * FROM cached_posts
+        WHERE groupId = :groupId
+          AND (
+            contentText LIKE :pattern
+            OR authorName LIKE :pattern
+            OR IFNULL(feeling, '') LIKE :pattern
+            OR IFNULL(location, '') LIKE :pattern
+            OR IFNULL(groupName, '') LIKE :pattern
+          )
+        ORDER BY isPinned DESC, createdAt DESC
+        LIMIT 200
+    """)
+    suspend fun searchPostsInGroup(groupId: Int, pattern: String): List<PostEntity>
 
     @Query("SELECT * FROM cached_posts ORDER BY isPinned DESC, createdAt DESC")
     suspend fun getAllPostsSync(): List<PostEntity>

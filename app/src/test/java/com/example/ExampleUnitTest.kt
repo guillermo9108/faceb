@@ -12,8 +12,12 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
 import com.example.ui.components.UnifiedTimelineHelper
+import com.example.util.FeedStreamEntry
+import com.example.util.FeedStreamHelper
+import com.example.util.OfflineMediaManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,7 +76,7 @@ class ExampleUnitTest {
     @Test
     fun testDatabaseDiagnosticReport_tableCountCheck() {
         val tables = listOf(
-            "users", "posts", "media", "comments", "reactions", "stories", "family_groups", "groups"
+            "users", "posts", "media", "comments", "reactions", "stories", "family_groups", "groups", "user_follows"
         )
         val report = DatabaseDiagnosticReport(
             status = "OK",
@@ -82,7 +86,7 @@ class ExampleUnitTest {
             dbPort = 3307,
             dbName = "family_feed",
             tablesCount = tables.size,
-            expectedTablesCount = 8,
+            expectedTablesCount = 9,
             tables = tables,
             missingTables = emptyList(),
             databaseExists = true,
@@ -91,8 +95,8 @@ class ExampleUnitTest {
         )
 
         assertEquals("OK", report.status)
-        assertEquals(8, report.tablesCount)
-        assertEquals(8, report.expectedTablesCount)
+        assertEquals(9, report.tablesCount)
+        assertEquals(9, report.expectedTablesCount)
         assertTrue(report.missingTables.isEmpty())
         assertTrue(report.databaseExists)
         assertTrue(report.pdoMysqlExtension.success)
@@ -183,5 +187,82 @@ class ExampleUnitTest {
         assertTrue(page.hasMore)
         assertEquals(34, page.totalCount)
         assertEquals(10, page.nextOffset)
+    }
+
+    @Test
+    fun testOfflineMediaManager_thumbnailFallbackWithoutVideoDownload() {
+        assertTrue(OfflineMediaManager.isVideoExtension("http://nas/family_api/index.php?route=media&path=videos/clip.mp4"))
+        assertFalse(OfflineMediaManager.isVideoExtension("http://nas/family_api/index.php?route=media&path=photos/cover.jpg"))
+
+        // Vídeo sin miniatura explícita pero con imagen de carpeta -> usa la de carpeta
+        val withFolderCover = OfflineMediaManager.resolveThumbnailCandidate(
+            isVideo = true,
+            thumbnailUrl = "http://nas/uploads/clip.mp4",
+            mediaUrl = "http://nas/uploads/clip.mp4",
+            fallbackFolderImageUrl = "http://nas/uploads/folder_cover.jpg"
+        )
+        assertEquals("http://nas/uploads/folder_cover.jpg", withFolderCover)
+
+        // Vídeo con miniatura explícita generada -> prioriza la explícita sobre la de carpeta
+        val withExplicitThumb = OfflineMediaManager.resolveThumbnailCandidate(
+            isVideo = true,
+            thumbnailUrl = "http://nas/uploads/thumbs/vthumb_1.jpg",
+            mediaUrl = "http://nas/uploads/clip.mp4",
+            fallbackFolderImageUrl = "http://nas/uploads/folder_cover.jpg"
+        )
+        assertEquals("http://nas/uploads/thumbs/vthumb_1.jpg", withExplicitThumb)
+
+        // Vídeo sin miniatura ni imagen en carpeta -> null (nunca devuelve el .mp4 para evitar descargas)
+        val withoutAnyImage = OfflineMediaManager.resolveThumbnailCandidate(
+            isVideo = true,
+            thumbnailUrl = null,
+            mediaUrl = "http://nas/uploads/clip.mp4",
+            fallbackFolderImageUrl = null
+        )
+        assertNull(withoutAnyImage)
+    }
+
+    @Test
+    fun testFeedStreamHelper_curatedFollowsAndOrderedShortsInterleaving() {
+        val self = FamilyMember(id = 1, name = "Yo", role = "Familiar")
+        val followedUser = FamilyMember(id = 2, name = "Mamá", role = "Familiar")
+        val unfollowedUser = FamilyMember(id = 3, name = "Tío", role = "Familiar")
+
+        val p1 = Post(id = 10, author = self, contentText = "Post propio", createdAt = 1000L)
+        val p2 = Post(id = 11, author = unfollowedUser, contentText = "Post no seguido", createdAt = 900L)
+        val p3 = Post(id = 12, author = followedUser, contentText = "Post de usuario seguido", createdAt = 800L)
+        val p4 = Post(id = 13, author = unfollowedUser, groupId = 5, groupName = "Viajes", contentText = "Post de grupo seguido", createdAt = 700L)
+        val p5 = Post(id = 14, author = unfollowedUser, groupId = 9, groupName = "Otro", contentText = "Post de grupo no seguido", createdAt = 600L)
+
+        val curated = FeedStreamHelper.filterFeedByFollows(
+            posts = listOf(p1, p2, p3, p4, p5),
+            currentUserId = 1,
+            followedUserIds = setOf(2),
+            followedGroupIds = setOf(5)
+        )
+
+        assertEquals(listOf(10, 12, 13), curated.map { it.id })
+
+        val shorts = listOf(
+            Post(id = 201, author = followedUser, isShort = true, contentText = "Short 1"),
+            Post(id = 202, author = self, isShort = true, contentText = "Short 2")
+        )
+        val entries = FeedStreamHelper.buildFeedEntries(
+            posts = curated,
+            shorts = shorts,
+            interval = 2,
+            groupSize = 4
+        )
+
+        // Orden relativo de publicaciones conservado + carrusel de Shorts intercalado tras el 2do post
+        assertEquals(4, entries.size)
+        assertTrue(entries[0] is FeedStreamEntry.PostEntry)
+        assertEquals(10, (entries[0] as FeedStreamEntry.PostEntry).post.id)
+        assertTrue(entries[1] is FeedStreamEntry.PostEntry)
+        assertEquals(12, (entries[1] as FeedStreamEntry.PostEntry).post.id)
+        assertTrue(entries[2] is FeedStreamEntry.ShortsGroupEntry)
+        assertEquals(listOf(201, 202), (entries[2] as FeedStreamEntry.ShortsGroupEntry).shorts.map { it.id })
+        assertTrue(entries[3] is FeedStreamEntry.PostEntry)
+        assertEquals(13, (entries[3] as FeedStreamEntry.PostEntry).post.id)
     }
 }

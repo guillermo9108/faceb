@@ -190,6 +190,29 @@ class FamilyRepository(
 
     private var loadedRemoteOffset = 0
 
+    // Seguimientos del usuario (otros miembros y grupos familiares)
+    private val _followedUserIds = MutableStateFlow<Set<Int>>(emptySet())
+    val followedUserIds: StateFlow<Set<Int>> = _followedUserIds.asStateFlow()
+
+    private val _followedGroupIds = MutableStateFlow<Set<Int>>(emptySet())
+    val followedGroupIds: StateFlow<Set<Int>> = _followedGroupIds.asStateFlow()
+
+    // Paginación incremental de 10 en 10 dentro de Grupos
+    private val _groupPosts = MutableStateFlow<List<Post>>(emptyList())
+    val groupPosts: StateFlow<List<Post>> = _groupPosts.asStateFlow()
+
+    private val _hasMoreGroupPosts = MutableStateFlow(false)
+    val hasMoreGroupPosts: StateFlow<Boolean> = _hasMoreGroupPosts.asStateFlow()
+
+    private val _isLoadingGroupPosts = MutableStateFlow(false)
+    val isLoadingGroupPosts: StateFlow<Boolean> = _isLoadingGroupPosts.asStateFlow()
+
+    private val _isLoadingMoreGroupPosts = MutableStateFlow(false)
+    val isLoadingMoreGroupPosts: StateFlow<Boolean> = _isLoadingMoreGroupPosts.asStateFlow()
+
+    private var activeGroupId: Int? = null
+    private var groupRemoteOffset = 0
+
     init {
         AppErrorLogger.initialize(context)
 
@@ -201,20 +224,29 @@ class FamilyRepository(
             }
         }
 
-        // Cargar las primeras 10 publicaciones, shorts y grupos desde Room para inicio instantáneo / offline
+        // Cargar seguimientos y primeras 10 publicaciones, shorts y grupos desde Room para inicio instantáneo / offline
         scope.launch {
+            loadCachedFollows(_currentMember.value.id)
             try {
-                val cachedFeed = database.postDao().getFeedPostsPaged(10, 0)
-                if (_posts.value.isEmpty() && cachedFeed.isNotEmpty()) {
-                    val domainPosts = cachedFeed.map { entity ->
-                        entity.toDomainPost(findMember(entity.authorId)).also { domain ->
-                            if (domain.comments.isNotEmpty()) {
-                                _commentsByPostId.putIfAbsent(domain.id, domain.comments)
-                            }
+                val curUserId = _currentMember.value.id
+                val allNonShort = database.postDao().getFeedPostsSync()
+                val domainAll = allNonShort.map { entity ->
+                    entity.toDomainPost(findMember(entity.authorId)).also { domain ->
+                        if (domain.comments.isNotEmpty()) {
+                            _commentsByPostId.putIfAbsent(domain.id, domain.comments)
                         }
                     }
-                    _posts.value = domainPosts
-                    _hasMoreFeedPosts.value = cachedFeed.size >= 10
+                }
+                val curated = com.example.util.FeedStreamHelper.filterFeedByFollows(
+                    posts = domainAll,
+                    currentUserId = curUserId,
+                    followedUserIds = _followedUserIds.value,
+                    followedGroupIds = _followedGroupIds.value
+                )
+                if (_posts.value.isEmpty() && curated.isNotEmpty()) {
+                    val firstTen = curated.take(10)
+                    _posts.value = firstTen
+                    _hasMoreFeedPosts.value = curated.size > 10
                 }
             } catch (_: Exception) {}
         }
@@ -244,6 +276,10 @@ class FamilyRepository(
     fun setCurrentMember(member: FamilyMember) {
         _currentMember.value = member
         saveSession(member, sessionPrefs.getBoolean("remember_session", true))
+        scope.launch {
+            loadCachedFollows(member.id)
+            refreshFeed()
+        }
     }
 
     suspend fun login(username: String, pass: String, rememberSession: Boolean): Result<FamilyMember> {
@@ -269,6 +305,7 @@ class FamilyRepository(
             _isUserLoggedIn.value = true
             saveSession(member, rememberSession)
             scope.launch {
+                loadCachedFollows(member.id)
                 refreshFeed()
                 refreshShorts()
             }
@@ -320,6 +357,7 @@ class FamilyRepository(
             saveSession(member, rememberSession)
             _familyMembers.update { list -> if (list.any { it.id == member.id }) list else list + member }
             scope.launch {
+                loadCachedFollows(member.id)
                 refreshFeed()
                 refreshShorts()
             }
@@ -504,38 +542,281 @@ class FamilyRepository(
         return result
     }
 
-    suspend fun fetchGroupPosts(groupId: Int): Result<List<Post>> {
+    private suspend fun loadCachedFollows(userId: Int) {
+        try {
+            _followedUserIds.value = database.followDao().getFollowedUserIds(userId).toSet()
+            _followedGroupIds.value = database.followDao().getFollowedGroupIds(userId).toSet()
+        } catch (_: Exception) {}
+    }
+
+    suspend fun refreshFollows() {
         val config = _nasConfig.value
-        val result = apiClient.fetchGroupPosts(config.ip, config.port, config.path, groupId)
-        result.onSuccess { list ->
+        val curUserId = _currentMember.value.id
+        apiClient.fetchFollows(config.ip, config.port, config.path, curUserId).onSuccess { pair ->
+            _followedUserIds.value = pair.first
+            _followedGroupIds.value = pair.second
+            try {
+                database.followDao().replaceFollowsForUser(curUserId, pair.first, pair.second)
+            } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun toggleFollowUser(targetUserId: Int): Result<Boolean> {
+        val curUserId = _currentMember.value.id
+        if (targetUserId == curUserId) return Result.success(true)
+        val currentlyFollowing = _followedUserIds.value.contains(targetUserId)
+        val optimisticNext = !currentlyFollowing
+
+        _followedUserIds.update { set ->
+            if (optimisticNext) set + targetUserId else set - targetUserId
+        }
+        try {
+            if (optimisticNext) {
+                database.followDao().insertFollow(com.example.data.local.FollowEntity(curUserId, "USER", targetUserId))
+            } else {
+                database.followDao().deleteFollow(curUserId, "USER", targetUserId)
+            }
+        } catch (_: Exception) {}
+
+        val config = _nasConfig.value
+        val res = apiClient.toggleFollow(config.ip, config.port, config.path, curUserId, "USER", targetUserId)
+        res.onSuccess { (_, serverUserIds, serverGroupIds) ->
+            _followedUserIds.value = serverUserIds
+            _followedGroupIds.value = serverGroupIds
+            scope.launch { refreshFeed() }
+        }.onFailure {
+            scope.launch { refreshFeed() }
+        }
+        return res.map { it.first }
+    }
+
+    suspend fun toggleFollowGroup(targetGroupId: Int): Result<Boolean> {
+        val curUserId = _currentMember.value.id
+        val currentlyFollowing = _followedGroupIds.value.contains(targetGroupId)
+        val optimisticNext = !currentlyFollowing
+
+        _followedGroupIds.update { set ->
+            if (optimisticNext) set + targetGroupId else set - targetGroupId
+        }
+        try {
+            if (optimisticNext) {
+                database.followDao().insertFollow(com.example.data.local.FollowEntity(curUserId, "GROUP", targetGroupId))
+            } else {
+                database.followDao().deleteFollow(curUserId, "GROUP", targetGroupId)
+            }
+        } catch (_: Exception) {}
+
+        val config = _nasConfig.value
+        val res = apiClient.toggleFollow(config.ip, config.port, config.path, curUserId, "GROUP", targetGroupId)
+        res.onSuccess { (_, serverUserIds, serverGroupIds) ->
+            _followedUserIds.value = serverUserIds
+            _followedGroupIds.value = serverGroupIds
+            scope.launch { refreshFeed() }
+        }.onFailure {
+            scope.launch { refreshFeed() }
+        }
+        return res.map { it.first }
+    }
+
+    fun clearActiveGroup() {
+        activeGroupId = null
+        _groupPosts.value = emptyList()
+        _hasMoreGroupPosts.value = false
+        _isLoadingGroupPosts.value = false
+        _isLoadingMoreGroupPosts.value = false
+        groupRemoteOffset = 0
+    }
+
+    suspend fun loadGroupPostsInitial(groupId: Int): Result<List<Post>> {
+        activeGroupId = groupId
+        groupRemoteOffset = 0
+        _isLoadingGroupPosts.value = true
+        _isLoadingMoreGroupPosts.value = false
+
+        val cachedImmediate = try {
+            database.postDao().getPostsByGroupIdPaged(groupId, 10, 0)
+                .map { it.toDomainPost(findMember(it.authorId)) }
+        } catch (_: Exception) { emptyList() }
+        if (cachedImmediate.isNotEmpty()) {
+            _groupPosts.value = cachedImmediate
+            _hasMoreGroupPosts.value = cachedImmediate.size >= 10
+        } else {
+            _groupPosts.value = _posts.value.filter { it.groupId == groupId }.take(10)
+        }
+
+        val config = _nasConfig.value
+        val baseUrl = buildBaseUrl(config)
+        val result = apiClient.fetchGroupPostsPage(config.ip, config.port, config.path, groupId, limit = 10, offset = 0)
+        _isLoadingGroupPosts.value = false
+
+        return result.fold(
+            onSuccess = { page ->
+                val savedIds = getSavedOfflinePostIds()
+                val merged = page.posts.map { p ->
+                    val isSaved = p.isSavedOffline || savedIds.contains(p.id)
+                    val cachedComments = _commentsByPostId[p.id] ?: p.comments
+                    p.copy(comments = cachedComments, isSavedOffline = isSaved)
+                }
+                if (activeGroupId == groupId) {
+                    _groupPosts.value = merged
+                    _hasMoreGroupPosts.value = page.hasMore
+                    groupRemoteOffset = page.nextOffset
+                }
+                scope.launch {
+                    if (merged.isNotEmpty()) {
+                        database.postDao().insertPosts(merged.map { it.toEntity() })
+                        val protected = getProtectedOfflineUrls(baseUrl)
+                        com.example.util.OfflineMediaManager.prefetchPageMedia(
+                            context = context,
+                            baseUrl = baseUrl,
+                            pagePosts = merged,
+                            protectedUrls = protected
+                        )
+                    }
+                }
+                Result.success(merged)
+            },
+            onFailure = { error ->
+                if (cachedImmediate.isNotEmpty()) {
+                    Result.success(cachedImmediate)
+                } else {
+                    Result.failure(error)
+                }
+            }
+        )
+    }
+
+    suspend fun loadMoreGroupPosts(groupId: Int): Result<List<Post>> {
+        if (activeGroupId != groupId || _isLoadingMoreGroupPosts.value || !_hasMoreGroupPosts.value) {
+            return Result.success(emptyList())
+        }
+        _isLoadingMoreGroupPosts.value = true
+        val config = _nasConfig.value
+        val baseUrl = buildBaseUrl(config)
+
+        val result = apiClient.fetchGroupPostsPage(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            groupId = groupId,
+            limit = 10,
+            offset = groupRemoteOffset
+        )
+
+        return result.fold(
+            onSuccess = { page ->
+                val savedIds = getSavedOfflinePostIds()
+                val mergedPage = page.posts.map { p ->
+                    val isSaved = p.isSavedOffline || savedIds.contains(p.id)
+                    val cachedComments = _commentsByPostId[p.id] ?: p.comments
+                    p.copy(comments = cachedComments, isSavedOffline = isSaved)
+                }
+                if (activeGroupId == groupId) {
+                    _groupPosts.update { current -> (current + mergedPage).distinctBy { it.id } }
+                    _hasMoreGroupPosts.value = page.hasMore
+                    groupRemoteOffset = page.nextOffset
+                }
+                _isLoadingMoreGroupPosts.value = false
+
+                scope.launch {
+                    if (mergedPage.isNotEmpty()) {
+                        database.postDao().insertPosts(mergedPage.map { it.toEntity() })
+                        val protected = getProtectedOfflineUrls(baseUrl)
+                        com.example.util.OfflineMediaManager.prefetchPageMedia(
+                            context = context,
+                            baseUrl = baseUrl,
+                            pagePosts = mergedPage,
+                            protectedUrls = protected
+                        )
+                    }
+                }
+                Result.success(mergedPage)
+            },
+            onFailure = { error ->
+                val currentOffset = _groupPosts.value.size
+                val cachedPage = try {
+                    database.postDao().getPostsByGroupIdPaged(groupId, 10, currentOffset)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                if (cachedPage.isNotEmpty() && activeGroupId == groupId) {
+                    val domainPage = cachedPage.map { it.toDomainPost(findMember(it.authorId)) }
+                    _groupPosts.update { current -> (current + domainPage).distinctBy { it.id } }
+                    _hasMoreGroupPosts.value = cachedPage.size >= 10
+                    _isLoadingMoreGroupPosts.value = false
+                    Result.success(domainPage)
+                } else {
+                    _hasMoreGroupPosts.value = false
+                    _isLoadingMoreGroupPosts.value = false
+                    Result.failure(error)
+                }
+            }
+        )
+    }
+
+    suspend fun fetchGroupPosts(groupId: Int): Result<List<Post>> = loadGroupPostsInitial(groupId)
+
+    /**
+     * Búsqueda ligera en toda la base de datos (o acotada a un grupo si groupId != null)
+     * SIN predescargar medios ni vídeos en segundo plano.
+     */
+    suspend fun searchPosts(query: String, groupId: Int? = null): Result<List<Post>> {
+        val clean = query.trim()
+        if (clean.isBlank()) return Result.success(emptyList())
+
+        val config = _nasConfig.value
+        val remote = apiClient.searchPosts(config.ip, config.port, config.path, clean, groupId)
+        remote.onSuccess { list ->
             val savedIds = getSavedOfflinePostIds()
             val merged = list.map { p ->
                 val isSaved = p.isSavedOffline || savedIds.contains(p.id)
-                p.copy(isSavedOffline = isSaved)
+                val cachedComments = _commentsByPostId[p.id] ?: p.comments
+                p.copy(comments = cachedComments, isSavedOffline = isSaved)
             }
-            val baseUrl = buildBaseUrl(config)
             scope.launch {
-                database.postDao().insertPosts(merged.map { it.toEntity() })
-                val protected = getProtectedOfflineUrls(baseUrl)
-                com.example.util.OfflineMediaManager.prefetchPageMedia(
-                    context = context,
-                    baseUrl = baseUrl,
-                    pagePosts = merged.take(10),
-                    protectedUrls = protected
-                )
+                try {
+                    if (merged.isNotEmpty()) {
+                        database.postDao().insertPosts(merged.map { it.toEntity() })
+                    }
+                } catch (_: Exception) {}
             }
             return Result.success(merged)
         }
+
+        // Fallback offline en Room sobre toda la tabla local cached_posts
         return try {
-            val cached = database.postDao().getPostsByGroupId(groupId).first()
-            if (cached.isNotEmpty()) {
-                Result.success(cached.map { it.toDomainPost(findMember(it.authorId)) })
+            val pattern = "%$clean%"
+            val entities = if (groupId != null) {
+                database.postDao().searchPostsInGroup(groupId, pattern)
             } else {
-                result
+                database.postDao().searchPostsGlobal(pattern)
             }
+            Result.success(entities.map { it.toDomainPost(findMember(it.authorId)) })
         } catch (_: Exception) {
-            result
+            remote
         }
+    }
+
+    /**
+     * Extrae y guarda la miniatura del vídeo únicamente en el instante en que el usuario lo reproduce.
+     */
+    suspend fun onVideoPlayedForThumbnail(
+        videoUrl: String,
+        fallbackChunkUrl: String? = null,
+        postId: Int? = null
+    ) {
+        if (videoUrl.isBlank()) return
+        val cfg = _nasConfig.value
+        com.example.util.OfflineMediaManager.generateVideoThumbnailOnPlay(
+            context = context,
+            videoUrl = videoUrl,
+            fallbackChunkUrl = fallbackChunkUrl,
+            postId = postId,
+            nasIp = cfg.ip,
+            nasPort = cfg.port,
+            nasPath = cfg.path,
+            apiClient = apiClient
+        )
     }
 
     private val _detectedVolumes = MutableStateFlow<List<com.example.model.NasStorageVolume>>(emptyList())
@@ -966,13 +1247,15 @@ class FamilyRepository(
     }
 
     /**
-     * Sincronización inicial paginada (10 publicaciones) con Synology Web Station y MariaDB 10.
+     * Sincronización inicial paginada (10 publicaciones) con Synology Web Station y MariaDB 10,
+     * mostrando publicaciones propias, de usuarios seguidos y de grupos seguidos respetando el orden.
      */
     suspend fun refreshFeed(): Result<List<Post>> {
         _isLoading.value = true
         _isLoadingMoreFeed.value = false
         val config = _nasConfig.value
         val baseUrl = buildBaseUrl(config)
+        val curUserId = _currentMember.value.id
 
         // Sincronizar usuarios de MariaDB si están disponibles
         apiClient.fetchUsers(config.ip, config.port, config.path).onSuccess { realUsers ->
@@ -981,6 +1264,9 @@ class FamilyRepository(
             }
         }
 
+        // Sincronizar seguimientos reales desde MariaDB antes de pedir el muro filtrado
+        refreshFollows()
+
         // Sincronizar historias independientes desde MariaDB
         apiClient.fetchStories(config.ip, config.port, config.path).onSuccess { realStories ->
             if (realStories.isNotEmpty()) {
@@ -988,8 +1274,16 @@ class FamilyRepository(
             }
         }
 
-        // Obtener la primera página (10 publicaciones) desde el NAS
-        val result = apiClient.fetchFeedPage(config.ip, config.port, config.path, limit = 10, offset = 0)
+        // Obtener la primera página (10 publicaciones curadas) desde el NAS
+        val result = apiClient.fetchFeedPage(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            limit = 10,
+            offset = 0,
+            userId = curUserId,
+            onlyFollowed = true
+        )
         _isLoading.value = false
 
         return result.fold(
@@ -1044,12 +1338,26 @@ class FamilyRepository(
             },
             onFailure = { error ->
                 _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
-                // Modo offline: cargar las primeras 10 publicaciones desde Room
+                // Modo offline: cargar y filtrar en Room las primeras 10 publicaciones curadas
                 try {
-                    val cached = database.postDao().getFeedPostsPaged(10, 0)
-                    if (cached.isNotEmpty() && _posts.value.isEmpty()) {
-                        _posts.value = cached.map { it.toDomainPost(findMember(it.authorId)) }
-                        _hasMoreFeedPosts.value = cached.size >= 10
+                    val allCached = database.postDao().getFeedPostsSync()
+                        .map { it.toDomainPost(findMember(it.authorId)) }
+                    val curated = com.example.util.FeedStreamHelper.filterFeedByFollows(
+                        posts = allCached,
+                        currentUserId = curUserId,
+                        followedUserIds = _followedUserIds.value,
+                        followedGroupIds = _followedGroupIds.value
+                    )
+                    if (curated.isNotEmpty()) {
+                        _posts.value = curated.take(10)
+                        _hasMoreFeedPosts.value = curated.size > 10
+                    } else if (_posts.value.isNotEmpty()) {
+                        _posts.value = com.example.util.FeedStreamHelper.filterFeedByFollows(
+                            posts = _posts.value,
+                            currentUserId = curUserId,
+                            followedUserIds = _followedUserIds.value,
+                            followedGroupIds = _followedGroupIds.value
+                        )
                     }
                 } catch (_: Exception) {}
                 Result.failure(error)
@@ -1067,13 +1375,16 @@ class FamilyRepository(
         _isLoadingMoreFeed.value = true
         val config = _nasConfig.value
         val baseUrl = buildBaseUrl(config)
+        val curUserId = _currentMember.value.id
 
         val result = apiClient.fetchFeedPage(
             ip = config.ip,
             port = config.port,
             path = config.path,
             limit = 10,
-            offset = loadedRemoteOffset
+            offset = loadedRemoteOffset,
+            userId = curUserId,
+            onlyFollowed = true
         )
 
         return result.fold(
@@ -1116,17 +1427,24 @@ class FamilyRepository(
             onFailure = { error ->
                 _nasConfig.update { it.copy(isConnected = false, lastError = error.localizedMessage) }
                 val currentOffset = _posts.value.size
-                val cachedPage = try {
-                    database.postDao().getFeedPostsPaged(10, currentOffset)
+                val curatedRemaining = try {
+                    val allCached = database.postDao().getFeedPostsSync()
+                        .map { it.toDomainPost(findMember(it.authorId)) }
+                    com.example.util.FeedStreamHelper.filterFeedByFollows(
+                        posts = allCached,
+                        currentUserId = curUserId,
+                        followedUserIds = _followedUserIds.value,
+                        followedGroupIds = _followedGroupIds.value
+                    ).drop(currentOffset)
                 } catch (_: Exception) {
                     emptyList()
                 }
+                val cachedPage = curatedRemaining.take(10)
                 if (cachedPage.isNotEmpty()) {
-                    val domainPage = cachedPage.map { it.toDomainPost(findMember(it.authorId)) }
-                    _posts.update { current -> (current + domainPage).distinctBy { it.id } }
-                    _hasMoreFeedPosts.value = cachedPage.size >= 10
+                    _posts.update { current -> (current + cachedPage).distinctBy { it.id } }
+                    _hasMoreFeedPosts.value = curatedRemaining.size > 10
                     _isLoadingMoreFeed.value = false
-                    Result.success(domainPage)
+                    Result.success(cachedPage)
                 } else {
                     _hasMoreFeedPosts.value = false
                     _isLoadingMoreFeed.value = false
@@ -1154,6 +1472,7 @@ class FamilyRepository(
         } catch (_: Exception) {}
 
         _posts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
+        _groupPosts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
         _shorts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
         return targetSaved
     }
@@ -1167,6 +1486,11 @@ class FamilyRepository(
         result.onSuccess { comments ->
             _commentsByPostId[postId] = comments
             _posts.update { list ->
+                list.map { post ->
+                    if (post.id == postId) post.copy(comments = comments) else post
+                }
+            }
+            _groupPosts.update { list ->
                 list.map { post ->
                     if (post.id == postId) post.copy(comments = comments) else post
                 }
@@ -1247,7 +1571,9 @@ class FamilyRepository(
                         id = "m_${postId}_$idx",
                         type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
                         url = u.toString(),
-                        thumbnailUrl = if (idx == 0 && finalThumb != null) finalThumb.absolutePath else u.toString(),
+                        thumbnailUrl = if (isVideo) {
+                            if (idx == 0 && finalThumb != null) finalThumb.absolutePath else ""
+                        } else u.toString(),
                         durationLabel = if (idx == 0) finalDur else null
                     )
                 }
@@ -1457,7 +1783,7 @@ class FamilyRepository(
                         id = "m_$postId",
                         type = MediaType.VIDEO,
                         url = videoUri.toString(),
-                        thumbnailUrl = sliceData.thumbnailFile?.absolutePath ?: videoUri.toString(),
+                        thumbnailUrl = sliceData.thumbnailFile?.absolutePath ?: "",
                         durationLabel = sliceData.durationLabel,
                         isChunked = true,
                         chunkDurationsMs = sliceData.chunkDurationsMs,
@@ -1599,6 +1925,21 @@ class FamilyRepository(
                 } else post
             }
         }
+        _groupPosts.update { current ->
+            current.map { post ->
+                if (post.id == postId) {
+                    val isSame = post.userReaction == reactionType
+                    val map = post.reactions.toMutableMap()
+                    if (isSame) {
+                        map.remove(reactionType)
+                        post.copy(reactions = map, userReaction = null)
+                    } else {
+                        map[reactionType] = (map[reactionType] ?: 0) + 1
+                        post.copy(reactions = map, userReaction = reactionType)
+                    }
+                } else post
+            }
+        }
         _shorts.update { current ->
             current.map { post ->
                 if (post.id == postId) {
@@ -1635,10 +1976,18 @@ class FamilyRepository(
             text = text,
             createdAt = System.currentTimeMillis()
         )
-        val currentComments = _commentsByPostId[postId] ?: _posts.value.find { it.id == postId }?.comments ?: emptyList()
+        val currentComments = _commentsByPostId[postId]
+            ?: _posts.value.find { it.id == postId }?.comments
+            ?: _groupPosts.value.find { it.id == postId }?.comments
+            ?: emptyList()
         val updatedComments = currentComments + optimisticComment
         _commentsByPostId[postId] = updatedComments
         _posts.update { list ->
+            list.map { post ->
+                if (post.id == postId) post.copy(comments = updatedComments) else post
+            }
+        }
+        _groupPosts.update { list ->
             list.map { post ->
                 if (post.id == postId) post.copy(comments = updatedComments) else post
             }
@@ -1668,12 +2017,18 @@ class FamilyRepository(
         result.onSuccess {
             database.postDao().deletePost(postId)
             _posts.update { current -> current.filterNot { it.id == postId } }
+            _groupPosts.update { current -> current.filterNot { it.id == postId } }
+            _shorts.update { current -> current.filterNot { it.id == postId } }
         }
         return result
     }
 
     fun togglePinPost(postId: Int) {
         _posts.update { current ->
+            current.map { if (it.id == postId) it.copy(isPinned = !it.isPinned) else it }
+                .sortedWith(compareByDescending<Post> { it.isPinned }.thenByDescending { it.createdAt })
+        }
+        _groupPosts.update { current ->
             current.map { if (it.id == postId) it.copy(isPinned = !it.isPinned) else it }
                 .sortedWith(compareByDescending<Post> { it.isPinned }.thenByDescending { it.createdAt })
         }
@@ -1766,11 +2121,19 @@ private fun deserializeMediaItems(json: String?): List<MediaItem> {
                 (0 until durArr.length()).map { dIdx -> durArr.optLong(dIdx, 0L) }
             } else emptyList()
 
+            val isVid = typeStr.equals("VIDEO", ignoreCase = true)
+            val rawThumb = obj.optString("thumbnailUrl", "")
+            val resolvedThumb = if (isVid && (rawThumb == url || com.example.util.OfflineMediaManager.isVideoExtension(rawThumb))) {
+                ""
+            } else if (!isVid && rawThumb.isBlank()) {
+                url
+            } else rawThumb
+
             MediaItem(
                 id = obj.optString("id", "m_$idx"),
-                type = if (typeStr.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                type = if (isVid) MediaType.VIDEO else MediaType.IMAGE,
                 url = url,
-                thumbnailUrl = obj.optString("thumbnailUrl", url),
+                thumbnailUrl = resolvedThumb,
                 caption = obj.optString("caption", ""),
                 durationLabel = obj.optString("durationLabel").takeIf { it.isNotBlank() },
                 isChunked = obj.optBoolean("isChunked", chunks.isNotEmpty()),
@@ -1804,12 +2167,20 @@ private fun PostEntity.toDomainPost(author: FamilyMember): Post {
                 (0 until arr.length()).map { arr.getString(it) }
             } catch (_: Exception) { emptyList() }
         } else emptyList()
+        val isVid = mediaType.equals("VIDEO", ignoreCase = true)
+        val cleanThumb = if (isVid) {
+            thumbUrl?.takeIf {
+                it.isNotBlank() && it != mediaUrl && !com.example.util.OfflineMediaManager.isVideoExtension(it)
+            } ?: ""
+        } else {
+            thumbUrl ?: mediaUrl
+        }
         listOf(
             MediaItem(
                 id = "m_$id",
-                type = if (mediaType.equals("VIDEO", ignoreCase = true)) MediaType.VIDEO else MediaType.IMAGE,
+                type = if (isVid) MediaType.VIDEO else MediaType.IMAGE,
                 url = mediaUrl,
-                thumbnailUrl = thumbUrl ?: mediaUrl,
+                thumbnailUrl = cleanThumb,
                 caption = mediaCaption ?: "",
                 durationLabel = mediaDuration,
                 isChunked = isChunked,

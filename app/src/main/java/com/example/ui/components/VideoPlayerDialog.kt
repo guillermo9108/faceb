@@ -76,11 +76,13 @@ fun VideoPlayerDialog(
     chunks: List<String> = emptyList(),
     chunkDurationsMs: List<Long> = emptyList(),
     totalDurationMsHint: Long = 0L,
+    onVideoStarted: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
+    var hasNotifiedThumbExtract by remember(videoUrl, chunks) { mutableStateOf(false) }
     var localPositionMs by remember { mutableLongStateOf(0L) }
     var showControls by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
@@ -170,6 +172,13 @@ fun VideoPlayerDialog(
         }
         exoPlayer.prepare()
         exoPlayer.play()
+    }
+
+    LaunchedEffect(isPlaying, isBuffering, videoUrl) {
+        if (isPlaying && !isBuffering && !hasNotifiedThumbExtract) {
+            hasNotifiedThumbExtract = true
+            onVideoStarted?.invoke()
+        }
     }
 
     // Actualizador periódico de posición unificada

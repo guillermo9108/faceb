@@ -125,6 +125,17 @@ object SynologyScripts {
             INDEX idx_story_created (created_at DESC)
         ) ENGINE=InnoDB;
 
+        -- 7. Tabla de Seguimientos (Usuarios y Grupos seguidos por cada miembro)
+        CREATE TABLE IF NOT EXISTS user_follows (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            follower_id INT NOT NULL,
+            target_type VARCHAR(20) NOT NULL,
+            target_id INT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_follow (follower_id, target_type, target_id),
+            INDEX idx_follower (follower_id)
+        ) ENGINE=InnoDB;
+
         -- Usuario administrador inicial por defecto
         INSERT IGNORE INTO users (id, username, display_name, role, pin_hash, avatar_emoji, avatar_color_hex, bio) VALUES
         (1, 'admin', 'Administrador', 'Administrador', 'admin', '👑', 4280391411, 'Cuenta administradora familiar');
@@ -252,6 +263,16 @@ object SynologyScripts {
                         bg_color_hex BIGINT DEFAULT 4279892618,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_stories_time (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+
+                    "CREATE TABLE IF NOT EXISTS user_follows (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        follower_id INT NOT NULL,
+                        target_type VARCHAR(20) NOT NULL,
+                        target_id INT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_follow (follower_id, target_type, target_id),
+                        INDEX idx_follower (follower_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
                 ];
 
@@ -777,7 +798,7 @@ object SynologyScripts {
                 } catch (Exception ${D}ex) {}
             }
 
-            ${D}expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
+            ${D}expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories', 'user_follows'];
             ${D}effectiveTables = ${D}tables;
             if (in_array('groups', ${D}tables) && !in_array('family_groups', ${D}tables)) {
                 ${D}effectiveTables[] = 'family_groups';
@@ -795,13 +816,13 @@ object SynologyScripts {
                 "server_version" => ${D}serverVer,
                 "database_exists" => ${D}authSuccess,
                 "tables_count" => count(${D}effectiveTables),
-                "expected_tables_count" => 8,
+                "expected_tables_count" => 9,
                 "tables" => ${D}tables,
                 "missing_tables" => ${D}missingTables,
                 "attempts" => ${D}attempts,
                 "error" => ${D}effectiveError,
                 "message" => ${D}authSuccess 
-                    ? "Conexión y autenticación exitosa con MariaDB (" . ${D}serverVer . "). Tablas encontradas: " . count(${D}effectiveTables) . "/8"
+                    ? "Conexión y autenticación exitosa con MariaDB (" . ${D}serverVer . "). Tablas encontradas: " . count(${D}effectiveTables) . "/9"
                     : "Fallo de autenticación o conexión. " . (${D}report["config"]["db_pass_is_default"] ? "¡ATENCIÓN! config.php aún tiene la clave genérica 'TuClaveSynology123'. Edita config.php y coloca la contraseña de MariaDB." : "Detalle: " . ${D}effectiveError)
             ];
 
@@ -1021,6 +1042,17 @@ object SynologyScripts {
             exit;
         }
 
+        function isVideoFilePath(${D}path) {
+            if (empty(${D}path)) return false;
+            ${D}clean = ${D}path;
+            if (strpos(${D}clean, 'path=') !== false) {
+                parse_str(parse_url(${D}clean, PHP_URL_QUERY) ?? '', ${D}qs);
+                if (!empty(${D}qs['path'])) ${D}clean = ${D}qs['path'];
+            }
+            ${D}ext = strtolower(pathinfo(${D}clean, PATHINFO_EXTENSION));
+            return in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']);
+        }
+
         function hydratePostsWithDetails(PDO ${D}db, array ${D}posts) {
             if (empty(${D}posts)) return [];
 
@@ -1109,6 +1141,7 @@ object SynologyScripts {
                     ${D}totalChunksDurMs += (int)${D}ch['duration_ms'];
                 }
                 ${D}chunksPathsJoined = implode('|||', ${D}chunkPathsList);
+                ${D}groupCover = ${D}post['group_cover_photo_url'] ?? '';
 
                 ${D}hydratedMedia = [];
                 foreach (${D}mList as ${D}m) {
@@ -1116,11 +1149,23 @@ object SynologyScripts {
                     ${D}isChunkedItem = ((int)(${D}m['is_chunked'] ?? 0) === 1) || (${D}isVid && !empty(${D}pChunks));
                     ${D}itemChunksMeta = ${D}isVid ? ${D}pChunks : [];
                     ${D}itemChunksPaths = ${D}isVid ? ${D}chunksPathsJoined : '';
+
+                    ${D}rawThumb = ${D}m['thumb_path'] ?? '';
+                    if (${D}isVid) {
+                        if (empty(${D}rawThumb) || ${D}rawThumb === ${D}m['file_path'] || isVideoFilePath(${D}rawThumb)) {
+                            ${D}effectiveThumb = (!empty(${D}groupCover) && !isVideoFilePath(${D}groupCover)) ? ${D}groupCover : '';
+                        } else {
+                            ${D}effectiveThumb = ${D}rawThumb;
+                        }
+                    } else {
+                        ${D}effectiveThumb = !empty(${D}rawThumb) ? ${D}rawThumb : ${D}m['file_path'];
+                    }
+
                     ${D}hydratedMedia[] = [
                         "id" => (int)${D}m['id'],
                         "media_type" => ${D}m['media_type'],
                         "file_path" => ${D}m['file_path'],
-                        "thumb_path" => !empty(${D}m['thumb_path']) ? ${D}m['thumb_path'] : ${D}m['file_path'],
+                        "thumb_path" => ${D}effectiveThumb,
                         "duration_label" => ${D}m['duration_label'],
                         "is_chunked" => ${D}isChunkedItem ? 1 : 0,
                         "chunks_paths" => ${D}itemChunksPaths,
@@ -1157,30 +1202,191 @@ object SynologyScripts {
             return ${D}posts;
         }
 
-        // 3. OBTENER FEED PAGINADO (10 en 10 por defecto, sin duplicar posts multifoto)
-        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts'))) {
-            ${D}limit = max(1, min(50, (int)(${D}_GET['limit'] ?? 10)));
-            ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
+        // 2.9 SEGUIMIENTO DE USUARIOS Y GRUPOS
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'follows') || str_ends_with(${D}uri, '/follows'))) {
+            ${D}userId = (int)(${D}_GET['user_id'] ?? 0);
             try {
                 ${D}db = getDB();
-                ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
-                ${D}stmt = ${D}db->query("
-                    SELECT p.*, 
+                ${D}followedUsers = [];
+                ${D}followedGroups = [];
+                if (${D}userId > 0) {
+                    ${D}fStmt = ${D}db->prepare("SELECT target_type, target_id FROM user_follows WHERE follower_id = ?");
+                    ${D}fStmt->execute([${D}userId]);
+                    while (${D}row = ${D}fStmt->fetch()) {
+                        if (strtoupper(${D}row['target_type']) === 'GROUP') {
+                            ${D}followedGroups[] = (int)${D}row['target_id'];
+                        } else {
+                            ${D}followedUsers[] = (int)${D}row['target_id'];
+                        }
+                    }
+                }
+                echo json_encode([
+                    "status" => "OK",
+                    "followed_user_ids" => ${D}followedUsers,
+                    "followed_group_ids" => ${D}followedGroups
+                ]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'follow/toggle') || str_ends_with(${D}uri, '/follow/toggle'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}userId = (int)(${D}input['user_id'] ?? 0);
+            ${D}targetType = strtoupper(trim(${D}input['target_type'] ?? 'USER'));
+            if (${D}targetType !== 'GROUP') ${D}targetType = 'USER';
+            ${D}targetId = (int)(${D}input['target_id'] ?? 0);
+
+            if (${D}userId <= 0 || ${D}targetId <= 0) {
+                http_response_code(400);
+                echo json_encode(["error" => "Parámetros user_id y target_id inválidos"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                ${D}chk = ${D}db->prepare("SELECT id FROM user_follows WHERE follower_id = ? AND target_type = ? AND target_id = ? LIMIT 1");
+                ${D}chk->execute([${D}userId, ${D}targetType, ${D}targetId]);
+                ${D}existing = ${D}chk->fetchColumn();
+                ${D}following = false;
+                if (${D}existing) {
+                    ${D}db->prepare("DELETE FROM user_follows WHERE id = ?")->execute([${D}existing]);
+                    ${D}following = false;
+                } else {
+                    ${D}db->prepare("INSERT INTO user_follows (follower_id, target_type, target_id) VALUES (?, ?, ?)")->execute([${D}userId, ${D}targetType, ${D}targetId]);
+                    ${D}following = true;
+                }
+
+                ${D}followedUsers = [];
+                ${D}followedGroups = [];
+                ${D}fStmt = ${D}db->prepare("SELECT target_type, target_id FROM user_follows WHERE follower_id = ?");
+                ${D}fStmt->execute([${D}userId]);
+                while (${D}row = ${D}fStmt->fetch()) {
+                    if (strtoupper(${D}row['target_type']) === 'GROUP') {
+                        ${D}followedGroups[] = (int)${D}row['target_id'];
+                    } else {
+                        ${D}followedUsers[] = (int)${D}row['target_id'];
+                    }
+                }
+                echo json_encode([
+                    "status" => "OK",
+                    "following" => ${D}following,
+                    "followed_user_ids" => ${D}followedUsers,
+                    "followed_group_ids" => ${D}followedGroups
+                ]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 2.9.5 BÚSQUEDA LIGERA EN TODA LA BASE DE DATOS (Global o dentro de un grupo)
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'search') || str_ends_with(${D}uri, '/search'))) {
+            ${D}q = trim(${D}_GET['q'] ?? '');
+            ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
+            if (${D}q === '') {
+                echo json_encode(["posts" => [], "total_count" => 0]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                ${D}pattern = '%' . ${D}q . '%';
+                ${D}searchCond = "(COALESCE(p.content_text,'') LIKE ? OR COALESCE(p.feeling,'') LIKE ? OR COALESCE(p.location,'') LIKE ? OR COALESCE(u.display_name,'') LIKE ? OR COALESCE(g.name,'') LIKE ?)";
+                if (${D}groupId > 0) {
+                    ${D}where = "p.group_id = ? AND " . ${D}searchCond;
+                    ${D}params = [${D}groupId, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern];
+                } else {
+                    ${D}where = ${D}searchCond;
+                    ${D}params = [${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern];
+                }
+                ${D}stmt = ${D}db->prepare("
+                    SELECT p.*,
                            COALESCE(u.display_name, 'Familiar') as display_name,
                            COALESCE(u.role, 'Familiar') as role,
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
+                           g.cover_photo_url as group_cover_photo_url,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                    WHERE ${D}where
                     ORDER BY p.is_pinned DESC, p.created_at DESC
-                    LIMIT ${D}limit OFFSET ${D}offset
+                    LIMIT 200
                 ");
+                ${D}stmt->execute(${D}params);
                 ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                echo json_encode([
+                    "posts" => ${D}rows,
+                    "total_count" => count(${D}rows),
+                    "group_id" => ${D}groupId > 0 ? ${D}groupId : null
+                ]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3. OBTENER FEED PAGINADO (10 en 10, filtrado por seguimientos cuando se envía user_id)
+        if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'feed') || matchRoute(${D}action, ${D}uri, 'posts'))) {
+            ${D}limit = max(1, min(50, (int)(${D}_GET['limit'] ?? 10)));
+            ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
+            ${D}userId = (int)(${D}_GET['user_id'] ?? 0);
+            ${D}onlyFollowed = (int)(${D}_GET['only_followed'] ?? (${D}userId > 0 ? 1 : 0));
+            try {
+                ${D}db = getDB();
+                if (${D}userId > 0 && ${D}onlyFollowed === 1) {
+                    ${D}whereClause = "(p.is_short = 0 OR p.is_short IS NULL) AND (p.user_id = ? OR p.user_id IN (SELECT target_id FROM user_follows WHERE follower_id = ? AND target_type = 'USER') OR (p.group_id IS NOT NULL AND p.group_id IN (SELECT target_id FROM user_follows WHERE follower_id = ? AND target_type = 'GROUP')))";
+                    ${D}cntStmt = ${D}db->prepare("SELECT COUNT(*) FROM posts p WHERE ${D}whereClause");
+                    ${D}cntStmt->execute([${D}userId, ${D}userId, ${D}userId]);
+                    ${D}totalCount = (int)${D}cntStmt->fetchColumn();
+
+                    ${D}stmt = ${D}db->prepare("
+                        SELECT p.*, 
+                               COALESCE(u.display_name, 'Familiar') as display_name,
+                               COALESCE(u.role, 'Familiar') as role,
+                               COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                               COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                               g.name as group_name,
+                               g.cover_photo_url as group_cover_photo_url,
+                               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                               (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                        FROM posts p
+                        LEFT JOIN users u ON p.user_id = u.id
+                        LEFT JOIN family_groups g ON g.id = p.group_id
+                        WHERE ${D}whereClause
+                        ORDER BY p.is_pinned DESC, p.created_at DESC
+                        LIMIT ${D}limit OFFSET ${D}offset
+                    ");
+                    ${D}stmt->execute([${D}userId, ${D}userId, ${D}userId]);
+                    ${D}rawRows = ${D}stmt->fetchAll();
+                } else {
+                    ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
+                    ${D}stmt = ${D}db->query("
+                        SELECT p.*, 
+                               COALESCE(u.display_name, 'Familiar') as display_name,
+                               COALESCE(u.role, 'Familiar') as role,
+                               COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                               COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                               g.name as group_name,
+                               g.cover_photo_url as group_cover_photo_url,
+                               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                               (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                        FROM posts p
+                        LEFT JOIN users u ON p.user_id = u.id
+                        LEFT JOIN family_groups g ON g.id = p.group_id
+                        WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                        ORDER BY p.is_pinned DESC, p.created_at DESC
+                        LIMIT ${D}limit OFFSET ${D}offset
+                    ");
+                    ${D}rawRows = ${D}stmt->fetchAll();
+                }
+                ${D}rows = hydratePostsWithDetails(${D}db, ${D}rawRows);
                 ${D}nextOffset = ${D}offset + count(${D}rows);
                 echo json_encode([
                     "posts" => ${D}rows,
@@ -1202,6 +1408,7 @@ object SynologyScripts {
                                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                                    g.name as group_name,
+                                   g.cover_photo_url as group_cover_photo_url,
                                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                             FROM posts p
@@ -1248,6 +1455,7 @@ object SynologyScripts {
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
+                           g.cover_photo_url as group_cover_photo_url,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
@@ -1331,10 +1539,10 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.4. OBTENER PUBLICACIONES DE UN GRUPO
+        // 3.4. OBTENER PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10 por defecto)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'group/posts') || str_ends_with(${D}uri, '/group/posts'))) {
             ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
-            ${D}limit = max(1, min(100, (int)(${D}_GET['limit'] ?? 30)));
+            ${D}limit = max(1, min(50, (int)(${D}_GET['limit'] ?? 10)));
             ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
             try {
                 ${D}db = getDB();
@@ -1349,6 +1557,7 @@ object SynologyScripts {
                            COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                            COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                            g.name as group_name,
+                           g.cover_photo_url as group_cover_photo_url,
                            (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
                     FROM posts p
@@ -1635,9 +1844,37 @@ object SynologyScripts {
                     ${D}totalInFolder = count(${D}allMedia);
                     ${D}totalFiles += ${D}totalInFolder;
 
+                    // Mapa de imagen por defecto por subcarpeta para vídeos sin miniatura
+                    ${D}folderImages = [];
+                    ${D}rootFallbackImg = '';
+                    foreach (${D}allMedia as ${D}mScan) {
+                        if (${D}mScan['type'] === 'IMAGE') {
+                            ${D}scanProxy = "index.php?action=media_proxy&path=" . urlencode(${D}mScan['path']);
+                            ${D}dirKey = dirname(${D}mScan['path']);
+                            if (!isset(${D}folderImages[${D}dirKey])) {
+                                ${D}folderImages[${D}dirKey] = ${D}scanProxy;
+                            }
+                            if (${D}rootFallbackImg === '') {
+                                ${D}rootFallbackImg = ${D}scanProxy;
+                            }
+                        }
+                    }
+                    ${D}existingCover = '';
+                    try {
+                        ${D}covStmt = ${D}db->prepare("SELECT cover_photo_url FROM family_groups WHERE id = ? LIMIT 1");
+                        ${D}covStmt->execute([${D}groupId]);
+                        ${D}existingCover = (string)(${D}covStmt->fetchColumn() ?: '');
+                    } catch (Exception ${D}eCov) {}
+                    if (${D}rootFallbackImg === '' && !empty(${D}existingCover) && !isVideoFilePath(${D}existingCover)) {
+                        ${D}rootFallbackImg = ${D}existingCover;
+                    }
+                    if (!empty(${D}rootFallbackImg) && empty(${D}existingCover)) {
+                        ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}rootFallbackImg, ${D}groupId]);
+                    }
+
                     // Procesar por lote progresivo o completo
                     ${D}slice = ${D}isBatch ? array_slice(${D}allMedia, ${D}batchOffset, ${D}batchLimit) : ${D}allMedia;
-                    ${D}coverSet = false;
+                    ${D}coverSet = !empty(${D}existingCover);
 
                     foreach (${D}slice as ${D}mediaInfo) {
                         ${D}fullFile = ${D}mediaInfo['path'];
@@ -1660,12 +1897,17 @@ object SynologyScripts {
                         ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
                         ${D}newPostId = (int)${D}db->lastInsertId();
 
+                        // Para vídeos usar una imagen de la misma carpeta (o portada del grupo), nunca la ruta .mp4
+                        ${D}itemThumb = ${D}isVid
+                            ? (${D}folderImages[dirname(${D}fullFile)] ?? ${D}rootFallbackImg)
+                            : ${D}proxyUrl;
+
                         ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
                         ${D}stmtMedia->execute([
                             ${D}newPostId,
                             ${D}isVid ? 'VIDEO' : 'IMAGE',
                             ${D}proxyUrl,
-                            ${D}proxyUrl
+                            ${D}itemThumb
                         ]);
 
                         ${D}importedPosts++;
@@ -1801,7 +2043,7 @@ object SynologyScripts {
 
                 ${D}firstChunkRel = "uploads/chunks/{${D}sessionId}/chunk_0000.mp4";
                 if (!${D}hasThumb) {
-                    ${D}thumbRel = ${D}firstChunkRel;
+                    ${D}thumbRel = '';
                 }
 
                 ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
@@ -1832,6 +2074,34 @@ object SynologyScripts {
                 ]);
             } catch (Exception ${D}e) {
                 if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.9.5 SUBIR MINIATURA GENERADA AL REPRODUCIR UN VÍDEO
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'video/upload_thumb') || str_ends_with(${D}uri, '/video/upload_thumb'))) {
+            ${D}postId = (int)(${D}_POST['post_id'] ?? 0);
+            ${D}fileKey = isset(${D}_FILES['thumbnail']) ? 'thumbnail' : (isset(${D}_FILES['photo']) ? 'photo' : null);
+            if (${D}postId <= 0 || !${D}fileKey || !isset(${D}_FILES[${D}fileKey]) || ${D}_FILES[${D}fileKey]['error'] !== UPLOAD_ERR_OK) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta post_id o archivo de miniatura"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                ${D}uploadDir = __DIR__ . '/uploads';
+                if (!is_dir(${D}uploadDir . '/thumbs')) @mkdir(${D}uploadDir . '/thumbs', 0777, true);
+                ${D}relThumb = "uploads/thumbs/post_{${D}postId}_poster.jpg";
+                if (!move_uploaded_file(${D}_FILES[${D}fileKey]['tmp_name'], __DIR__ . '/' . ${D}relThumb)) {
+                    http_response_code(500);
+                    echo json_encode(["error" => "No se pudo guardar la miniatura en el disco del NAS"]);
+                    exit;
+                }
+                ${D}db->prepare("UPDATE media SET thumb_path = ? WHERE post_id = ? AND media_type = 'VIDEO'")->execute([${D}relThumb, ${D}postId]);
+                echo json_encode(["status" => "OK", "post_id" => ${D}postId, "thumb_path" => ${D}relThumb]);
+            } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
             }
@@ -1907,6 +2177,7 @@ object SynologyScripts {
 
                     move_uploaded_file(${D}uFile['tmp_name'], __DIR__ . '/' . ${D}relOrig);
 
+                    ${D}isVideo = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']) || isset(${D}_FILES['thumbnail']) || !empty(${D}durationLabel);
                     if (isset(${D}_FILES['thumbnail']) && ${D}_FILES['thumbnail']['error'] === UPLOAD_ERR_OK) {
                         ${D}thumbFile = "uploads/thumbs/{${D}uuid}_poster.jpg";
                         move_uploaded_file(${D}_FILES['thumbnail']['tmp_name'], __DIR__ . '/' . ${D}thumbFile);
@@ -1914,10 +2185,8 @@ object SynologyScripts {
                     } else if (in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp'])) {
                         createThumbnail(__DIR__ . '/' . ${D}relOrig, __DIR__ . '/' . ${D}relThumb, 720);
                     } else {
-                        ${D}relThumb = ${D}relOrig;
+                        ${D}relThumb = ${D}isVideo ? '' : ${D}relOrig;
                     }
-
-                    ${D}isVideo = in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']) || isset(${D}_FILES['thumbnail']) || !empty(${D}durationLabel);
                     ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label) VALUES (?, ?, ?, ?, ?)");
                     ${D}stmtMedia->execute([${D}postId, ${D}isVideo ? 'VIDEO' : 'IMAGE', ${D}relOrig, ${D}relThumb, ${D}durationLabel ?: null]);
                 }

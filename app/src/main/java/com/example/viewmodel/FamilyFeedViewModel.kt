@@ -15,6 +15,10 @@ import com.example.model.ReactionType
 import com.example.model.ScannedFolder
 import com.example.model.UploadStage
 import com.example.model.VideoUploadProgress
+import com.example.util.FeedStreamEntry
+import com.example.util.FeedStreamHelper
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -53,12 +57,22 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val isLoading = repository.isLoading
     val hasMoreFeedPosts = repository.hasMoreFeedPosts
     val isLoadingMoreFeed = repository.isLoadingMoreFeed
+    val followedUserIds = repository.followedUserIds
+    val followedGroupIds = repository.followedGroupIds
 
     private val _selectedTab = MutableStateFlow(FeedTab.FEED)
     val selectedTab: StateFlow<FeedTab> = _selectedTab.asStateFlow()
 
+    private val _targetShortId = MutableStateFlow<Int?>(null)
+    val targetShortId: StateFlow<Int?> = _targetShortId.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _globalSearchResults = MutableStateFlow<List<Post>>(emptyList())
+    private val _isSearchingGlobal = MutableStateFlow(false)
+    val isSearchingGlobal: StateFlow<Boolean> = _isSearchingGlobal.asStateFlow()
+    private var globalSearchJob: Job? = null
 
     private val _selectedMemberFilter = MutableStateFlow<FamilyMember?>(null)
     val selectedMemberFilter: StateFlow<FamilyMember?> = _selectedMemberFilter.asStateFlow()
@@ -73,13 +87,20 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedPostForComments = MutableStateFlow<Post?>(null)
     val selectedPostForComments: StateFlow<Post?> = _selectedPostForComments.asStateFlow()
 
-    // Comentarios reactivos: se actualizan en vivo al recibir datos de MariaDB
+    // Comentarios reactivos: se actualizan en vivo al recibir datos de MariaDB (Feed, Grupos o Búsqueda)
     val activePostForComments: StateFlow<Post?> = combine(
         _selectedPostForComments,
-        repository.posts
-    ) { selected, posts ->
+        repository.posts,
+        repository.groupPosts,
+        _globalSearchResults,
+        repository.shorts
+    ) { selected, posts, groupPosts, searchPosts, shortsList ->
         if (selected == null) null
-        else posts.find { it.id == selected.id } ?: selected
+        else posts.find { it.id == selected.id }
+            ?: groupPosts.find { it.id == selected.id }
+            ?: searchPosts.find { it.id == selected.id }
+            ?: shortsList.find { it.id == selected.id }
+            ?: selected
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     private val _isCreatePostDialogOpen = MutableStateFlow(false)
@@ -102,8 +123,25 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     private val _isRepairingDb = MutableStateFlow(false)
     val isRepairingDb: StateFlow<Boolean> = _isRepairingDb.asStateFlow()
 
-    private val _groupPosts = MutableStateFlow<List<Post>>(emptyList())
-    val groupPosts: StateFlow<List<Post>> = _groupPosts.asStateFlow()
+    val hasMoreGroupPosts = repository.hasMoreGroupPosts
+    val isLoadingGroupPosts = repository.isLoadingGroupPosts
+    val isLoadingMoreGroupPosts = repository.isLoadingMoreGroupPosts
+
+    private val _groupSearchQuery = MutableStateFlow("")
+    val groupSearchQuery: StateFlow<String> = _groupSearchQuery.asStateFlow()
+
+    private val _groupSearchResults = MutableStateFlow<List<Post>>(emptyList())
+    private val _isSearchingGroup = MutableStateFlow(false)
+    val isSearchingGroup: StateFlow<Boolean> = _isSearchingGroup.asStateFlow()
+    private var groupSearchJob: Job? = null
+
+    val groupPosts: StateFlow<List<Post>> = combine(
+        repository.groupPosts,
+        _groupSearchQuery,
+        _groupSearchResults
+    ) { pagedPosts, query, searchResults ->
+        if (query.isNotBlank()) searchResults else pagedPosts
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _isScanFoldersDialogOpen = MutableStateFlow(false)
     val isScanFoldersDialogOpen: StateFlow<Boolean> = _isScanFoldersDialogOpen.asStateFlow()
@@ -170,25 +208,78 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun openGroup(group: FamilyGroup) {
+        groupSearchJob?.cancel()
+        _groupSearchQuery.value = ""
+        _groupSearchResults.value = emptyList()
+        _isSearchingGroup.value = false
         _selectedGroupForViewing.value = group
-        // Filtrar inmediatamente en memoria solo las publicaciones que pertenezcan a este grupo
-        val localForGroup = repository.posts.value.filter { it.groupId == group.id }
-        _groupPosts.value = localForGroup
 
         viewModelScope.launch {
-            val res = repository.fetchGroupPosts(group.id)
-            res.onSuccess { posts ->
-                // Garantizar que la lista pertenezca estrictamente al grupo abierto
-                val strictlyGroupPosts = posts.filter { it.groupId == null || it.groupId == group.id }
-                    .map { if (it.groupId == null) it.copy(groupId = group.id, groupName = group.name) else it }
-                _groupPosts.value = strictlyGroupPosts
+            repository.loadGroupPostsInitial(group.id)
+        }
+    }
+
+    fun loadMoreGroupPosts() {
+        val group = _selectedGroupForViewing.value ?: return
+        if (_groupSearchQuery.value.isNotBlank()) return
+        viewModelScope.launch {
+            repository.loadMoreGroupPosts(group.id)
+        }
+    }
+
+    fun setGroupSearchQuery(query: String) {
+        _groupSearchQuery.value = query
+        groupSearchJob?.cancel()
+        val group = _selectedGroupForViewing.value
+        val trimmed = query.trim()
+        if (trimmed.isBlank() || group == null) {
+            _groupSearchResults.value = emptyList()
+            _isSearchingGroup.value = false
+            return
+        }
+        groupSearchJob = viewModelScope.launch {
+            _isSearchingGroup.value = true
+            delay(280)
+            val res = repository.searchPosts(trimmed, group.id)
+            _isSearchingGroup.value = false
+            res.onSuccess { list ->
+                if (_groupSearchQuery.value.trim() == trimmed && _selectedGroupForViewing.value?.id == group.id) {
+                    _groupSearchResults.value = list
+                }
             }
         }
     }
 
     fun closeGroup() {
+        groupSearchJob?.cancel()
+        _groupSearchQuery.value = ""
+        _groupSearchResults.value = emptyList()
+        _isSearchingGroup.value = false
         _selectedGroupForViewing.value = null
-        _groupPosts.value = emptyList()
+        repository.clearActiveGroup()
+    }
+
+    fun toggleFollowUser(targetUserId: Int) {
+        viewModelScope.launch {
+            repository.toggleFollowUser(targetUserId)
+        }
+    }
+
+    fun toggleFollowGroup(targetGroupId: Int) {
+        viewModelScope.launch {
+            repository.toggleFollowGroup(targetGroupId)
+        }
+    }
+
+    fun openShortInShortsTab(postId: Int) {
+        _targetShortId.value = postId
+        _selectedTab.value = FeedTab.SHORTS
+    }
+
+    fun onVideoPlayed(videoUrl: String, fallbackChunkUrl: String? = null, postId: Int? = null) {
+        viewModelScope.launch {
+            repository.onVideoPlayedForThumbnail(videoUrl, fallbackChunkUrl, postId)
+        }
     }
 
     val detectedVolumes = repository.detectedVolumes
@@ -336,33 +427,108 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Feed filtrado dinámico según búsqueda, autor y filtro offline seleccionado
+    // Feed filtrado dinámico:
+    // - Sin búsqueda: solo usuario actual, usuarios seguidos y grupos seguidos (orden intacto).
+    // - Con búsqueda: resultados ligeros de TODA la base de datos.
     val filteredPosts: StateFlow<List<Post>> = combine(
         repository.posts,
+        _globalSearchResults,
+        _searchQuery,
+        _selectedMemberFilter,
+        _savedOfflineOnlyFilter,
+        repository.currentMember,
+        repository.followedUserIds,
+        repository.followedGroupIds
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val posts = values[0] as List<Post>
+        @Suppress("UNCHECKED_CAST")
+        val dbSearchResults = values[1] as List<Post>
+        val query = values[2] as String
+        val memberFilter = values[3] as FamilyMember?
+        val offlineOnly = values[4] as Boolean
+        val curMember = values[5] as FamilyMember
+        @Suppress("UNCHECKED_CAST")
+        val followedUsers = values[6] as Set<Int>
+        @Suppress("UNCHECKED_CAST")
+        val followedGroups = values[7] as Set<Int>
+
+        val source = if (query.isNotBlank()) {
+            val localMatches = posts.filter { post ->
+                post.contentText.contains(query, ignoreCase = true) ||
+                    post.author.name.contains(query, ignoreCase = true) ||
+                    (post.groupName?.contains(query, ignoreCase = true) == true) ||
+                    (post.feeling?.contains(query, ignoreCase = true) == true) ||
+                    (post.location?.contains(query, ignoreCase = true) == true)
+            }
+            if (dbSearchResults.isNotEmpty()) {
+                (dbSearchResults + localMatches).distinctBy { it.id }
+            } else {
+                localMatches
+            }
+        } else {
+            FeedStreamHelper.filterFeedByFollows(
+                posts = posts,
+                currentUserId = curMember.id,
+                followedUserIds = followedUsers,
+                followedGroupIds = followedGroups
+            )
+        }
+
+        source.filter { post ->
+            val matchesMember = memberFilter == null || post.author.id == memberFilter.id
+            val matchesOffline = !offlineOnly || post.isSavedOffline
+            matchesMember && matchesOffline
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Flujo del muro con grupos horizontales de Shorts intercalados respetando el orden de publicaciones
+    val feedEntries: StateFlow<List<FeedStreamEntry>> = combine(
+        filteredPosts,
+        repository.shorts,
         _searchQuery,
         _selectedMemberFilter,
         _savedOfflineOnlyFilter
-    ) { posts, query, memberFilter, offlineOnly ->
-        posts.filter { post ->
-            val matchesQuery = query.isBlank() ||
-                    post.contentText.contains(query, ignoreCase = true) ||
-                    post.author.name.contains(query, ignoreCase = true) ||
-                    (post.feeling?.contains(query, ignoreCase = true) == true) ||
-                    (post.location?.contains(query, ignoreCase = true) == true)
-
-            val matchesMember = memberFilter == null || post.author.id == memberFilter.id
-            val matchesOffline = !offlineOnly || post.isSavedOffline
-
-            matchesQuery && matchesMember && matchesOffline
+    ) { posts, shortsList, query, memberFilter, offlineOnly ->
+        if (query.isNotBlank() || memberFilter != null || offlineOnly) {
+            posts.map { FeedStreamEntry.PostEntry(it) }
+        } else {
+            FeedStreamHelper.buildFeedEntries(
+                posts = posts,
+                shorts = shortsList,
+                interval = 4,
+                groupSize = 6
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun setSelectedTab(tab: FeedTab) {
+        if (tab != FeedTab.SHORTS) {
+            _targetShortId.value = null
+        }
         _selectedTab.value = tab
     }
 
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
+        globalSearchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
+            _globalSearchResults.value = emptyList()
+            _isSearchingGlobal.value = false
+            return
+        }
+        globalSearchJob = viewModelScope.launch {
+            _isSearchingGlobal.value = true
+            delay(280)
+            val res = repository.searchPosts(trimmed, null)
+            _isSearchingGlobal.value = false
+            res.onSuccess { list ->
+                if (_searchQuery.value.trim() == trimmed) {
+                    _globalSearchResults.value = list
+                }
+            }
+        }
     }
 
     fun setMemberFilter(member: FamilyMember?) {

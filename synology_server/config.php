@@ -48,7 +48,7 @@ function autoBootstrapDatabase(PDO $pdo) {
             error_log("Groups migration note: " . $eGrpMig->getMessage());
         }
 
-        // 1. DDL CANÓNICO PARA LAS 8 TABLAS (Sin claves foráneas en la creación inicial para garantizar que ninguna tabla falle por dependencias)
+        // 1. DDL CANÓNICO PARA LAS 9 TABLAS (Sin claves foráneas en la creación inicial para garantizar que ninguna tabla falle por dependencias)
         $tables = [
             "users" => "CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -140,6 +140,16 @@ function autoBootstrapDatabase(PDO $pdo) {
                 bg_color_hex BIGINT DEFAULT 4280171146,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_story_created (created_at DESC)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+
+            "user_follows" => "CREATE TABLE IF NOT EXISTS user_follows (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                follower_id INT NOT NULL,
+                target_type VARCHAR(20) NOT NULL,
+                target_id INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_follow (follower_id, target_type, target_id),
+                INDEX idx_follower (follower_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         ];
 

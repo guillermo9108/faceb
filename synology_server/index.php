@@ -243,7 +243,7 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         $authError = $ex->getMessage();
     }
 
-    $expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
+    $expectedTables = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories', 'user_follows'];
     $effectiveTables = $tables;
     if (in_array('groups', $tables) && !in_array('family_groups', $tables)) {
         $effectiveTables[] = 'family_groups';
@@ -255,17 +255,17 @@ if (matchRoute($action, $uri, 'db_diagnostics') || matchRoute($action, $uri, 'di
         "server_version" => $serverVer,
         "database_exists" => $authSuccess,
         "tables_count" => count($tables),
-        "expected_tables_count" => 8,
+        "expected_tables_count" => 9,
         "tables" => $tables,
         "missing_tables" => $missingTables,
         "error" => $authError,
         "message" => $authSuccess 
-            ? "Conexión exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables) . "/8 (" . implode(', ', $tables) . ")"
+            ? "Conexión exitosa con MariaDB ($serverVer). Tablas encontradas: " . count($tables) . "/9 (" . implode(', ', $tables) . ")"
             : "Fallo de conexión o autenticación: $authError"
     ];
 
     if ($authSuccess && count($missingTables) === 0) {
-        $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están 100% sincronizados. Las 8 tablas están operativas.";
+        $report["recommendation"] = "¡Conexión perfecta! MariaDB 10 y Web Station en $detectedVol están 100% sincronizados. Las 9 tablas están operativas.";
     } elseif ($authSuccess) {
         $report["recommendation"] = "Faltan tablas: " . implode(', ', $missingTables) . ". Pulsa 'Verificar / Reparar' en la app.";
     } else {
@@ -284,7 +284,7 @@ if (matchRoute($action, $uri, 'repair_db') || matchRoute($action, $uri, 'repair'
 
         $tablesStmt = $db->query("SHOW TABLES");
         $tables = $tablesStmt ? $tablesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
-        $expected = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories'];
+        $expected = ['users', 'family_groups', 'posts', 'media', 'media_chunks', 'comments', 'reactions', 'stories', 'user_follows'];
         $effective = $tables;
         if (in_array('groups', $tables) && !in_array('family_groups', $tables)) {
             $effective[] = 'family_groups';
@@ -295,11 +295,11 @@ if (matchRoute($action, $uri, 'repair_db') || matchRoute($action, $uri, 'repair'
         echo json_encode([
             "status" => count($missing) === 0 ? "OK" : "PARTIAL",
             "message" => count($missing) === 0 
-                ? "Todas las 8 tablas en MariaDB 10 verificadas y sincronizadas exitosamente." 
+                ? "Todas las 9 tablas en MariaDB 10 verificadas y sincronizadas exitosamente." 
                 : "Atención: Faltan " . count($missing) . " tabla(s): " . implode(', ', $missing),
             "database" => DB_NAME,
             "tables" => $tables,
-            "expected_count" => 8,
+            "expected_count" => 9,
             "missing_tables" => $missing,
             "errors" => $bReport["errors"] ?? []
         ]);
@@ -452,6 +452,17 @@ if ($method === 'GET' && matchRoute($action, $uri, 'groups')) {
     exit;
 }
 
+function isVideoFilePath($path) {
+    if (empty($path)) return false;
+    $clean = $path;
+    if (strpos($clean, 'path=') !== false) {
+        parse_str(parse_url($clean, PHP_URL_QUERY) ?? '', $qs);
+        if (!empty($qs['path'])) $clean = $qs['path'];
+    }
+    $ext = strtolower(pathinfo($clean, PATHINFO_EXTENSION));
+    return in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']);
+}
+
 function hydratePostsWithDetails(PDO $db, array $posts) {
     if (empty($posts)) return [];
 
@@ -488,7 +499,6 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
             ];
         }
     } catch (Exception $eC) {
-        // Fallback si aún no existe columna duration_ms
         try {
             $cStmt = $db->prepare("SELECT post_id, chunk_index, file_path FROM media_chunks WHERE post_id IN ($placeholders) ORDER BY post_id ASC, chunk_index ASC");
             $cStmt->execute($postIds);
@@ -542,6 +552,7 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
             $totalChunksDurMs += (int)$ch['duration_ms'];
         }
         $chunksPathsJoined = implode('|||', $chunkPathsList);
+        $groupCover = $post['group_cover_photo_url'] ?? '';
 
         $hydratedMedia = [];
         foreach ($mList as $idx => $m) {
@@ -549,11 +560,23 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
             $isChunkedItem = ((int)($m['is_chunked'] ?? 0) === 1) || ($isVid && !empty($pChunks));
             $itemChunksMeta = $isVid ? $pChunks : [];
             $itemChunksPaths = $isVid ? $chunksPathsJoined : '';
+
+            $rawThumb = $m['thumb_path'] ?? '';
+            if ($isVid) {
+                if (empty($rawThumb) || $rawThumb === $m['file_path'] || isVideoFilePath($rawThumb)) {
+                    $effectiveThumb = (!empty($groupCover) && !isVideoFilePath($groupCover)) ? $groupCover : '';
+                } else {
+                    $effectiveThumb = $rawThumb;
+                }
+            } else {
+                $effectiveThumb = !empty($rawThumb) ? $rawThumb : $m['file_path'];
+            }
+
             $hydratedMedia[] = [
                 "id" => (int)$m['id'],
                 "media_type" => $m['media_type'],
                 "file_path" => $m['file_path'],
-                "thumb_path" => !empty($m['thumb_path']) ? $m['thumb_path'] : $m['file_path'],
+                "thumb_path" => $effectiveThumb,
                 "duration_label" => $m['duration_label'],
                 "is_chunked" => $isChunkedItem ? 1 : 0,
                 "chunks_paths" => $itemChunksPaths,
@@ -565,7 +588,6 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
         $post['media_items'] = $hydratedMedia;
         $post['comments'] = $commentsByPost[$pid] ?? [];
 
-        // Retrocompatibilidad con campos planos del primer elemento multimedia
         if (!empty($hydratedMedia)) {
             $firstM = $hydratedMedia[0];
             $post['media_type'] = $firstM['media_type'];
@@ -591,10 +613,97 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
     return $posts;
 }
 
-// 3.1. PUBLICACIONES DE UN GRUPO (Paginado e hidratado)
+// 3.0.1 SEGUIMIENTO DE USUARIOS Y GRUPOS
+if ($method === 'GET' && matchRoute($action, $uri, 'follows')) {
+    $userId = (int)($_GET['user_id'] ?? 0);
+    try {
+        $db = getDB();
+        $followedUsers = [];
+        $followedGroups = [];
+        if ($userId > 0) {
+            $fStmt = $db->prepare("SELECT target_type, target_id FROM user_follows WHERE follower_id = ?");
+            $fStmt->execute([$userId]);
+            while ($row = $fStmt->fetch()) {
+                if (strtoupper($row['target_type']) === 'GROUP') {
+                    $followedGroups[] = (int)$row['target_id'];
+                } else {
+                    $followedUsers[] = (int)$row['target_id'];
+                }
+            }
+        }
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "status" => "OK",
+            "followed_user_ids" => $followedUsers,
+            "followed_group_ids" => $followedGroups
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+if ($method === 'POST' && matchRoute($action, $uri, 'follow/toggle')) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $userId = (int)($input['user_id'] ?? 0);
+    $targetType = strtoupper(trim($input['target_type'] ?? 'USER'));
+    if ($targetType !== 'GROUP') $targetType = 'USER';
+    $targetId = (int)($input['target_id'] ?? 0);
+
+    if ($userId <= 0 || $targetId <= 0) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Parámetros user_id y target_id inválidos"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $chk = $db->prepare("SELECT id FROM user_follows WHERE follower_id = ? AND target_type = ? AND target_id = ? LIMIT 1");
+        $chk->execute([$userId, $targetType, $targetId]);
+        $existing = $chk->fetchColumn();
+        $following = false;
+        if ($existing) {
+            $db->prepare("DELETE FROM user_follows WHERE id = ?")->execute([$existing]);
+            $following = false;
+        } else {
+            $db->prepare("INSERT INTO user_follows (follower_id, target_type, target_id) VALUES (?, ?, ?)")->execute([$userId, $targetType, $targetId]);
+            $following = true;
+        }
+
+        $followedUsers = [];
+        $followedGroups = [];
+        $fStmt = $db->prepare("SELECT target_type, target_id FROM user_follows WHERE follower_id = ?");
+        $fStmt->execute([$userId]);
+        while ($row = $fStmt->fetch()) {
+            if (strtoupper($row['target_type']) === 'GROUP') {
+                $followedGroups[] = (int)$row['target_id'];
+            } else {
+                $followedUsers[] = (int)$row['target_id'];
+            }
+        }
+
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "status" => "OK",
+            "following" => $following,
+            "followed_user_ids" => $followedUsers,
+            "followed_group_ids" => $followedGroups
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.1. PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10 por defecto)
 if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
     $groupId = (int)($_GET['group_id'] ?? 0);
-    $limit = max(1, min(100, (int)($_GET['limit'] ?? 30)));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
     $offset = max(0, (int)($_GET['offset'] ?? 0));
     try {
         $db = getDB();
@@ -609,6 +718,7 @@ if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
+                   g.cover_photo_url as group_cover_photo_url,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
@@ -638,6 +748,61 @@ if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
     exit;
 }
 
+// 3.1.5 BÚSQUEDA LIGERA EN TODA LA BASE DE DATOS (Global o dentro de un grupo)
+if ($method === 'GET' && matchRoute($action, $uri, 'search')) {
+    $q = trim($_GET['q'] ?? '');
+    $groupId = (int)($_GET['group_id'] ?? 0);
+    if ($q === '') {
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["posts" => [], "total_count" => 0]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $pattern = '%' . $q . '%';
+        $searchCond = "(COALESCE(p.content_text,'') LIKE ? OR COALESCE(p.feeling,'') LIKE ? OR COALESCE(p.location,'') LIKE ? OR COALESCE(u.display_name,'') LIKE ? OR COALESCE(g.name,'') LIKE ?)";
+        if ($groupId > 0) {
+            $where = "p.group_id = ? AND " . $searchCond;
+            $params = [$groupId, $pattern, $pattern, $pattern, $pattern, $pattern];
+        } else {
+            $where = $searchCond;
+            $params = [$pattern, $pattern, $pattern, $pattern, $pattern];
+        }
+
+        $stmt = $db->prepare("
+            SELECT p.*,
+                   COALESCE(u.display_name, 'Familiar') as display_name,
+                   COALESCE(u.role, 'Familiar') as role,
+                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                   g.name as group_name,
+                   g.cover_photo_url as group_cover_photo_url,
+                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+            FROM posts p
+            LEFT JOIN users u ON p.user_id = u.id
+            LEFT JOIN family_groups g ON g.id = p.group_id
+            WHERE $where
+            ORDER BY p.is_pinned DESC, p.created_at DESC
+            LIMIT 200
+        ");
+        $stmt->execute($params);
+        $rows = hydratePostsWithDetails($db, $stmt->fetchAll());
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode([
+            "posts" => $rows,
+            "total_count" => count($rows),
+            "group_id" => $groupId > 0 ? $groupId : null
+        ]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
 // 3.2. SHORTS (Hidratado con chunks_meta)
 if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
     $limit = max(1, min(100, (int)($_GET['limit'] ?? 30)));
@@ -652,6 +817,7 @@ if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
                    COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
                    COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
                    g.name as group_name,
+                   g.cover_photo_url as group_cover_photo_url,
                    (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
                    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
             FROM posts p
@@ -678,30 +844,66 @@ if ($method === 'GET' && matchRoute($action, $uri, 'shorts')) {
     exit;
 }
 
-// 3.3. FEED (Paginación real de 10 en 10 sin duplicar posts multifoto)
+// 3.3. FEED (Paginación real de 10 en 10, filtrada por usuarios y grupos seguidos cuando se envía user_id)
 if ($method === 'GET' && (matchRoute($action, $uri, 'feed') || matchRoute($action, $uri, 'posts'))) {
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
     $offset = max(0, (int)($_GET['offset'] ?? 0));
+    $userId = (int)($_GET['user_id'] ?? 0);
+    $onlyFollowed = (int)($_GET['only_followed'] ?? ($userId > 0 ? 1 : 0));
+
     try {
         $db = getDB();
-        $totalCount = (int)$db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
-        $stmt = $db->query("
-            SELECT p.*, 
-                   COALESCE(u.display_name, 'Familiar') as display_name,
-                   COALESCE(u.role, 'Familiar') as role,
-                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
-                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
-                   g.name as group_name,
-                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
-                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
-            FROM posts p
-            LEFT JOIN users u ON p.user_id = u.id
-            LEFT JOIN family_groups g ON g.id = p.group_id
-            WHERE (p.is_short = 0 OR p.is_short IS NULL)
-            ORDER BY p.is_pinned DESC, p.created_at DESC
-            LIMIT $limit OFFSET $offset
-        ");
-        $rows = hydratePostsWithDetails($db, $stmt->fetchAll());
+        if ($userId > 0 && $onlyFollowed === 1) {
+            $whereClause = "(p.is_short = 0 OR p.is_short IS NULL) AND (
+                p.user_id = ?
+                OR p.user_id IN (SELECT target_id FROM user_follows WHERE follower_id = ? AND target_type = 'USER')
+                OR (p.group_id IS NOT NULL AND p.group_id IN (SELECT target_id FROM user_follows WHERE follower_id = ? AND target_type = 'GROUP'))
+            )";
+            $cntStmt = $db->prepare("SELECT COUNT(*) FROM posts p WHERE $whereClause");
+            $cntStmt->execute([$userId, $userId, $userId]);
+            $totalCount = (int)$cntStmt->fetchColumn();
+
+            $stmt = $db->prepare("
+                SELECT p.*, 
+                       COALESCE(u.display_name, 'Familiar') as display_name,
+                       COALESCE(u.role, 'Familiar') as role,
+                       COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                       COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                       g.name as group_name,
+                       g.cover_photo_url as group_cover_photo_url,
+                       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                FROM posts p
+                LEFT JOIN users u ON p.user_id = u.id
+                LEFT JOIN family_groups g ON g.id = p.group_id
+                WHERE $whereClause
+                ORDER BY p.is_pinned DESC, p.created_at DESC
+                LIMIT $limit OFFSET $offset
+            ");
+            $stmt->execute([$userId, $userId, $userId]);
+            $rawRows = $stmt->fetchAll();
+        } else {
+            $totalCount = (int)$db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
+            $stmt = $db->query("
+                SELECT p.*, 
+                       COALESCE(u.display_name, 'Familiar') as display_name,
+                       COALESCE(u.role, 'Familiar') as role,
+                       COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                       COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                       g.name as group_name,
+                       g.cover_photo_url as group_cover_photo_url,
+                       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                FROM posts p
+                LEFT JOIN users u ON p.user_id = u.id
+                LEFT JOIN family_groups g ON g.id = p.group_id
+                WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                ORDER BY p.is_pinned DESC, p.created_at DESC
+                LIMIT $limit OFFSET $offset
+            ");
+            $rawRows = $stmt->fetchAll();
+        }
+        $rows = hydratePostsWithDetails($db, $rawRows);
         $nextOffset = $offset + count($rows);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode([
@@ -811,7 +1013,7 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'post') || matchRoute($acti
             } else if (!$isVideo && in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
                 createThumbnail(__DIR__ . '/' . $relOrig, __DIR__ . '/' . $relThumb, 720);
             } else {
-                $relThumb = $relOrig;
+                $relThumb = $isVideo ? '' : $relOrig;
             }
 
             try {
@@ -916,7 +1118,7 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/finalize_chunks')) {
             $hasThumb = true;
         }
         $firstChunkRel = "uploads/chunks/{$sessionId}/chunk_0000.mp4";
-        if (!$hasThumb) $thumbRel = $firstChunkRel;
+        if (!$hasThumb) $thumbRel = '';
 
         $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path, duration_label, is_chunked) VALUES (?, 'VIDEO', ?, ?, ?, 1)");
         $stmtMedia->execute([$postId, $firstChunkRel, $thumbRel, $durationLabel ?: null]);
@@ -939,6 +1141,39 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/finalize_chunks')) {
         echo json_encode(["success" => true, "post_id" => $postId, "total_chunks" => $totalChunks, "is_chunked" => true]);
     } catch (Exception $e) {
         if (isset($db) && $db->inTransaction()) $db->rollBack();
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 4.3. SUBIR MINIATURA GENERADA BAJO DEMANDA AL REPRODUCIR UN VÍDEO
+if ($method === 'POST' && matchRoute($action, $uri, 'video/upload_thumb')) {
+    $postId = (int)($_POST['post_id'] ?? 0);
+    $fileKey = isset($_FILES['thumbnail']) ? 'thumbnail' : (isset($_FILES['photo']) ? 'photo' : null);
+    if ($postId <= 0 || !$fileKey || !isset($_FILES[$fileKey]) || $_FILES[$fileKey]['error'] !== UPLOAD_ERR_OK) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Falta post_id o archivo de miniatura"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $uploadDir = __DIR__ . '/uploads';
+        if (!is_dir($uploadDir . '/thumbs')) @mkdir($uploadDir . '/thumbs', 0777, true);
+        $relThumb = "uploads/thumbs/post_{$postId}_poster.jpg";
+        if (!move_uploaded_file($_FILES[$fileKey]['tmp_name'], __DIR__ . '/' . $relThumb)) {
+            http_response_code(500);
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["error" => "No se pudo guardar la miniatura en el disco del NAS"]);
+            exit;
+        }
+        $db->prepare("UPDATE media SET thumb_path = ? WHERE post_id = ? AND media_type = 'VIDEO'")->execute([$relThumb, $postId]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["status" => "OK", "post_id" => $postId, "thumb_path" => $relThumb]);
+    } catch (Exception $e) {
         http_response_code(500);
         header("Content-Type: application/json; charset=UTF-8");
         echo json_encode(["error" => $e->getMessage()]);
@@ -1334,8 +1569,36 @@ if ($method === 'POST' && matchRoute($action, $uri, 'admin/import_groups')) {
             $totalInFolder = count($allMedia);
             $totalFiles += $totalInFolder;
 
+            // Mapa de imagen por defecto por subcarpeta para asignar a vídeos sin miniatura
+            $folderImages = [];
+            $rootFallbackImg = '';
+            foreach ($allMedia as $mScan) {
+                if ($mScan['type'] === 'IMAGE') {
+                    $scanProxy = "index.php?action=media_proxy&path=" . urlencode($mScan['path']);
+                    $dirKey = dirname($mScan['path']);
+                    if (!isset($folderImages[$dirKey])) {
+                        $folderImages[$dirKey] = $scanProxy;
+                    }
+                    if ($rootFallbackImg === '') {
+                        $rootFallbackImg = $scanProxy;
+                    }
+                }
+            }
+            $existingCover = '';
+            try {
+                $covStmt = $db->prepare("SELECT cover_photo_url FROM family_groups WHERE id = ? LIMIT 1");
+                $covStmt->execute([$groupId]);
+                $existingCover = (string)($covStmt->fetchColumn() ?: '');
+            } catch (Exception $eCov) {}
+            if ($rootFallbackImg === '' && !empty($existingCover) && !isVideoFilePath($existingCover)) {
+                $rootFallbackImg = $existingCover;
+            }
+            if (!empty($rootFallbackImg) && empty($existingCover)) {
+                $db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([$rootFallbackImg, $groupId]);
+            }
+
             $slice = $isBatch ? array_slice($allMedia, $batchOffset, $batchLimit) : $allMedia;
-            $coverSet = false;
+            $coverSet = !empty($existingCover);
 
             foreach ($slice as $mediaInfo) {
                 $fullFile = $mediaInfo['path'];
@@ -1354,8 +1617,13 @@ if ($method === 'POST' && matchRoute($action, $uri, 'admin/import_groups')) {
                 $stmtPost->execute([$adminUserId, $groupId, $caption]);
                 $newPostId = (int)$db->lastInsertId();
 
+                // Si es vídeo sin miniatura previa, usar una imagen de la misma carpeta (o portada del grupo), nunca la ruta .mp4
+                $itemThumb = $isVid
+                    ? ($folderImages[dirname($fullFile)] ?? $rootFallbackImg)
+                    : $proxyUrl;
+
                 $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
-                $stmtMedia->execute([$newPostId, $isVid ? 'VIDEO' : 'IMAGE', $proxyUrl, $proxyUrl]);
+                $stmtMedia->execute([$newPostId, $isVid ? 'VIDEO' : 'IMAGE', $proxyUrl, $itemThumb]);
                 $importedPosts++;
 
                 if (!$coverSet && $isImg) {

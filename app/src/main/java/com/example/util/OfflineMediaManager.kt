@@ -2,16 +2,25 @@ package com.example.util
 
 import android.content.Context
 import android.net.Uri
+import com.example.data.remote.NasApiClient
+import com.example.model.MediaType
 import com.example.model.Post
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.net.URLDecoder
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -24,14 +33,22 @@ data class OfflineCacheStats(
 
 /**
  * Gestor del almacenamiento multimedia offline en carpeta oculta (.offline_media).
- * Permite que los vídeos de publicaciones y Shorts, así como las fotos y miniaturas,
- * queden guardados en el dispositivo para reproducción instantánea y uso sin conexión a la red.
+ * Las miniaturas de vídeo nunca se descargan ni generan en segundo plano al listar publicaciones:
+ * - Si ya existe miniatura generada en .offline_media/thumbs, se muestra de inmediato.
+ * - Si no existe, se utiliza la miniatura imagen explícita o la imagen por defecto de la carpeta del NAS.
+ * - Solo se extrae el fotograma real cuando el usuario abre/reproduce el vídeo.
  */
 object OfflineMediaManager {
 
     private const val HIDDEN_DIR_NAME = ".offline_media"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val downloadingSet = ConcurrentHashMap.newKeySet<String>()
+    private val thumbGenerationMutex = Mutex()
+
+    private val _thumbnailTick = MutableStateFlow(0)
+    val thumbnailTick: StateFlow<Int> = _thumbnailTick.asStateFlow()
+
+    private val VIDEO_EXTENSIONS = setOf("mp4", "mov", "mkv", "webm", "3gp", "avi", "m4v", "ts", "flv")
 
     private val downloadClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -63,17 +80,26 @@ object OfflineMediaManager {
         }
     }
 
+    private fun extractCandidatePath(url: String): String {
+        val qIdx = url.indexOf('?')
+        if (qIdx >= 0) {
+            val query = url.substring(qIdx + 1).substringBefore('#')
+            val pathPair = query.split('&').firstOrNull { it.startsWith("path=") }
+            if (pathPair != null) {
+                val raw = pathPair.removePrefix("path=")
+                val decoded = try {
+                    URLDecoder.decode(raw, "UTF-8")
+                } catch (_: Exception) {
+                    raw
+                }
+                return decoded.substringBefore('?').substringBefore('#')
+            }
+        }
+        return url.substringBefore('?').substringBefore('#')
+    }
+
     private fun getExtensionFromUrl(url: String): String {
-        val pathParam = try {
-            Uri.parse(url).getQueryParameter("path")
-        } catch (_: Exception) {
-            null
-        }
-        val candidate = if (!pathParam.isNullOrBlank()) {
-            pathParam.substringBefore('?').substringBefore('#')
-        } else {
-            url.substringBefore('?').substringBefore('#')
-        }
+        val candidate = extractCandidatePath(url)
         val ext = candidate.substringAfterLast('.', "")
         return if (ext.isNotEmpty() && ext.length <= 5 && ext.all { it.isLetterOrDigit() }) {
             ext.lowercase()
@@ -82,9 +108,32 @@ object OfflineMediaManager {
         }
     }
 
-    private fun isVideoExtension(url: String): Boolean {
-        val ext = getExtensionFromUrl(url)
-        return ext in setOf("mp4", "mov", "mkv", "webm", "3gp", "avi", "m4v")
+    internal fun isVideoExtension(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return getExtensionFromUrl(url) in VIDEO_EXTENSIONS
+    }
+
+    /**
+     * Resuelve de forma pura qué URL imagen utilizar para miniatura sin provocar descargas de vídeo.
+     */
+    internal fun resolveThumbnailCandidate(
+        isVideo: Boolean,
+        thumbnailUrl: String?,
+        mediaUrl: String?,
+        fallbackFolderImageUrl: String? = null
+    ): String? {
+        if (!isVideo) {
+            return thumbnailUrl?.takeIf { it.isNotBlank() && !isVideoExtension(it) }
+                ?: mediaUrl?.takeIf { it.isNotBlank() && !isVideoExtension(it) }
+        }
+        val explicitThumb = thumbnailUrl?.takeIf {
+            it.isNotBlank() && it != mediaUrl && !isVideoExtension(it)
+        }
+        if (explicitThumb != null) return explicitThumb
+
+        return fallbackFolderImageUrl?.takeIf {
+            it.isNotBlank() && !isVideoExtension(it)
+        }
     }
 
     private fun resolveFullUrl(baseUrl: String, raw: String): String? {
@@ -111,7 +160,6 @@ object OfflineMediaManager {
         if (file.exists() && file.length() > 0) {
             return file
         }
-        // Compatibilidad con caché legacy guardada con extensión .php/.bin
         if (ext != "php") {
             val legacyPhp = File(dir, "cached_${hashUrl(url)}.php")
             if (legacyPhp.exists() && legacyPhp.length() > 0) return legacyPhp
@@ -157,79 +205,116 @@ object OfflineMediaManager {
     }
 
     /**
-     * Genera bajo demanda una miniatura ligera a partir del vídeo local o remoto usando MediaMetadataRetriever
-     * y la guarda en la carpeta oculta (.offline_media/thumbs).
+     * Genera bajo demanda una miniatura a partir del vídeo SOLO cuando el usuario lo reproduce.
+     * Evita saturar el ancho de banda al desplazarse por listas. Si se proporciona la configuración
+     * del NAS y el postId, sube también el póster generado al NAS para otros dispositivos familiares.
      */
-    fun getOrGenerateVideoThumbnail(context: Context, videoUrl: String?): File? {
-        if (videoUrl.isNullOrBlank()) return null
-        val existing = getVideoThumbnailFile(context, videoUrl)
-        if (existing != null) return existing
+    suspend fun generateVideoThumbnailOnPlay(
+        context: Context,
+        videoUrl: String?,
+        fallbackChunkUrl: String? = null,
+        postId: Int? = null,
+        nasIp: String? = null,
+        nasPort: Int = 80,
+        nasPath: String = "/family_api",
+        apiClient: NasApiClient? = null
+    ): File? = withContext(Dispatchers.IO) {
+        if (videoUrl.isNullOrBlank()) return@withContext null
+        val appContext = context.applicationContext
 
-        val key = hashUrl(videoUrl)
-        val thumbsDir = getThumbsDir(context)
-        val thumbFile = File(thumbsDir, "vthumb_$key.jpg")
-        val partFile = File(thumbsDir, "vthumb_$key.jpg.part")
+        thumbGenerationMutex.withLock {
+            val existing = getVideoThumbnailFile(appContext, videoUrl)
+            if (existing != null) return@withLock existing
 
-        val localVideo = getLocalCacheFile(context, videoUrl)
-        val retriever = android.media.MediaMetadataRetriever()
-        try {
-            if (localVideo != null && localVideo.exists()) {
-                retriever.setDataSource(localVideo.absolutePath)
-            } else if (videoUrl.startsWith("http://") || videoUrl.startsWith("https://")) {
-                retriever.setDataSource(videoUrl, mapOf("User-Agent" to "FamilyFeed/1.0"))
-            } else if (videoUrl.startsWith("content://") || videoUrl.startsWith("file://")) {
-                retriever.setDataSource(context, Uri.parse(videoUrl))
-            } else {
-                return null
-            }
+            val key = hashUrl(videoUrl)
+            val thumbsDir = getThumbsDir(appContext)
+            val thumbFile = File(thumbsDir, "vthumb_$key.jpg")
+            val partFile = File(thumbsDir, "vthumb_$key.jpg.part")
 
-            val bitmap = retriever.getFrameAtTime(1_000_000, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: retriever.getFrameAtTime(0)
+            val sourceUrl = fallbackChunkUrl?.takeIf { it.isNotBlank() } ?: videoUrl
+            val localVideo = getLocalCacheFile(appContext, sourceUrl) ?: getLocalCacheFile(appContext, videoUrl)
 
-            if (bitmap != null) {
-                FileOutputStream(partFile).use { out ->
-                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                if (localVideo != null && localVideo.exists()) {
+                    retriever.setDataSource(localVideo.absolutePath)
+                } else if (sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://")) {
+                    retriever.setDataSource(sourceUrl, mapOf("User-Agent" to "FamilyFeed/1.0"))
+                } else if (sourceUrl.startsWith("content://") || sourceUrl.startsWith("file://")) {
+                    retriever.setDataSource(appContext, Uri.parse(sourceUrl))
+                } else {
+                    return@withLock null
                 }
-                if (partFile.exists() && partFile.length() > 0) {
-                    if (thumbFile.exists()) thumbFile.delete()
-                    partFile.renameTo(thumbFile)
-                    return thumbFile
+
+                val bitmap = retriever.getFrameAtTime(1_000_000, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.getFrameAtTime(0)
+
+                if (bitmap != null) {
+                    FileOutputStream(partFile).use { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    }
+                    if (partFile.exists() && partFile.length() > 0) {
+                        if (thumbFile.exists()) thumbFile.delete()
+                        val renamed = partFile.renameTo(thumbFile)
+                        val saved = if (renamed) thumbFile else {
+                            partFile.copyTo(thumbFile, overwrite = true)
+                            partFile.delete()
+                            thumbFile
+                        }
+                        _thumbnailTick.update { it + 1 }
+
+                        if (postId != null && postId > 0 && !nasIp.isNullOrBlank() && apiClient != null) {
+                            scope.launch {
+                                try {
+                                    apiClient.uploadVideoThumbnail(nasIp, nasPort, nasPath, postId, saved)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        return@withLock saved
+                    }
                 }
+            } catch (_: Exception) {
+                if (partFile.exists()) partFile.delete()
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
-            if (partFile.exists()) partFile.delete()
-        } finally {
-            try { retriever.release() } catch (_: Exception) {}
+            null
         }
-        return null
     }
 
     /**
-     * Retorna el objeto adecuado para Coil (File si está en caché offline local, String si es remoto).
-     * Distingue si el recurso proporcionado es una imagen/poster ya cacheable directamente o una URL de vídeo
-     * que requiere extracción perezosa de fotograma en .offline_media/thumbs.
+     * Retorna el modelo de imagen ligero para Coil:
+     * 1. Para vídeos: devuelve la miniatura local generada si existe en disco; si no, una miniatura imagen válida
+     *    o la imagen por defecto de la carpeta del grupo. Si no hay ninguna, devuelve null (sin descargar vídeos).
+     * 2. Para imágenes: devuelve el File cacheado si existe, o la URL remota de la imagen.
      */
-    fun getDisplayModel(context: Context, url: String?, isVideo: Boolean = false): Any? {
+    fun getDisplayModel(
+        context: Context,
+        url: String?,
+        isVideo: Boolean = false,
+        fallbackFolderImageUrl: String? = null,
+        videoUrl: String? = null
+    ): Any? {
+        val actualVideoKey = videoUrl?.takeIf { it.isNotBlank() } ?: url
+        if (isVideo || isVideoExtension(url) || isVideoExtension(videoUrl)) {
+            val localThumb = getVideoThumbnailFile(context, actualVideoKey)
+                ?: getVideoThumbnailFile(context, url)
+            if (localThumb != null) return localThumb
+
+            val candidateImage = resolveThumbnailCandidate(
+                isVideo = true,
+                thumbnailUrl = url,
+                mediaUrl = actualVideoKey,
+                fallbackFolderImageUrl = fallbackFolderImageUrl
+            ) ?: return null
+
+            return getLocalCacheFile(context, candidateImage) ?: candidateImage
+        }
+
         if (url.isNullOrBlank()) return null
-
-        val cachedImage = getLocalCacheFile(context, url)
-        if (cachedImage != null && !isVideoExtension(url)) {
-            return cachedImage
-        }
-
-        if (isVideo || isVideoExtension(url)) {
-            val vThumb = getVideoThumbnailFile(context, url)
-            if (vThumb != null) return vThumb
-
-            if (isVideoExtension(url)) {
-                val appContext = context.applicationContext
-                scope.launch {
-                    getOrGenerateVideoThumbnail(appContext, url)
-                }
-            }
-        }
-
-        return cachedImage ?: url
+        return getLocalCacheFile(context, url) ?: url
     }
 
     /**
@@ -309,8 +394,8 @@ object OfflineMediaManager {
 
     /**
      * Precarga progresiva por página (10 publicaciones):
-     * Descarga todas las miniaturas y fotografías del lote recibido para lectura offline inmediata,
-     * SIN descargar vídeos completos en segundo plano ni saturar la red.
+     * Descarga únicamente las miniaturas imagen y fotografías del lote recibido para lectura offline,
+     * SIN descargar ni generar miniaturas de vídeos en segundo plano.
      */
     fun prefetchPageMedia(
         context: Context,
@@ -324,11 +409,11 @@ object OfflineMediaManager {
             val urls = mutableListOf<String>()
             pagePosts.forEach { post ->
                 post.mediaItems.forEach { media ->
-                    val isVideo = media.type == com.example.model.MediaType.VIDEO
+                    val isVideo = media.type == MediaType.VIDEO
 
-                    // 1. Miniatura (si es imagen/poster)
+                    // 1. Miniatura (solo si es imagen real, nunca archivos de vídeo)
                     resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { thumb ->
-                        if (!isVideoExtension(thumb)) {
+                        if (!isVideoExtension(thumb) && thumb != resolveFullUrl(baseUrl, media.url)) {
                             urls.add(thumb)
                         }
                     }
@@ -357,7 +442,9 @@ object OfflineMediaManager {
     fun collectPostMediaUrls(baseUrl: String, post: Post): Set<String> {
         val urls = linkedSetOf<String>()
         post.mediaItems.forEach { media ->
-            resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { urls.add(it) }
+            resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { thumb ->
+                if (!isVideoExtension(thumb)) urls.add(thumb)
+            }
             if (media.chunks.isNotEmpty()) {
                 media.chunks.forEach { chunkUrl ->
                     resolveFullUrl(baseUrl, chunkUrl)?.let { urls.add(it) }

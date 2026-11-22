@@ -20,7 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Feed
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.FamilyMember
+import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FamilyBluePrimary
 import com.example.ui.theme.LanOnlineGreen
 
@@ -49,6 +50,8 @@ fun FamilyMembersScreen(
     familyMembers: List<FamilyMember>,
     onSelectMember: (FamilyMember) -> Unit,
     onViewMemberPosts: (FamilyMember) -> Unit,
+    followedUserIds: Set<Int> = emptySet(),
+    onToggleFollowUser: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -75,7 +78,7 @@ fun FamilyMembersScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Perfiles locales configurados en el Synology NAS (MariaDB 10). No requieren cuentas de Google ni acceso a Internet.",
+                        text = "Sigue a los familiares cuyas publicaciones quieras ver en tu Muro principal.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -86,6 +89,7 @@ fun FamilyMembersScreen(
         // List of Members
         items(familyMembers, key = { it.id }) { member ->
             val isCurrent = member.id == currentMember.id
+            val isFollowing = followedUserIds.contains(member.id)
 
             Card(
                 shape = RoundedCornerShape(14.dp),
@@ -155,14 +159,14 @@ fun FamilyMembersScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Bio
-                    Text(
-                        text = member.bio,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    if (member.bio.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = member.bio,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -171,6 +175,35 @@ fun FamilyMembersScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        if (!isCurrent) {
+                            if (isFollowing) {
+                                OutlinedButton(
+                                    onClick = { onToggleFollowUser(member.id) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("follow_user_button_${member.id}")
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = LanOnlineGreen, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Siguiendo", color = LanOnlineGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+                            } else {
+                                Button(
+                                    onClick = { onToggleFollowUser(member.id) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("follow_user_button_${member.id}")
+                                ) {
+                                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Seguir", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+
                         Button(
                             onClick = { onViewMemberPosts(member) },
                             shape = RoundedCornerShape(8.dp),

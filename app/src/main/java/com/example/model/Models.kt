@@ -188,7 +188,7 @@ data class DatabaseDiagnosticReport(
     val mariadbAuthentication: CheckItem = CheckItem(),
     val databaseExists: Boolean = false,
     val tablesCount: Int = 0,
-    val expectedTablesCount: Int = 8,
+    val expectedTablesCount: Int = 9,
     val tables: List<String> = emptyList(),
     val missingTables: List<String> = emptyList(),
     val recommendation: String = "",

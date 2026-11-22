@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -32,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -48,16 +51,24 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.model.FamilyGroup
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.ui.theme.FamilyBluePrimary
+import com.example.util.OfflineMediaManager
 
 @Composable
 fun PhotosScreen(
     posts: List<Post>,
+    groups: List<FamilyGroup> = emptyList(),
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val thumbTick by OfflineMediaManager.thumbnailTick.collectAsState()
+    val groupCoverMap = remember(groups) {
+        groups.associate { it.id to it.coverPhotoUrl }
+    }
     // Extraer todos los mediaItems con la información del post asociado
     val mediaWithPost = remember(posts) {
         posts.flatMap { post ->
@@ -156,6 +167,16 @@ fun PhotosScreen(
                 items(mediaWithPost) { item ->
                 val media = item.first
                 val post = item.second
+                val isVideo = media.type == MediaType.VIDEO
+                val displayModel = remember(media.thumbnailUrl, media.url, post.groupId, thumbTick, groupCoverMap) {
+                    OfflineMediaManager.getDisplayModel(
+                        context = context,
+                        url = if (isVideo) media.thumbnailUrl else media.url,
+                        isVideo = isVideo,
+                        fallbackFolderImageUrl = post.groupId?.let { groupCoverMap[it] },
+                        videoUrl = media.url
+                    )
+                }
 
                 Card(
                     shape = RoundedCornerShape(8.dp),
@@ -164,15 +185,30 @@ fun PhotosScreen(
                         .aspectRatio(1f)
                         .clickable { selectedMedia = item }
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        AsyncImage(
-                            model = media.url,
-                            contentDescription = media.caption,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(if (isVideo && displayModel == null) Color(0xFF141B29) else Color.Transparent)
+                    ) {
+                        if (displayModel != null) {
+                            AsyncImage(
+                                model = displayModel,
+                                contentDescription = media.caption,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Movie,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.25f),
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .align(Alignment.Center)
+                            )
+                        }
 
-                        if (media.type == MediaType.VIDEO) {
+                        if (isVideo) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -208,6 +244,16 @@ fun PhotosScreen(
 
     // Modal de imagen a pantalla completa
     selectedMedia?.let { (media, post) ->
+        val isVideo = media.type == MediaType.VIDEO
+        val previewModel = remember(media.thumbnailUrl, media.url, post.groupId, thumbTick, groupCoverMap) {
+            OfflineMediaManager.getDisplayModel(
+                context = context,
+                url = if (isVideo) media.thumbnailUrl else media.url,
+                isVideo = isVideo,
+                fallbackFolderImageUrl = post.groupId?.let { groupCoverMap[it] },
+                videoUrl = media.url
+            )
+        }
         Dialog(
             onDismissRequest = { selectedMedia = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -238,15 +284,33 @@ fun PhotosScreen(
                             .padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        AsyncImage(
-                            model = media.url,
-                            contentDescription = media.caption,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(380.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                        )
+                        if (previewModel != null) {
+                            AsyncImage(
+                                model = previewModel,
+                                contentDescription = media.caption,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(380.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(260.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF141B29)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Movie,
+                                    contentDescription = "Vídeo sin vista previa",
+                                    tint = Color.White.copy(alpha = 0.65f),
+                                    modifier = Modifier.size(64.dp)
+                                )
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(16.dp))
 
