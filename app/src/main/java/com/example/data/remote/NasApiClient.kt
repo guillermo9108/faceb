@@ -11,6 +11,7 @@ import com.example.model.ErrorCategory
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FeedPageResult
+import com.example.model.GroupOrganizationMode
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.Post
@@ -899,25 +900,227 @@ class NasApiClient(
 
             for (i in 0 until groupsArray.length()) {
                 val g = groupsArray.getJSONObject(i)
-                val rawCover = g.optString("cover_photo_url", "")
-                val fullCover = if (rawCover.isNotBlank()) {
-                    if (rawCover.startsWith("http://") || rawCover.startsWith("https://")) rawCover
-                    else "$baseUrl/$rawCover"
-                } else null
-
-                groupsList.add(
-                    FamilyGroup(
-                        id = g.getInt("id"),
-                        name = g.optString("name", "Grupo"),
-                        folderPath = g.optString("folder_path", ""),
-                        description = g.optString("description", ""),
-                        coverPhotoUrl = fullCover,
-                        postsCount = g.optInt("posts_count", 0),
-                        createdAt = parseTimestamp(g.optString("created_at"))
-                    )
-                )
+                groupsList.add(parseGroupFromJson(g, baseUrl))
             }
             Result.success(groupsList)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parseGroupFromJson(g: JSONObject, baseUrl: String): FamilyGroup {
+        val rawCover = g.optString("cover_photo_url", "")
+        val fullCover = if (rawCover.isNotBlank()) {
+            resolveMediaUrl(rawCover, baseUrl)
+        } else null
+        val orgStr = g.optString("organization_mode", "NORMAL")
+        val orgMode = if (orgStr.equals("SERIES", ignoreCase = true)) {
+            GroupOrganizationMode.SERIES
+        } else {
+            GroupOrganizationMode.NORMAL
+        }
+        val allowVal = g.optInt("allow_member_uploads", 1) == 1
+        return FamilyGroup(
+            id = g.getInt("id"),
+            name = g.optString("name", "Grupo"),
+            folderPath = g.optString("folder_path", ""),
+            description = g.optString("description", ""),
+            coverPhotoUrl = fullCover,
+            postsCount = g.optInt("posts_count", 0),
+            createdAt = parseTimestamp(g.optString("created_at")),
+            createdByUserId = g.optInt("created_by_user_id", 1),
+            allowUploads = allowVal,
+            organizationMode = orgMode
+        )
+    }
+
+    /**
+     * Crea un nuevo grupo familiar administrado por el usuario actual.
+     */
+    suspend fun createGroup(
+        ip: String,
+        port: Int,
+        path: String,
+        context: Context,
+        userId: Int,
+        name: String,
+        description: String,
+        allowUploads: Boolean,
+        organizationMode: GroupOrganizationMode,
+        coverUri: Uri? = null
+    ): Result<FamilyGroup> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "group/create")
+            val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("user_id", userId.toString())
+                .addFormDataPart("name", name.trim())
+                .addFormDataPart("description", description.trim())
+                .addFormDataPart("allow_member_uploads", if (allowUploads) "1" else "0")
+                .addFormDataPart("organization_mode", organizationMode.value)
+
+            var tempCoverFile: File? = null
+            if (coverUri != null) {
+                try {
+                    val mimeType = context.contentResolver.getType(coverUri) ?: "image/jpeg"
+                    tempCoverFile = File(context.cacheDir, "group_cover_${System.currentTimeMillis()}.jpg")
+                    context.contentResolver.openInputStream(coverUri)?.use { input ->
+                        FileOutputStream(tempCoverFile).use { output -> input.copyTo(output) }
+                    }
+                    if (tempCoverFile.exists() && tempCoverFile.length() > 0L) {
+                        multipartBuilder.addFormDataPart(
+                            "cover",
+                            tempCoverFile.name,
+                            tempCoverFile.asRequestBody(mimeType.toMediaTypeOrNull())
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
+
+            val bodyPayload = multipartBuilder.build()
+            var response = uploadClient.newCall(Request.Builder().url(url).post(bodyPayload).build()).execute()
+            var respBody = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "group/create")
+                    response = uploadClient.newCall(Request.Builder().url(url).post(bodyPayload).build()).execute()
+                    respBody = response.body?.string() ?: ""
+                }
+            }
+            tempCoverFile?.delete()
+
+            if (!response.isSuccessful) {
+                val detail = if (respBody.isNotBlank()) extractHtmlOrPhpError(respBody, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(respBody)
+            val gObj = json.getJSONObject("group")
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+            Result.success(parseGroupFromJson(gObj, baseUrl))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Actualiza configuración de grupo: nombre, descripción, portada, permiso de subida y organización (Normal/Series).
+     */
+    suspend fun updateGroup(
+        ip: String,
+        port: Int,
+        path: String,
+        context: Context,
+        groupId: Int,
+        userId: Int,
+        name: String? = null,
+        description: String? = null,
+        allowUploads: Boolean? = null,
+        organizationMode: GroupOrganizationMode? = null,
+        coverUri: Uri? = null,
+        coverPhotoUrl: String? = null
+    ): Result<FamilyGroup> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "group/update")
+            val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("group_id", groupId.toString())
+                .addFormDataPart("user_id", userId.toString())
+
+            if (!name.isNullOrBlank()) multipartBuilder.addFormDataPart("name", name.trim())
+            if (description != null) multipartBuilder.addFormDataPart("description", description.trim())
+            if (allowUploads != null) multipartBuilder.addFormDataPart("allow_member_uploads", if (allowUploads) "1" else "0")
+            if (organizationMode != null) multipartBuilder.addFormDataPart("organization_mode", organizationMode.value)
+            if (!coverPhotoUrl.isNullOrBlank() && coverUri == null) {
+                multipartBuilder.addFormDataPart("cover_photo_url", coverPhotoUrl.trim())
+            }
+
+            var tempCoverFile: File? = null
+            if (coverUri != null) {
+                try {
+                    val mimeType = context.contentResolver.getType(coverUri) ?: "image/jpeg"
+                    tempCoverFile = File(context.cacheDir, "group_cover_upd_${System.currentTimeMillis()}.jpg")
+                    context.contentResolver.openInputStream(coverUri)?.use { input ->
+                        FileOutputStream(tempCoverFile).use { output -> input.copyTo(output) }
+                    }
+                    if (tempCoverFile.exists() && tempCoverFile.length() > 0L) {
+                        multipartBuilder.addFormDataPart(
+                            "cover",
+                            tempCoverFile.name,
+                            tempCoverFile.asRequestBody(mimeType.toMediaTypeOrNull())
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
+
+            val bodyPayload = multipartBuilder.build()
+            var response = uploadClient.newCall(Request.Builder().url(url).post(bodyPayload).build()).execute()
+            var respBody = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "group/update")
+                    response = uploadClient.newCall(Request.Builder().url(url).post(bodyPayload).build()).execute()
+                    respBody = response.body?.string() ?: ""
+                }
+            }
+            tempCoverFile?.delete()
+
+            if (!response.isSuccessful) {
+                val detail = if (respBody.isNotBlank()) extractHtmlOrPhpError(respBody, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(respBody)
+            val gObj = json.getJSONObject("group")
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+            Result.success(parseGroupFromJson(gObj, baseUrl))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Elimina un grupo familiar en el servidor NAS.
+     */
+    suspend fun deleteGroup(
+        ip: String,
+        port: Int,
+        path: String,
+        groupId: Int,
+        userId: Int
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "group/delete")
+            val form = FormBody.Builder()
+                .add("group_id", groupId.toString())
+                .add("user_id", userId.toString())
+                .build()
+            var response = client.newCall(Request.Builder().url(url).post(form).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "group/delete")
+                    response = client.newCall(Request.Builder().url(url).post(form).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+            parseJsonObjectSafely(body)
+            Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -1552,7 +1755,8 @@ class NasApiClient(
         mediaUris: List<Uri> = emptyList(),
         thumbnailFile: File? = null,
         durationLabel: String? = null,
-        isShort: Boolean = false
+        isShort: Boolean = false,
+        groupId: Int? = null
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
@@ -1565,6 +1769,7 @@ class NasApiClient(
             feeling?.let { multipartBuilder.addFormDataPart("feeling", it) }
             location?.let { multipartBuilder.addFormDataPart("location", it) }
             durationLabel?.let { multipartBuilder.addFormDataPart("duration_label", it) }
+            groupId?.let { multipartBuilder.addFormDataPart("group_id", it.toString()) }
 
             // Si hay miniatura extraída explícita para vídeos, enviarla
             if (thumbnailFile != null && thumbnailFile.exists()) {

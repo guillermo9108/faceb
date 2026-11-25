@@ -452,6 +452,196 @@ if ($method === 'GET' && matchRoute($action, $uri, 'groups')) {
     exit;
 }
 
+function isUserGroupAdminOrOwner(PDO $db, int $userId, int $groupId): bool {
+    if ($userId <= 0) return false;
+    try {
+        $uStmt = $db->prepare("SELECT username, role FROM users WHERE id = ? LIMIT 1");
+        $uStmt->execute([$userId]);
+        $uRow = $uStmt->fetch();
+        if ($uRow) {
+            $role = strtolower(trim($uRow['role'] ?? ''));
+            $uname = strtolower(trim($uRow['username'] ?? ''));
+            if ($uname === 'admin' || $role === 'administrador' || $role === 'admin') {
+                return true;
+            }
+        }
+        $gStmt = $db->prepare("SELECT created_by_user_id FROM family_groups WHERE id = ? LIMIT 1");
+        $gStmt->execute([$groupId]);
+        $ownerId = (int)($gStmt->fetchColumn() ?: 0);
+        return $ownerId === $userId;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+// 3.0.A CREAR GRUPO (Cualquier usuario)
+if ($method === 'POST' && matchRoute($action, $uri, 'group/create')) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $userId = (int)($input['user_id'] ?? $_POST['user_id'] ?? 1);
+    $name = trim($input['name'] ?? $_POST['name'] ?? '');
+    $description = trim($input['description'] ?? $_POST['description'] ?? '');
+    $allowUploads = isset($input['allow_member_uploads']) ? (int)$input['allow_member_uploads'] : (isset($_POST['allow_member_uploads']) ? (int)$_POST['allow_member_uploads'] : 1);
+    $orgMode = strtoupper(trim($input['organization_mode'] ?? $_POST['organization_mode'] ?? 'NORMAL'));
+    if ($orgMode !== 'SERIES') $orgMode = 'NORMAL';
+
+    if (empty($name)) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "El nombre del grupo es obligatorio"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        $coverPath = trim($input['cover_photo_url'] ?? $_POST['cover_photo_url'] ?? '');
+        if (isset($_FILES['cover']) && $_FILES['cover']['error'] === UPLOAD_ERR_OK) {
+            $uploadDir = __DIR__ . '/uploads/originals';
+            if (!is_dir($uploadDir)) @mkdir($uploadDir, 0777, true);
+            $ext = strtolower(pathinfo($_FILES['cover']['name'], PATHINFO_EXTENSION) ?: 'jpg');
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) $ext = 'jpg';
+            $rel = "uploads/originals/" . uniqid('group_cover_', true) . "." . $ext;
+            if (move_uploaded_file($_FILES['cover']['tmp_name'], __DIR__ . '/' . $rel)) {
+                $coverPath = $rel;
+            }
+        }
+
+        $folderPath = "custom_group_" . uniqid();
+        $stmt = $db->prepare("INSERT INTO family_groups (name, folder_path, description, cover_photo_url, created_by_user_id, allow_member_uploads, organization_mode, posts_count) VALUES (?, ?, ?, ?, ?, ?, ?, 0)");
+        $stmt->execute([$name, $folderPath, $description, $coverPath ?: null, $userId, $allowUploads ? 1 : 0, $orgMode]);
+        $newId = (int)$db->lastInsertId();
+
+        // Seguir automáticamente el grupo recién creado
+        try {
+            $db->prepare("INSERT IGNORE INTO user_follows (follower_id, target_type, target_id) VALUES (?, 'GROUP', ?)")->execute([$userId, $newId]);
+        } catch (Exception $eFol) {}
+
+        $gStmt = $db->prepare("SELECT g.*, 0 as posts_count FROM family_groups g WHERE g.id = ? LIMIT 1");
+        $gStmt->execute([$newId]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["status" => "OK", "group" => $gStmt->fetch()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.0.B ACTUALIZAR / ADMINISTRAR GRUPO (Portada, Permiso subidas, Organización Normal/Series, Nombre/Desc)
+if ($method === 'POST' && matchRoute($action, $uri, 'group/update')) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $groupId = (int)($input['group_id'] ?? $_POST['group_id'] ?? 0);
+    $userId = (int)($input['user_id'] ?? $_POST['user_id'] ?? 0);
+
+    if ($groupId <= 0) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Falta group_id"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        if (!isUserGroupAdminOrOwner($db, $userId, $groupId)) {
+            http_response_code(403);
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["error" => "Solo el administrador o creador del grupo puede modificarlo"]);
+            exit;
+        }
+
+        $sets = ["updated_at = NOW()"];
+        $params = [];
+
+        if (isset($input['name']) || isset($_POST['name'])) {
+            $name = trim($input['name'] ?? $_POST['name'] ?? '');
+            if (!empty($name)) { $sets[] = "name = ?"; $params[] = $name; }
+        }
+        if (isset($input['description']) || isset($_POST['description'])) {
+            $desc = trim($input['description'] ?? $_POST['description'] ?? '');
+            $sets[] = "description = ?"; $params[] = $desc;
+        }
+        if (isset($input['allow_member_uploads']) || isset($_POST['allow_member_uploads'])) {
+            $allow = (int)($input['allow_member_uploads'] ?? $_POST['allow_member_uploads']);
+            $sets[] = "allow_member_uploads = ?"; $params[] = ($allow ? 1 : 0);
+        }
+        if (isset($input['organization_mode']) || isset($_POST['organization_mode'])) {
+            $org = strtoupper(trim($input['organization_mode'] ?? $_POST['organization_mode'] ?? 'NORMAL'));
+            if ($org !== 'SERIES') $org = 'NORMAL';
+            $sets[] = "organization_mode = ?"; $params[] = $org;
+        }
+
+        if (isset($_FILES['cover']) && $_FILES['cover']['error'] === UPLOAD_ERR_OK) {
+            $uploadDir = __DIR__ . '/uploads/originals';
+            if (!is_dir($uploadDir)) @mkdir($uploadDir, 0777, true);
+            $ext = strtolower(pathinfo($_FILES['cover']['name'], PATHINFO_EXTENSION) ?: 'jpg');
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) $ext = 'jpg';
+            $rel = "uploads/originals/" . uniqid('group_cover_', true) . "." . $ext;
+            if (move_uploaded_file($_FILES['cover']['tmp_name'], __DIR__ . '/' . $rel)) {
+                $sets[] = "cover_photo_url = ?";
+                $params[] = $rel;
+            }
+        } elseif (isset($input['cover_photo_url']) || isset($_POST['cover_photo_url'])) {
+            $cov = trim($input['cover_photo_url'] ?? $_POST['cover_photo_url'] ?? '');
+            if (!empty($cov)) {
+                $sets[] = "cover_photo_url = ?";
+                $params[] = $cov;
+            }
+        }
+
+        $params[] = $groupId;
+        $db->prepare("UPDATE family_groups SET " . implode(", ", $sets) . " WHERE id = ?")->execute($params);
+
+        $gStmt = $db->prepare("SELECT g.*, (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) as posts_count FROM family_groups g WHERE g.id = ? LIMIT 1");
+        $gStmt->execute([$groupId]);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["status" => "OK", "group" => $gStmt->fetch()]);
+    } catch (Exception $e) {
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 3.0.C ELIMINAR GRUPO
+if (($method === 'POST' && matchRoute($action, $uri, 'group/delete')) || ($method === 'DELETE' && matchRoute($action, $uri, 'group'))) {
+    $input = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $groupId = (int)($input['group_id'] ?? $_POST['group_id'] ?? $_GET['group_id'] ?? 0);
+    $userId = (int)($input['user_id'] ?? $_POST['user_id'] ?? $_GET['user_id'] ?? 0);
+
+    if ($groupId <= 0) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => "Falta group_id"]);
+        exit;
+    }
+
+    try {
+        $db = getDB();
+        if (!isUserGroupAdminOrOwner($db, $userId, $groupId)) {
+            http_response_code(403);
+            header("Content-Type: application/json; charset=UTF-8");
+            echo json_encode(["error" => "Solo el administrador o creador del grupo puede eliminarlo"]);
+            exit;
+        }
+
+        $db->beginTransaction();
+        $db->prepare("DELETE FROM posts WHERE group_id = ?")->execute([$groupId]);
+        $db->prepare("DELETE FROM user_follows WHERE target_type = 'GROUP' AND target_id = ?")->execute([$groupId]);
+        $db->prepare("DELETE FROM family_groups WHERE id = ?")->execute([$groupId]);
+        $db->commit();
+
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["status" => "OK", "deleted_group_id" => $groupId]);
+    } catch (Exception $e) {
+        if (isset($db) && $db->inTransaction()) $db->rollBack();
+        http_response_code(500);
+        header("Content-Type: application/json; charset=UTF-8");
+        echo json_encode(["error" => $e->getMessage()]);
+    }
+    exit;
+}
+
 function isVideoFilePath($path) {
     if (empty($path)) return false;
     $clean = $path;
@@ -461,6 +651,86 @@ function isVideoFilePath($path) {
     }
     $ext = strtolower(pathinfo($clean, PATHINFO_EXTENSION));
     return in_array($ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']);
+}
+
+/**
+ * Busca una imagen en la carpeta de la multimedia; si no hay ninguna, sube a la carpeta madre,
+ * luego a la siguiente madre, y así sucesivamente hasta el límite seguro de jerarquía.
+ */
+function findNearestFolderImage($rawFilePath, $maxLevels = 5) {
+    static $dirImageCache = [];
+    if (empty($rawFilePath)) return '';
+
+    $fsPath = $rawFilePath;
+    $isProxy = false;
+    if (strpos($fsPath, 'path=') !== false) {
+        parse_str(parse_url($fsPath, PHP_URL_QUERY) ?? '', $qs);
+        if (!empty($qs['path'])) {
+            $fsPath = $qs['path'];
+            $isProxy = true;
+        }
+    } elseif (!str_starts_with($fsPath, '/')) {
+        $fsPath = __DIR__ . '/' . ltrim($fsPath, '/');
+    } else {
+        $isProxy = true;
+    }
+
+    $dir = dirname($fsPath);
+    $imgExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
+    $preferredNames = ['poster', 'cover', 'portada', 'folder', 'thumb', 'thumbnail', 'banner'];
+
+    for ($level = 0; $level < $maxLevels; $level++) {
+        if (empty($dir) || $dir === '/' || $dir === '.' || $dir === '\\') break;
+        // Evitar subir hasta la raíz de volúmenes del sistema (/volume1)
+        if (preg_match('#^/volume[0-9a-zA-Z_-]*$#', $dir)) break;
+        // Para subidas internas bajo __DIR__/uploads, no escanear fuera de __DIR__/uploads
+        if (!$isProxy && strpos($dir, __DIR__ . '/uploads') !== 0 && $dir !== __DIR__ . '/uploads') break;
+
+        if (!array_key_exists($dir, $dirImageCache)) {
+            $foundImg = '';
+            if (@is_dir($dir) && @is_readable($dir)) {
+                $entries = @scandir($dir);
+                if ($entries !== false) {
+                    $candidates = [];
+                    foreach ($entries as $entry) {
+                        if ($entry === '.' || $entry === '..' || $entry === '@eaDir' || $entry === '#recycle' || strpos($entry, '.') === 0) continue;
+                        $full = rtrim($dir, '/') . '/' . $entry;
+                        if (@is_file($full)) {
+                            $ext = strtolower(pathinfo($entry, PATHINFO_EXTENSION));
+                            if (in_array($ext, $imgExts)) {
+                                $candidates[] = $full;
+                            }
+                        }
+                    }
+                    if (!empty($candidates)) {
+                        $foundImg = $candidates[0];
+                        foreach ($candidates as $cand) {
+                            $base = strtolower(pathinfo($cand, PATHINFO_FILENAME));
+                            if (in_array($base, $preferredNames)) {
+                                $foundImg = $cand;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            $dirImageCache[$dir] = $foundImg;
+        }
+
+        if (!empty($dirImageCache[$dir])) {
+            $imgFs = $dirImageCache[$dir];
+            if (!$isProxy && strpos($imgFs, __DIR__ . '/') === 0) {
+                return substr($imgFs, strlen(__DIR__) + 1);
+            }
+            return "index.php?action=media_proxy&path=" . urlencode($imgFs);
+        }
+
+        $parent = dirname($dir);
+        if ($parent === $dir) break;
+        $dir = $parent;
+    }
+
+    return '';
 }
 
 function hydratePostsWithDetails(PDO $db, array $posts) {
@@ -564,7 +834,12 @@ function hydratePostsWithDetails(PDO $db, array $posts) {
             $rawThumb = $m['thumb_path'] ?? '';
             if ($isVid) {
                 if (empty($rawThumb) || $rawThumb === $m['file_path'] || isVideoFilePath($rawThumb)) {
-                    $effectiveThumb = (!empty($groupCover) && !isVideoFilePath($groupCover)) ? $groupCover : '';
+                    $hierarchyImg = findNearestFolderImage($m['file_path']);
+                    if (!empty($hierarchyImg) && !isVideoFilePath($hierarchyImg)) {
+                        $effectiveThumb = $hierarchyImg;
+                    } else {
+                        $effectiveThumb = (!empty($groupCover) && !isVideoFilePath($groupCover)) ? $groupCover : '';
+                    }
                 } else {
                     $effectiveThumb = $rawThumb;
                 }
@@ -700,13 +975,20 @@ if ($method === 'POST' && matchRoute($action, $uri, 'follow/toggle')) {
     exit;
 }
 
-// 3.1. PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10 por defecto)
+// 3.1. PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10, respeta modo NORMAL o SERIES)
 if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
     $groupId = (int)($_GET['group_id'] ?? 0);
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
     $offset = max(0, (int)($_GET['offset'] ?? 0));
     try {
         $db = getDB();
+        $orgStmt = $db->prepare("SELECT organization_mode FROM family_groups WHERE id = ? LIMIT 1");
+        $orgStmt->execute([$groupId]);
+        $orgMode = strtoupper(trim((string)($orgStmt->fetchColumn() ?: 'NORMAL')));
+        $orderClause = ($orgMode === 'SERIES')
+            ? "p.is_pinned DESC, COALESCE(p.content_text, '') ASC, p.created_at ASC, p.id ASC"
+            : "p.is_pinned DESC, p.created_at DESC";
+
         $cntStmt = $db->prepare("SELECT COUNT(*) FROM posts WHERE group_id = ?");
         $cntStmt->execute([$groupId]);
         $totalCount = (int)$cntStmt->fetchColumn();
@@ -725,7 +1007,7 @@ if ($method === 'GET' && matchRoute($action, $uri, 'group/posts')) {
             LEFT JOIN users u ON p.user_id = u.id
             JOIN family_groups g ON g.id = p.group_id
             WHERE p.group_id = ?
-            ORDER BY p.is_pinned DESC, p.created_at DESC
+            ORDER BY $orderClause
             LIMIT $limit OFFSET $offset
         ");
         $stmt->execute([$groupId]);
@@ -944,9 +1226,20 @@ if ($method === 'POST' && (matchRoute($action, $uri, 'post') || matchRoute($acti
         }
 
         if ($groupId) {
-            $chkG = $db->prepare("SELECT id FROM family_groups WHERE id = ? LIMIT 1");
+            $chkG = $db->prepare("SELECT id, allow_member_uploads FROM family_groups WHERE id = ? LIMIT 1");
             $chkG->execute([$groupId]);
-            if (!$chkG->fetchColumn()) $groupId = null;
+            $gRow = $chkG->fetch();
+            if (!$gRow) {
+                $groupId = null;
+            } else {
+                $allowUploads = isset($gRow['allow_member_uploads']) ? ((int)$gRow['allow_member_uploads'] === 1) : true;
+                if (!$allowUploads && !isUserGroupAdminOrOwner($db, $userId, $groupId)) {
+                    http_response_code(403);
+                    header("Content-Type: application/json; charset=UTF-8");
+                    echo json_encode(["error" => "Este grupo no autoriza que otros miembros suban contenido"]);
+                    exit;
+                }
+            }
         }
 
         $db->beginTransaction();
@@ -1105,6 +1398,22 @@ if ($method === 'POST' && matchRoute($action, $uri, 'video/finalize_chunks')) {
 
     try {
         $db = getDB();
+        if ($groupId) {
+            $chkG = $db->prepare("SELECT id, allow_member_uploads FROM family_groups WHERE id = ? LIMIT 1");
+            $chkG->execute([$groupId]);
+            $gRow = $chkG->fetch();
+            if (!$gRow) {
+                $groupId = null;
+            } else {
+                $allowUploads = isset($gRow['allow_member_uploads']) ? ((int)$gRow['allow_member_uploads'] === 1) : true;
+                if (!$allowUploads && !isUserGroupAdminOrOwner($db, $userId, $groupId)) {
+                    http_response_code(403);
+                    header("Content-Type: application/json; charset=UTF-8");
+                    echo json_encode(["error" => "Este grupo no autoriza que otros miembros suban contenido"]);
+                    exit;
+                }
+            }
+        }
         $db->beginTransaction();
 
         $stmt = $db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
@@ -1617,9 +1926,9 @@ if ($method === 'POST' && matchRoute($action, $uri, 'admin/import_groups')) {
                 $stmtPost->execute([$adminUserId, $groupId, $caption]);
                 $newPostId = (int)$db->lastInsertId();
 
-                // Si es vídeo sin miniatura previa, usar una imagen de la misma carpeta (o portada del grupo), nunca la ruta .mp4
+                // Si es vídeo sin miniatura previa, buscar imagen en su carpeta -> carpeta madre -> siguiente madre -> portada grupo
                 $itemThumb = $isVid
-                    ? ($folderImages[dirname($fullFile)] ?? $rootFallbackImg)
+                    ? ($folderImages[dirname($fullFile)] ?? findNearestFolderImage($fullFile) ?: $rootFallbackImg)
                     : $proxyUrl;
 
                 $stmtMedia = $db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");

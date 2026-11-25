@@ -87,6 +87,7 @@ import java.io.File
 fun CreatePostDialog(
     currentMember: FamilyMember,
     initiallyShortMode: Boolean = false,
+    targetGroupName: String? = null,
     onDismiss: () -> Unit,
     onSubmitPost: (text: String, mediaUri: Uri?, mediaUris: List<Uri>, feeling: String?, location: String?, thumbnailFile: File?, durationLabel: String?, isShort: Boolean) -> Unit
 ) {
@@ -261,10 +262,10 @@ fun CreatePostDialog(
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
 
-                        // Privacy selector pill ("👥 Toda la familia (LAN) ▾")
+                        // Privacy / Target Group selector pill
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            color = if (!targetGroupName.isNullOrBlank()) FacebookBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.padding(top = 2.dp)
                         ) {
                             Row(
@@ -279,19 +280,21 @@ fun CreatePostDialog(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "Toda la familia (LAN)",
+                                    text = if (!targetGroupName.isNullOrBlank()) "Grupo: $targetGroupName" else "Toda la familia (LAN)",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold
                                     ),
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = if (!targetGroupName.isNullOrBlank()) FacebookBlue else MaterialTheme.colorScheme.onSurface
                                 )
-                                Icon(
-                                    imageVector = Icons.Default.ArrowDropDown,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(14.dp)
-                                )
+                                if (targetGroupName.isNullOrBlank()) {
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
                     }

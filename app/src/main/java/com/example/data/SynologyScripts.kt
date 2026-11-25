@@ -37,6 +37,8 @@ object SynologyScripts {
             description TEXT NULL,
             cover_photo_url VARCHAR(255) NULL,
             created_by_user_id INT DEFAULT 1,
+            allow_member_uploads TINYINT(1) DEFAULT 1,
+            organization_mode VARCHAR(20) DEFAULT 'NORMAL',
             posts_count INT DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -191,6 +193,8 @@ object SynologyScripts {
                         description TEXT NULL,
                         cover_photo_url VARCHAR(255) NULL,
                         created_by_user_id INT DEFAULT 1,
+                        allow_member_uploads TINYINT(1) DEFAULT 1,
+                        organization_mode VARCHAR(20) DEFAULT 'NORMAL',
                         posts_count INT DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -299,6 +303,15 @@ object SynologyScripts {
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("ALTER TABLE family_groups MODIFY folder_path VARCHAR(190) NOT NULL");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE family_groups ADD COLUMN created_by_user_id INT DEFAULT 1");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE family_groups ADD COLUMN allow_member_uploads TINYINT(1) DEFAULT 1");
+                } catch (Exception ${D}eCol) {}
+                try {
+                    ${D}pdo->exec("ALTER TABLE family_groups ADD COLUMN organization_mode VARCHAR(20) DEFAULT 'NORMAL'");
                 } catch (Exception ${D}eCol) {}
                 try {
                     ${D}pdo->exec("CREATE OR REPLACE VIEW `groups` AS SELECT * FROM family_groups");
@@ -1053,6 +1066,79 @@ object SynologyScripts {
             return in_array(${D}ext, ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv']);
         }
 
+        function findNearestFolderImage(${D}rawFilePath, ${D}maxLevels = 5) {
+            static ${D}dirImageCache = [];
+            if (empty(${D}rawFilePath)) return '';
+
+            ${D}fsPath = ${D}rawFilePath;
+            ${D}isProxy = false;
+            if (strpos(${D}fsPath, 'path=') !== false) {
+                parse_str(parse_url(${D}fsPath, PHP_URL_QUERY) ?? '', ${D}qs);
+                if (!empty(${D}qs['path'])) {
+                    ${D}fsPath = ${D}qs['path'];
+                    ${D}isProxy = true;
+                }
+            } elseif (!str_starts_with(${D}fsPath, '/')) {
+                ${D}fsPath = __DIR__ . '/' . ltrim(${D}fsPath, '/');
+            } else {
+                ${D}isProxy = true;
+            }
+
+            ${D}dir = dirname(${D}fsPath);
+            ${D}imgExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
+            ${D}preferredNames = ['poster', 'cover', 'portada', 'folder', 'thumb', 'thumbnail', 'banner'];
+
+            for (${D}level = 0; ${D}level < ${D}maxLevels; ${D}level++) {
+                if (empty(${D}dir) || ${D}dir === '/' || ${D}dir === '.' || ${D}dir === '\\') break;
+                if (preg_match('#^/volume[0-9a-zA-Z_-]*${D}#', ${D}dir)) break;
+                if (!${D}isProxy && strpos(${D}dir, __DIR__ . '/uploads') !== 0 && ${D}dir !== __DIR__ . '/uploads') break;
+
+                if (!array_key_exists(${D}dir, ${D}dirImageCache)) {
+                    ${D}foundImg = '';
+                    if (@is_dir(${D}dir) && @is_readable(${D}dir)) {
+                        ${D}entries = @scandir(${D}dir);
+                        if (${D}entries !== false) {
+                            ${D}candidates = [];
+                            foreach (${D}entries as ${D}entry) {
+                                if (${D}entry === '.' || ${D}entry === '..' || ${D}entry === '@eaDir' || ${D}entry === '#recycle' || strpos(${D}entry, '.') === 0) continue;
+                                ${D}full = rtrim(${D}dir, '/') . '/' . ${D}entry;
+                                if (@is_file(${D}full)) {
+                                    ${D}ext = strtolower(pathinfo(${D}entry, PATHINFO_EXTENSION));
+                                    if (in_array(${D}ext, ${D}imgExts)) {
+                                        ${D}candidates[] = ${D}full;
+                                    }
+                                }
+                            }
+                            if (!empty(${D}candidates)) {
+                                ${D}foundImg = ${D}candidates[0];
+                                foreach (${D}candidates as ${D}cand) {
+                                    ${D}base = strtolower(pathinfo(${D}cand, PATHINFO_FILENAME));
+                                    if (in_array(${D}base, ${D}preferredNames)) {
+                                        ${D}foundImg = ${D}cand;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ${D}dirImageCache[${D}dir] = ${D}foundImg;
+                }
+
+                if (!empty(${D}dirImageCache[${D}dir])) {
+                    ${D}imgFs = ${D}dirImageCache[${D}dir];
+                    if (!${D}isProxy && strpos(${D}imgFs, __DIR__ . '/') === 0) {
+                        return substr(${D}imgFs, strlen(__DIR__) + 1);
+                    }
+                    return "index.php?action=media_proxy&path=" . urlencode(${D}imgFs);
+                }
+
+                ${D}parent = dirname(${D}dir);
+                if (${D}parent === ${D}dir) break;
+                ${D}dir = ${D}parent;
+            }
+            return '';
+        }
+
         function hydratePostsWithDetails(PDO ${D}db, array ${D}posts) {
             if (empty(${D}posts)) return [];
 
@@ -1153,7 +1239,12 @@ object SynologyScripts {
                     ${D}rawThumb = ${D}m['thumb_path'] ?? '';
                     if (${D}isVid) {
                         if (empty(${D}rawThumb) || ${D}rawThumb === ${D}m['file_path'] || isVideoFilePath(${D}rawThumb)) {
-                            ${D}effectiveThumb = (!empty(${D}groupCover) && !isVideoFilePath(${D}groupCover)) ? ${D}groupCover : '';
+                            ${D}hierarchyImg = findNearestFolderImage(${D}m['file_path']);
+                            if (!empty(${D}hierarchyImg) && !isVideoFilePath(${D}hierarchyImg)) {
+                                ${D}effectiveThumb = ${D}hierarchyImg;
+                            } else {
+                                ${D}effectiveThumb = (!empty(${D}groupCover) && !isVideoFilePath(${D}groupCover)) ? ${D}groupCover : '';
+                            }
                         } else {
                             ${D}effectiveThumb = ${D}rawThumb;
                         }
@@ -1539,13 +1630,184 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.4. OBTENER PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10 por defecto)
+        function isUserGroupAdminOrOwner(PDO ${D}db, int ${D}userId, int ${D}groupId): bool {
+            if (${D}userId <= 0) return false;
+            try {
+                ${D}uStmt = ${D}db->prepare("SELECT username, role FROM users WHERE id = ? LIMIT 1");
+                ${D}uStmt->execute([${D}userId]);
+                ${D}uRow = ${D}uStmt->fetch();
+                if (${D}uRow) {
+                    ${D}role = strtolower(trim(${D}uRow['role'] ?? ''));
+                    ${D}uname = strtolower(trim(${D}uRow['username'] ?? ''));
+                    if (${D}uname === 'admin' || ${D}role === 'administrador' || ${D}role === 'admin') {
+                        return true;
+                    }
+                }
+                ${D}gStmt = ${D}db->prepare("SELECT created_by_user_id FROM family_groups WHERE id = ? LIMIT 1");
+                ${D}gStmt->execute([${D}groupId]);
+                ${D}ownerId = (int)(${D}gStmt->fetchColumn() ?: 0);
+                return ${D}ownerId === ${D}userId;
+            } catch (Exception ${D}e) {
+                return false;
+            }
+        }
+
+        // 3.3.A CREAR GRUPO (Cualquier usuario)
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'group/create') || str_ends_with(${D}uri, '/group/create'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}userId = (int)(${D}input['user_id'] ?? ${D}_POST['user_id'] ?? 1);
+            ${D}name = trim(${D}input['name'] ?? ${D}_POST['name'] ?? '');
+            ${D}description = trim(${D}input['description'] ?? ${D}_POST['description'] ?? '');
+            ${D}allowUploads = isset(${D}input['allow_member_uploads']) ? (int)${D}input['allow_member_uploads'] : (isset(${D}_POST['allow_member_uploads']) ? (int)${D}_POST['allow_member_uploads'] : 1);
+            ${D}orgMode = strtoupper(trim(${D}input['organization_mode'] ?? ${D}_POST['organization_mode'] ?? 'NORMAL'));
+            if (${D}orgMode !== 'SERIES') ${D}orgMode = 'NORMAL';
+
+            if (empty(${D}name)) {
+                http_response_code(400);
+                echo json_encode(["error" => "El nombre del grupo es obligatorio"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                ${D}coverPath = trim(${D}input['cover_photo_url'] ?? ${D}_POST['cover_photo_url'] ?? '');
+                if (isset(${D}_FILES['cover']) && ${D}_FILES['cover']['error'] === UPLOAD_ERR_OK) {
+                    ${D}uploadDir = __DIR__ . '/uploads/originals';
+                    if (!is_dir(${D}uploadDir)) @mkdir(${D}uploadDir, 0777, true);
+                    ${D}ext = strtolower(pathinfo(${D}_FILES['cover']['name'], PATHINFO_EXTENSION) ?: 'jpg');
+                    if (!in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) ${D}ext = 'jpg';
+                    ${D}rel = "uploads/originals/" . uniqid('group_cover_', true) . "." . ${D}ext;
+                    if (move_uploaded_file(${D}_FILES['cover']['tmp_name'], __DIR__ . '/' . ${D}rel)) {
+                        ${D}coverPath = ${D}rel;
+                    }
+                }
+                ${D}folderPath = "custom_group_" . uniqid();
+                ${D}stmt = ${D}db->prepare("INSERT INTO family_groups (name, folder_path, description, cover_photo_url, created_by_user_id, allow_member_uploads, organization_mode, posts_count) VALUES (?, ?, ?, ?, ?, ?, ?, 0)");
+                ${D}stmt->execute([${D}name, ${D}folderPath, ${D}description, ${D}coverPath ?: null, ${D}userId, ${D}allowUploads ? 1 : 0, ${D}orgMode]);
+                ${D}newId = (int)${D}db->lastInsertId();
+                try {
+                    ${D}db->prepare("INSERT IGNORE INTO user_follows (follower_id, target_type, target_id) VALUES (?, 'GROUP', ?)")->execute([${D}userId, ${D}newId]);
+                } catch (Exception ${D}eFol) {}
+                ${D}gStmt = ${D}db->prepare("SELECT g.*, 0 as posts_count FROM family_groups g WHERE g.id = ? LIMIT 1");
+                ${D}gStmt->execute([${D}newId]);
+                echo json_encode(["status" => "OK", "group" => ${D}gStmt->fetch()]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.3.B ACTUALIZAR / ADMINISTRAR GRUPO
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'group/update') || str_ends_with(${D}uri, '/group/update'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}groupId = (int)(${D}input['group_id'] ?? ${D}_POST['group_id'] ?? 0);
+            ${D}userId = (int)(${D}input['user_id'] ?? ${D}_POST['user_id'] ?? 0);
+            if (${D}groupId <= 0) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta group_id"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                if (!isUserGroupAdminOrOwner(${D}db, ${D}userId, ${D}groupId)) {
+                    http_response_code(403);
+                    echo json_encode(["error" => "Solo el administrador o creador del grupo puede modificarlo"]);
+                    exit;
+                }
+                ${D}sets = ["updated_at = NOW()"];
+                ${D}params = [];
+                if (isset(${D}input['name']) || isset(${D}_POST['name'])) {
+                    ${D}name = trim(${D}input['name'] ?? ${D}_POST['name'] ?? '');
+                    if (!empty(${D}name)) { ${D}sets[] = "name = ?"; ${D}params[] = ${D}name; }
+                }
+                if (isset(${D}input['description']) || isset(${D}_POST['description'])) {
+                    ${D}desc = trim(${D}input['description'] ?? ${D}_POST['description'] ?? '');
+                    ${D}sets[] = "description = ?"; ${D}params[] = ${D}desc;
+                }
+                if (isset(${D}input['allow_member_uploads']) || isset(${D}_POST['allow_member_uploads'])) {
+                    ${D}allow = (int)(${D}input['allow_member_uploads'] ?? ${D}_POST['allow_member_uploads']);
+                    ${D}sets[] = "allow_member_uploads = ?"; ${D}params[] = (${D}allow ? 1 : 0);
+                }
+                if (isset(${D}input['organization_mode']) || isset(${D}_POST['organization_mode'])) {
+                    ${D}org = strtoupper(trim(${D}input['organization_mode'] ?? ${D}_POST['organization_mode'] ?? 'NORMAL'));
+                    if (${D}org !== 'SERIES') ${D}org = 'NORMAL';
+                    ${D}sets[] = "organization_mode = ?"; ${D}params[] = ${D}org;
+                }
+                if (isset(${D}_FILES['cover']) && ${D}_FILES['cover']['error'] === UPLOAD_ERR_OK) {
+                    ${D}uploadDir = __DIR__ . '/uploads/originals';
+                    if (!is_dir(${D}uploadDir)) @mkdir(${D}uploadDir, 0777, true);
+                    ${D}ext = strtolower(pathinfo(${D}_FILES['cover']['name'], PATHINFO_EXTENSION) ?: 'jpg');
+                    if (!in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) ${D}ext = 'jpg';
+                    ${D}rel = "uploads/originals/" . uniqid('group_cover_', true) . "." . ${D}ext;
+                    if (move_uploaded_file(${D}_FILES['cover']['tmp_name'], __DIR__ . '/' . ${D}rel)) {
+                        ${D}sets[] = "cover_photo_url = ?";
+                        ${D}params[] = ${D}rel;
+                    }
+                } elseif (isset(${D}input['cover_photo_url']) || isset(${D}_POST['cover_photo_url'])) {
+                    ${D}cov = trim(${D}input['cover_photo_url'] ?? ${D}_POST['cover_photo_url'] ?? '');
+                    if (!empty(${D}cov)) {
+                        ${D}sets[] = "cover_photo_url = ?";
+                        ${D}params[] = ${D}cov;
+                    }
+                }
+                ${D}params[] = ${D}groupId;
+                ${D}db->prepare("UPDATE family_groups SET " . implode(", ", ${D}sets) . " WHERE id = ?")->execute(${D}params);
+                ${D}gStmt = ${D}db->prepare("SELECT g.*, (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) as posts_count FROM family_groups g WHERE g.id = ? LIMIT 1");
+                ${D}gStmt->execute([${D}groupId]);
+                echo json_encode(["status" => "OK", "group" => ${D}gStmt->fetch()]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.3.C ELIMINAR GRUPO
+        if ((${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'group/delete') || str_ends_with(${D}uri, '/group/delete'))) ||
+            (${D}method === 'DELETE' && matchRoute(${D}action, ${D}uri, 'group'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}groupId = (int)(${D}input['group_id'] ?? ${D}_POST['group_id'] ?? ${D}_GET['group_id'] ?? 0);
+            ${D}userId = (int)(${D}input['user_id'] ?? ${D}_POST['user_id'] ?? ${D}_GET['user_id'] ?? 0);
+            if (${D}groupId <= 0) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta group_id"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                if (!isUserGroupAdminOrOwner(${D}db, ${D}userId, ${D}groupId)) {
+                    http_response_code(403);
+                    echo json_encode(["error" => "Solo el administrador o creador del grupo puede eliminarlo"]);
+                    exit;
+                }
+                ${D}db->beginTransaction();
+                ${D}db->prepare("DELETE FROM posts WHERE group_id = ?")->execute([${D}groupId]);
+                ${D}db->prepare("DELETE FROM user_follows WHERE target_type = 'GROUP' AND target_id = ?")->execute([${D}groupId]);
+                ${D}db->prepare("DELETE FROM family_groups WHERE id = ?")->execute([${D}groupId]);
+                ${D}db->commit();
+                echo json_encode(["status" => "OK", "deleted_group_id" => ${D}groupId]);
+            } catch (Exception ${D}e) {
+                if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.4. OBTENER PUBLICACIONES DE UN GRUPO (Paginado de 10 en 10, respeta modo NORMAL o SERIES)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'group/posts') || str_ends_with(${D}uri, '/group/posts'))) {
             ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
             ${D}limit = max(1, min(50, (int)(${D}_GET['limit'] ?? 10)));
             ${D}offset = max(0, (int)(${D}_GET['offset'] ?? 0));
             try {
                 ${D}db = getDB();
+                ${D}orgStmt = ${D}db->prepare("SELECT organization_mode FROM family_groups WHERE id = ? LIMIT 1");
+                ${D}orgStmt->execute([${D}groupId]);
+                ${D}orgMode = strtoupper(trim((string)(${D}orgStmt->fetchColumn() ?: 'NORMAL')));
+                ${D}orderClause = (${D}orgMode === 'SERIES')
+                    ? "p.is_pinned DESC, COALESCE(p.content_text, '') ASC, p.created_at ASC, p.id ASC"
+                    : "p.is_pinned DESC, p.created_at DESC";
+
                 ${D}cntStmt = ${D}db->prepare("SELECT COUNT(*) FROM posts WHERE group_id = ?");
                 ${D}cntStmt->execute([${D}groupId]);
                 ${D}totalCount = (int)${D}cntStmt->fetchColumn();
@@ -1564,7 +1826,7 @@ object SynologyScripts {
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
                     WHERE p.group_id = ?
-                    ORDER BY p.is_pinned DESC, p.created_at DESC
+                    ORDER BY ${D}orderClause
                     LIMIT ${D}limit OFFSET ${D}offset
                 ");
                 ${D}stmt->execute([${D}groupId]);
@@ -1897,9 +2159,9 @@ object SynologyScripts {
                         ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
                         ${D}newPostId = (int)${D}db->lastInsertId();
 
-                        // Para vídeos usar una imagen de la misma carpeta (o portada del grupo), nunca la ruta .mp4
+                        // Para vídeos usar una imagen en su carpeta -> carpeta madre -> siguiente madre -> portada del grupo
                         ${D}itemThumb = ${D}isVid
-                            ? (${D}folderImages[dirname(${D}fullFile)] ?? ${D}rootFallbackImg)
+                            ? (${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg)
                             : ${D}proxyUrl;
 
                         ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
@@ -2027,6 +2289,21 @@ object SynologyScripts {
 
             try {
                 ${D}db = getDB();
+                if (${D}groupId) {
+                    ${D}chkG = ${D}db->prepare("SELECT id, allow_member_uploads FROM family_groups WHERE id = ? LIMIT 1");
+                    ${D}chkG->execute([${D}groupId]);
+                    ${D}gRow = ${D}chkG->fetch();
+                    if (!${D}gRow) {
+                        ${D}groupId = null;
+                    } else {
+                        ${D}allowUploads = isset(${D}gRow['allow_member_uploads']) ? ((int)${D}gRow['allow_member_uploads'] === 1) : true;
+                        if (!${D}allowUploads && !isUserGroupAdminOrOwner(${D}db, ${D}userId, ${D}groupId)) {
+                            http_response_code(403);
+                            echo json_encode(["error" => "Este grupo no autoriza que otros miembros suban contenido"]);
+                            exit;
+                        }
+                    }
+                }
                 ${D}db->beginTransaction();
 
                 ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");
@@ -2120,6 +2397,21 @@ object SynologyScripts {
 
             try {
                 ${D}db = getDB();
+                if (${D}groupId) {
+                    ${D}chkG = ${D}db->prepare("SELECT id, allow_member_uploads FROM family_groups WHERE id = ? LIMIT 1");
+                    ${D}chkG->execute([${D}groupId]);
+                    ${D}gRow = ${D}chkG->fetch();
+                    if (!${D}gRow) {
+                        ${D}groupId = null;
+                    } else {
+                        ${D}allowUploads = isset(${D}gRow['allow_member_uploads']) ? ((int)${D}gRow['allow_member_uploads'] === 1) : true;
+                        if (!${D}allowUploads && !isUserGroupAdminOrOwner(${D}db, ${D}userId, ${D}groupId)) {
+                            http_response_code(403);
+                            echo json_encode(["error" => "Este grupo no autoriza que otros miembros suban contenido"]);
+                            exit;
+                        }
+                    }
+                }
                 ${D}db->beginTransaction();
 
                 ${D}stmt = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, feeling, location, is_short) VALUES (?, ?, ?, ?, ?, ?)");

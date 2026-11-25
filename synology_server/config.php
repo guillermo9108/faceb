@@ -69,6 +69,8 @@ function autoBootstrapDatabase(PDO $pdo) {
                 description TEXT NULL,
                 cover_photo_url VARCHAR(255) NULL,
                 created_by_user_id INT DEFAULT 1,
+                allow_member_uploads TINYINT(1) DEFAULT 1,
+                organization_mode VARCHAR(20) DEFAULT 'NORMAL',
                 posts_count INT DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -185,7 +187,10 @@ function autoBootstrapDatabase(PDO $pdo) {
             "ALTER TABLE family_groups MODIFY folder_path VARCHAR(190) NOT NULL",
             "ALTER TABLE family_groups ADD COLUMN posts_count INT DEFAULT 0",
             "ALTER TABLE family_groups ADD COLUMN cover_photo_url VARCHAR(255) NULL",
-            "ALTER TABLE family_groups ADD COLUMN description TEXT NULL"
+            "ALTER TABLE family_groups ADD COLUMN description TEXT NULL",
+            "ALTER TABLE family_groups ADD COLUMN created_by_user_id INT DEFAULT 1",
+            "ALTER TABLE family_groups ADD COLUMN allow_member_uploads TINYINT(1) DEFAULT 1",
+            "ALTER TABLE family_groups ADD COLUMN organization_mode VARCHAR(20) DEFAULT 'NORMAL'"
         ];
         foreach ($colMigrations as $colSql) {
             try { $pdo->exec($colSql); } catch (Exception $eCol) {}

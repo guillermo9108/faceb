@@ -3,6 +3,7 @@ package com.example.data.local
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.example.model.FamilyGroup
+import com.example.model.GroupOrganizationMode
 
 @Entity(tableName = "cached_groups")
 data class GroupEntity(
@@ -12,9 +13,17 @@ data class GroupEntity(
     val description: String = "",
     val coverPhotoUrl: String? = null,
     val postsCount: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val createdByUserId: Int = 1,
+    val allowUploads: Boolean = true,
+    val organizationMode: String = GroupOrganizationMode.NORMAL.value
 ) {
     fun toDomainGroup(): FamilyGroup {
+        val mode = if (organizationMode.equals("SERIES", ignoreCase = true)) {
+            GroupOrganizationMode.SERIES
+        } else {
+            GroupOrganizationMode.NORMAL
+        }
         return FamilyGroup(
             id = id,
             name = name,
@@ -22,7 +31,10 @@ data class GroupEntity(
             description = description,
             coverPhotoUrl = coverPhotoUrl,
             postsCount = postsCount,
-            createdAt = createdAt
+            createdAt = createdAt,
+            createdByUserId = createdByUserId,
+            allowUploads = allowUploads,
+            organizationMode = mode
         )
     }
 }
@@ -35,6 +47,9 @@ fun FamilyGroup.toEntity(): GroupEntity {
         description = description,
         coverPhotoUrl = coverPhotoUrl,
         postsCount = postsCount,
-        createdAt = createdAt
+        createdAt = createdAt,
+        createdByUserId = createdByUserId,
+        allowUploads = allowUploads,
+        organizationMode = organizationMode.value
     )
 }

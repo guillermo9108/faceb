@@ -1,7 +1,12 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,32 +18,44 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,12 +63,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,14 +84,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
+import com.example.model.GroupOrganizationMode
+import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.ui.components.PostCard
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.LanOnlineGreen
+import com.example.util.QueuedPostDownload
 
 @Composable
 fun GroupsScreen(
@@ -85,7 +111,7 @@ fun GroupsScreen(
     onRefreshGroups: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long, Int, Long) -> Unit,
     onTogglePin: (Int) -> Unit = {},
     onDeletePost: (Int) -> Unit = {},
     onToggleSaveOffline: (Post) -> Unit = {},
@@ -98,11 +124,19 @@ fun GroupsScreen(
     isLoadingGroupPosts: Boolean = false,
     isLoadingMoreGroupPosts: Boolean = false,
     onLoadMoreGroupPosts: () -> Unit = {},
-    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null
+    onCreateGroup: (name: String, description: String, allowUploads: Boolean, orgMode: GroupOrganizationMode, coverUri: Uri?) -> Unit = { _, _, _, _, _ -> },
+    onUpdateGroup: (groupId: Int, name: String, description: String, allowUploads: Boolean, orgMode: GroupOrganizationMode, coverUri: Uri?, coverUrl: String?) -> Unit = { _, _, _, _, _, _, _ -> },
+    onDeleteGroup: (groupId: Int) -> Unit = {},
+    onCreatePostInGroup: (FamilyGroup) -> Unit = {},
+    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
+    downloadStates: Map<Int, QueuedPostDownload> = emptyMap()
 ) {
     val isAdmin = currentMember.role.equals("Administrador", ignoreCase = true) ||
             currentMember.name.equals("Administrador", ignoreCase = true) ||
             currentMember.username.equals("admin", ignoreCase = true)
+
+    var showCreateGroupDialog by remember { mutableStateOf(false) }
+    var groupToManage by remember { mutableStateOf<FamilyGroup?>(null) }
 
     if (selectedGroup != null) {
         // Manejo del botón atrás físico o gesto para salir del grupo
@@ -112,9 +146,13 @@ fun GroupsScreen(
 
         GroupDetailView(
             group = selectedGroup,
+            currentMember = currentMember,
+            isAdmin = isAdmin,
             posts = groupPosts,
             isFollowing = followedGroupIds.contains(selectedGroup.id),
             onToggleFollow = { onToggleFollowGroup(selectedGroup.id) },
+            onOpenManageGroup = { groupToManage = selectedGroup },
+            onCreatePostInGroup = { onCreatePostInGroup(selectedGroup) },
             searchQuery = groupSearchQuery,
             isSearching = isSearchingGroup,
             onSearchQueryChange = onGroupSearchQueryChange,
@@ -129,7 +167,8 @@ fun GroupsScreen(
             onTogglePin = onTogglePin,
             onDeletePost = onDeletePost,
             onToggleSaveOffline = onToggleSaveOffline,
-            onVideoStarted = onVideoStarted
+            onVideoStarted = onVideoStarted,
+            downloadStates = downloadStates
         )
     } else {
         GroupsListView(
@@ -138,8 +177,35 @@ fun GroupsScreen(
             followedGroupIds = followedGroupIds,
             onToggleFollowGroup = onToggleFollowGroup,
             onSelectGroup = onSelectGroup,
+            onOpenCreateGroup = { showCreateGroupDialog = true },
             onOpenScanDialog = onOpenScanDialog,
             onRefreshGroups = onRefreshGroups
+        )
+    }
+
+    if (showCreateGroupDialog) {
+        CreateGroupDialog(
+            onDismiss = { showCreateGroupDialog = false },
+            onConfirmCreate = { name, desc, allowUploads, orgMode, coverUri ->
+                showCreateGroupDialog = false
+                onCreateGroup(name, desc, allowUploads, orgMode, coverUri)
+            }
+        )
+    }
+
+    groupToManage?.let { targetGroup ->
+        ManageGroupDialog(
+            group = targetGroup,
+            groupPosts = groupPosts,
+            onDismiss = { groupToManage = null },
+            onSaveChanges = { name, desc, allowUploads, orgMode, coverUri, coverUrl ->
+                groupToManage = null
+                onUpdateGroup(targetGroup.id, name, desc, allowUploads, orgMode, coverUri, coverUrl)
+            },
+            onDeleteGroup = {
+                groupToManage = null
+                onDeleteGroup(targetGroup.id)
+            }
         )
     }
 }
@@ -151,6 +217,7 @@ private fun GroupsListView(
     followedGroupIds: Set<Int>,
     onToggleFollowGroup: (Int) -> Unit,
     onSelectGroup: (FamilyGroup) -> Unit,
+    onOpenCreateGroup: () -> Unit,
     onOpenScanDialog: () -> Unit,
     onRefreshGroups: () -> Unit
 ) {
@@ -211,9 +278,26 @@ private fun GroupsListView(
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Botón Crear Grupo (disponible para todos los usuarios)
+                    Button(
+                        onClick = onOpenCreateGroup,
+                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("create_group_button")
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Crear nuevo grupo", fontWeight = FontWeight.Bold)
+                    }
+
                     // Botón de sincronización del Administrador
                     if (isAdmin) {
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -387,6 +471,55 @@ private fun GroupCard(
                     )
                 }
 
+                // Insignias de estado (Serie / Solo admin) arriba a la izquierda
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (group.organizationMode == GroupOrganizationMode.SERIES) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = FacebookBlue.copy(alpha = 0.9f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlaylistPlay,
+                                    contentDescription = "Organizado como serie",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Serie", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    if (!group.allowUploads) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Black.copy(alpha = 0.65f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Solo administrador publica",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Solo admin", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
+                    }
+                }
+
                 // Insignia de publicaciones
                 Surface(
                     modifier = Modifier
@@ -506,9 +639,13 @@ private fun GroupCard(
 @Composable
 private fun GroupDetailView(
     group: FamilyGroup,
+    currentMember: FamilyMember,
+    isAdmin: Boolean,
     posts: List<Post>,
     isFollowing: Boolean,
     onToggleFollow: () -> Unit,
+    onOpenManageGroup: () -> Unit,
+    onCreatePostInGroup: () -> Unit,
     searchQuery: String,
     isSearching: Boolean,
     onSearchQueryChange: (String) -> Unit,
@@ -519,12 +656,15 @@ private fun GroupDetailView(
     onBack: () -> Unit,
     onReactionClick: (Int, ReactionType) -> Unit,
     onCommentClick: (Post) -> Unit,
-    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long) -> Unit,
+    onPlayVideo: (String, String, FamilyMember, String?, List<String>, List<Long>, Long, Int, Long) -> Unit,
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
     onToggleSaveOffline: (Post) -> Unit = {},
-    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null
+    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
+    downloadStates: Map<Int, QueuedPostDownload> = emptyMap()
 ) {
+    val canManageGroup = isAdmin || group.createdByUserId == currentMember.id
+    val canUserPost = group.allowUploads || canManageGroup
     val listState = rememberLazyListState()
     val shouldLoadMore by remember(hasMorePosts, isLoadingMore, searchQuery) {
         derivedStateOf {
@@ -607,6 +747,26 @@ private fun GroupDetailView(
                             )
                         }
 
+                        // Botón Administrar Grupo (dueño o administrador NAS)
+                        if (canManageGroup) {
+                            IconButton(
+                                onClick = onOpenManageGroup,
+                                modifier = Modifier
+                                    .padding(8.dp)
+                                    .size(48.dp)
+                                    .align(Alignment.TopEnd)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.52f))
+                                    .testTag("manage_group_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = "Administrar grupo",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+
                         // Título y Ruta
                         Column(
                             modifier = Modifier
@@ -661,6 +821,99 @@ private fun GroupDetailView(
                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Seguir grupo", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+
+                    // Botones de acción dentro del grupo: Publicar en grupo / Administrar + banner de Serie
+                    if (canUserPost || canManageGroup) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (canUserPost) {
+                                Button(
+                                    onClick = onCreatePostInGroup,
+                                    colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("group_create_post_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Publicar en grupo", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            if (canManageGroup) {
+                                OutlinedButton(
+                                    onClick = onOpenManageGroup,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("manage_group_action_button")
+                                ) {
+                                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Administrar", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    } else {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Solo administradores pueden publicar en este grupo.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (group.organizationMode == GroupOrganizationMode.SERIES) {
+                        Surface(
+                            color = FacebookBlue.copy(alpha = 0.09f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlaylistPlay,
+                                    contentDescription = null,
+                                    tint = FacebookBlue,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Organizado como Serie · Orden secuencial de episodios",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = FacebookBlue
+                                )
                             }
                         }
                     }
@@ -762,20 +1015,48 @@ private fun GroupDetailView(
                 }
             }
         } else {
-            items(posts, key = { it.id }) { post ->
-                PostCard(
-                    post = post,
-                    onReactionClick = { rx -> onReactionClick(post.id, rx) },
-                    onCommentClick = { onCommentClick(post) },
-                    onTogglePin = { onTogglePin(post.id) },
-                    onDeletePost = { onDeletePost(post.id) },
-                    onPlayVideo = { url, title, _, dur, chunks, chunkDurations, totalDur ->
-                        onPlayVideo(url, title, post.author, dur, chunks, chunkDurations, totalDur)
-                    },
-                    onToggleSaveOffline = { onToggleSaveOffline(post) },
-                    fallbackFolderImageUrl = group.coverPhotoUrl,
-                    onVideoStarted = onVideoStarted
-                )
+            itemsIndexed(posts, key = { _, p -> p.id }) { index, post ->
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (group.organizationMode == GroupOrganizationMode.SERIES) {
+                        Surface(
+                            color = FacebookBlue.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
+                            modifier = Modifier.padding(horizontal = 14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PlaylistPlay,
+                                    contentDescription = null,
+                                    tint = FacebookBlue,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Episodio ${index + 1}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = FacebookBlue
+                                )
+                            }
+                        }
+                    }
+                    PostCard(
+                        post = post,
+                        onReactionClick = { rx -> onReactionClick(post.id, rx) },
+                        onCommentClick = { onCommentClick(post) },
+                        onTogglePin = { onTogglePin(post.id) },
+                        onDeletePost = { onDeletePost(post.id) },
+                        onPlayVideo = { url, title, _, dur, chunks, chunkDurations, totalDur, chunkIdx, posMs ->
+                            onPlayVideo(url, title, post.author, dur, chunks, chunkDurations, totalDur, chunkIdx, posMs)
+                        },
+                        onToggleSaveOffline = { onToggleSaveOffline(post) },
+                        fallbackFolderImageUrl = group.coverPhotoUrl,
+                        onVideoStarted = onVideoStarted,
+                        downloadState = downloadStates[post.id]
+                    )
+                }
             }
 
             if (searchQuery.isBlank()) {
@@ -820,5 +1101,478 @@ private fun GroupDetailView(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CreateGroupDialog(
+    onDismiss: () -> Unit,
+    onConfirmCreate: (name: String, description: String, allowUploads: Boolean, orgMode: GroupOrganizationMode, coverUri: Uri?) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var allowUploads by remember { mutableStateOf(true) }
+    var orgMode by remember { mutableStateOf(GroupOrganizationMode.NORMAL) }
+    var selectedCoverUri by remember { mutableStateOf<Uri?>(null) }
+
+    val coverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) selectedCoverUri = uri
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .padding(vertical = 16.dp)
+                .testTag("create_group_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Crear grupo familiar",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Cerrar")
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nombre del grupo") },
+                    placeholder = { Text("Ej: Serie Familiar, Viaje al Sur...") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("create_group_name_input")
+                )
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Descripción (opcional)") },
+                    maxLines = 3,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("create_group_desc_input")
+                )
+
+                // Portada del grupo
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Portada del grupo",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            coverPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (selectedCoverUri == null) "Elegir foto" else "Cambiar foto")
+                    }
+                }
+
+                selectedCoverUri?.let { uri ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(130.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                    ) {
+                        AsyncImage(
+                            model = uri,
+                            contentDescription = "Vista previa de portada",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        IconButton(
+                            onClick = { selectedCoverUri = null },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.6f))
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Quitar portada", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+
+                // Modo de organización: Normal vs Series
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Organización de publicaciones",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = orgMode == GroupOrganizationMode.NORMAL,
+                            onClick = { orgMode = GroupOrganizationMode.NORMAL },
+                            label = { Text("Normal (Más recientes)") }
+                        )
+                        FilterChip(
+                            selected = orgMode == GroupOrganizationMode.SERIES,
+                            onClick = { orgMode = GroupOrganizationMode.SERIES },
+                            label = { Text("Series (Episodios)") }
+                        )
+                    }
+                }
+
+                // Autorizar subida a miembros
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Autorizar subir contenido",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "Permite que otros miembros publiquen fotos o vídeos en este grupo",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = allowUploads,
+                        onCheckedChange = { allowUploads = it }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text("Cancelar")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (name.isNotBlank()) {
+                                onConfirmCreate(name.trim(), description.trim(), allowUploads, orgMode, selectedCoverUri)
+                            }
+                        },
+                        enabled = name.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("confirm_create_group_button")
+                    ) {
+                        Text("Crear grupo", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManageGroupDialog(
+    group: FamilyGroup,
+    groupPosts: List<Post>,
+    onDismiss: () -> Unit,
+    onSaveChanges: (name: String, description: String, allowUploads: Boolean, orgMode: GroupOrganizationMode, coverUri: Uri?, coverUrl: String?) -> Unit,
+    onDeleteGroup: () -> Unit
+) {
+    var name by remember(group.id) { mutableStateOf(group.name) }
+    var description by remember(group.id) { mutableStateOf(group.description) }
+    var allowUploads by remember(group.id) { mutableStateOf(group.allowUploads) }
+    var orgMode by remember(group.id) { mutableStateOf(group.organizationMode) }
+    var selectedCoverUri by remember(group.id) { mutableStateOf<Uri?>(null) }
+    var selectedCoverUrl by remember(group.id) { mutableStateOf(group.coverPhotoUrl) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    val existingGroupImageUrls = remember(groupPosts) {
+        groupPosts.flatMap { post ->
+            post.mediaItems.mapNotNull { m ->
+                when {
+                    m.type == MediaType.IMAGE && m.url.isNotBlank() -> m.url
+                    !m.thumbnailUrl.isNullOrBlank() && m.thumbnailUrl != m.url -> m.thumbnailUrl
+                    else -> null
+                }
+            }
+        }.distinct().take(12)
+    }
+
+    val coverPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            selectedCoverUri = uri
+            selectedCoverUrl = null
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .padding(vertical = 16.dp)
+                .testTag("manage_group_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Administrar grupo",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Cerrar")
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nombre del grupo") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Descripción") },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Portada del grupo (galería o fotos del grupo)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Portada del grupo",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            coverPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("De galería")
+                    }
+                }
+
+                val previewModel: Any? = selectedCoverUri ?: selectedCoverUrl?.takeIf { it.isNotBlank() }
+                if (previewModel != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                    ) {
+                        AsyncImage(
+                            model = previewModel,
+                            contentDescription = "Portada seleccionada",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
+                if (existingGroupImageUrls.isNotEmpty()) {
+                    Text(
+                        text = "O elegir imagen del grupo:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(existingGroupImageUrls) { candidateUrl ->
+                            val isSelected = selectedCoverUri == null && selectedCoverUrl == candidateUrl
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .border(
+                                        width = if (isSelected) 2.5.dp else 1.dp,
+                                        color = if (isSelected) FacebookBlue else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable {
+                                        selectedCoverUri = null
+                                        selectedCoverUrl = candidateUrl
+                                    }
+                            ) {
+                                AsyncImage(
+                                    model = candidateUrl,
+                                    contentDescription = "Miniatura candidata para portada",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Organización de publicaciones
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Organización de publicaciones",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = orgMode == GroupOrganizationMode.NORMAL,
+                            onClick = { orgMode = GroupOrganizationMode.NORMAL },
+                            label = { Text("Normal") }
+                        )
+                        FilterChip(
+                            selected = orgMode == GroupOrganizationMode.SERIES,
+                            onClick = { orgMode = GroupOrganizationMode.SERIES },
+                            label = { Text("Series (Episodios)") }
+                        )
+                    }
+                }
+
+                // Autorizar subir contenido
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Autorizar subir contenido",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = if (allowUploads) "Todos los miembros pueden publicar" else "Solo administradores pueden publicar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = allowUploads,
+                        onCheckedChange = { allowUploads = it }
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("delete_group_button")
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color.Red, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Eliminar grupo", color = Color.Red, fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = {
+                            if (name.isNotBlank()) {
+                                onSaveChanges(
+                                    name.trim(),
+                                    description.trim(),
+                                    allowUploads,
+                                    orgMode,
+                                    selectedCoverUri,
+                                    selectedCoverUrl
+                                )
+                            }
+                        },
+                        enabled = name.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = FacebookBlue),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("save_group_settings_button")
+                    ) {
+                        Text("Guardar", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Eliminar grupo") },
+            text = { Text("¿Seguro que quieres eliminar el grupo \"${group.name}\"? Se eliminará de la lista de grupos del NAS.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDeleteGroup()
+                    },
+                    modifier = Modifier.testTag("confirm_delete_group_button")
+                ) {
+                    Text("Eliminar", color = Color.Red, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 }

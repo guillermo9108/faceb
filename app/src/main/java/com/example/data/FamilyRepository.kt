@@ -14,6 +14,7 @@ import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyNotification
 import com.example.model.FamilyStory
+import com.example.model.GroupOrganizationMode
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.NasConfig
@@ -35,6 +36,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+
+enum class OfflineToggleAction {
+    ENQUEUED_ACTIVE,
+    ENQUEUED_WAITING,
+    CANCELLED_FROM_QUEUE,
+    REMOVED_SAVED
+}
 
 class FamilyRepository(
     private val context: Context,
@@ -213,8 +221,70 @@ class FamilyRepository(
     private var activeGroupId: Int? = null
     private var groupRemoteOffset = 0
 
+    // Registro ligero de publicaciones vistas y su último conteo de comentarios visto
+    private val seenPostsPrefs = context.getSharedPreferences("family_seen_posts", Context.MODE_PRIVATE)
+    private val seenCommentsLock = Any()
+    private val seenCommentsCache: LinkedHashMap<Int, Int> = loadSeenCommentsMap()
+
+    val downloadStates: StateFlow<Map<Int, com.example.util.QueuedPostDownload>> =
+        com.example.util.OfflineDownloadQueueManager.downloadStates
+
+    private fun loadSeenCommentsMap(): LinkedHashMap<Int, Int> {
+        val raw = seenPostsPrefs.getString("seen_comments_map", "").orEmpty()
+        val map = LinkedHashMap<Int, Int>()
+        if (raw.isBlank()) return map
+        raw.split(",").forEach { token ->
+            val parts = token.split(":")
+            if (parts.size == 2) {
+                val id = parts[0].toIntOrNull()
+                val count = parts[1].toIntOrNull()
+                if (id != null && count != null) {
+                    map[id] = count
+                }
+            }
+        }
+        return map
+    }
+
+    fun getSeenCommentsSnapshot(): Map<Int, Int> = synchronized(seenCommentsLock) {
+        seenCommentsCache.toMap()
+    }
+
+    fun markPostsSeen(posts: List<Post>) {
+        if (posts.isEmpty()) return
+        val changed = synchronized(seenCommentsLock) {
+            var dirty = false
+            posts.forEach { post ->
+                val targetCount = post.comments.size
+                val prev = seenCommentsCache[post.id]
+                if (prev == null || prev != targetCount) {
+                    // Mover al final para conservar los más recientes si excede 1500
+                    seenCommentsCache.remove(post.id)
+                    seenCommentsCache[post.id] = targetCount
+                    dirty = true
+                }
+            }
+            if (!dirty) return@synchronized false
+            while (seenCommentsCache.size > 1500) {
+                val eldestKey = seenCommentsCache.entries.firstOrNull()?.key ?: break
+                seenCommentsCache.remove(eldestKey)
+            }
+            val encoded = seenCommentsCache.entries.joinToString(",") { "${it.key}:${it.value}" }
+            seenPostsPrefs.edit().putString("seen_comments_map", encoded).apply()
+            true
+        }
+        if (!changed) return
+    }
+
     init {
         AppErrorLogger.initialize(context)
+
+        // Conectar callback de cola de descargas offline en segundo plano
+        com.example.util.OfflineDownloadQueueManager.onPostDownloadCompleted = { finishedPost, success ->
+            if (success) {
+                markPostSavedOfflinePersisted(finishedPost, true)
+            }
+        }
 
         // Conectar callback de autorrecuperación de ruta si la API cambia o es detectada
         apiClient.onPathAutoDetected = { detectedPath ->
@@ -540,6 +610,106 @@ class FamilyRepository(
             }
         }
         return result
+    }
+
+    suspend fun createGroup(
+        name: String,
+        description: String,
+        allowUploads: Boolean,
+        organizationMode: GroupOrganizationMode,
+        coverUri: Uri? = null
+    ): Result<FamilyGroup> {
+        val config = _nasConfig.value
+        val curUserId = _currentMember.value.id
+        val res = apiClient.createGroup(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            context = context,
+            userId = curUserId,
+            name = name,
+            description = description,
+            allowUploads = allowUploads,
+            organizationMode = organizationMode,
+            coverUri = coverUri
+        )
+        res.onSuccess { created ->
+            _groups.update { list -> listOf(created) + list.filterNot { it.id == created.id } }
+            _followedGroupIds.update { it + created.id }
+            scope.launch {
+                try {
+                    database.groupDao().insertGroup(created.toEntity())
+                    database.followDao().insertFollow(com.example.data.local.FollowEntity(curUserId, "GROUP", created.id))
+                } catch (_: Exception) {}
+            }
+        }
+        return res
+    }
+
+    suspend fun updateGroup(
+        groupId: Int,
+        name: String? = null,
+        description: String? = null,
+        allowUploads: Boolean? = null,
+        organizationMode: GroupOrganizationMode? = null,
+        coverUri: Uri? = null,
+        coverPhotoUrl: String? = null
+    ): Result<FamilyGroup> {
+        val config = _nasConfig.value
+        val curUserId = _currentMember.value.id
+        val res = apiClient.updateGroup(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            context = context,
+            groupId = groupId,
+            userId = curUserId,
+            name = name,
+            description = description,
+            allowUploads = allowUploads,
+            organizationMode = organizationMode,
+            coverUri = coverUri,
+            coverPhotoUrl = coverPhotoUrl
+        )
+        res.onSuccess { updated ->
+            _groups.update { list -> list.map { if (it.id == updated.id) updated else it } }
+            scope.launch {
+                try {
+                    database.groupDao().insertGroup(updated.toEntity())
+                } catch (_: Exception) {}
+                if (activeGroupId == groupId) {
+                    loadGroupPostsInitial(groupId)
+                }
+            }
+        }
+        return res
+    }
+
+    suspend fun deleteGroup(groupId: Int): Result<Boolean> {
+        val config = _nasConfig.value
+        val curUserId = _currentMember.value.id
+        val res = apiClient.deleteGroup(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            groupId = groupId,
+            userId = curUserId
+        )
+        res.onSuccess {
+            _groups.update { list -> list.filterNot { it.id == groupId } }
+            _posts.update { list -> list.filterNot { it.groupId == groupId } }
+            _followedGroupIds.update { it - groupId }
+            if (activeGroupId == groupId) {
+                clearActiveGroup()
+            }
+            scope.launch {
+                try {
+                    database.groupDao().deleteGroup(groupId)
+                    database.followDao().deleteFollow(curUserId, "GROUP", groupId)
+                } catch (_: Exception) {}
+            }
+        }
+        return res
     }
 
     private suspend fun loadCachedFollows(userId: Int) {
@@ -1455,26 +1625,46 @@ class FamilyRepository(
     }
 
     /**
-     * Descarga o libera explícitamente una publicación completa (fotos y todos los fragmentos de vídeo) para modo offline.
+     * Encola en segundo plano (FIFO con notificación en vivo) o quita de guardados offline una publicación.
      */
-    suspend fun toggleSavePostOffline(post: Post): Boolean {
-        val targetSaved = !post.isSavedOffline
-        val baseUrl = buildBaseUrl(_nasConfig.value)
-
-        if (targetSaved) {
-            com.example.util.OfflineMediaManager.downloadFullPostMedia(context, baseUrl, post)
+    suspend fun toggleSavePostOffline(post: Post): OfflineToggleAction {
+        val currentQueued = com.example.util.OfflineDownloadQueueManager.downloadStates.value[post.id]
+        if (currentQueued != null &&
+            (currentQueued.status == com.example.util.DownloadItemStatus.QUEUED ||
+                currentQueued.status == com.example.util.DownloadItemStatus.DOWNLOADING)
+        ) {
+            com.example.util.OfflineDownloadQueueManager.cancelOrRemoveFromQueue(post.id)
+            return OfflineToggleAction.CANCELLED_FROM_QUEUE
         }
 
-        val updatedPost = post.copy(isSavedOffline = targetSaved)
+        if (post.isSavedOffline) {
+            markPostSavedOfflinePersisted(post, false)
+            return OfflineToggleAction.REMOVED_SAVED
+        }
+
+        val baseUrl = buildBaseUrl(_nasConfig.value)
+        val enqueued = com.example.util.OfflineDownloadQueueManager.enqueuePost(context, baseUrl, post)
+        return if (enqueued.status == com.example.util.DownloadItemStatus.QUEUED) {
+            OfflineToggleAction.ENQUEUED_WAITING
+        } else {
+            OfflineToggleAction.ENQUEUED_ACTIVE
+        }
+    }
+
+    fun cancelOfflineDownload(postId: Int) {
+        com.example.util.OfflineDownloadQueueManager.cancelOrRemoveFromQueue(postId)
+    }
+
+    private suspend fun markPostSavedOfflinePersisted(post: Post, saved: Boolean) {
+        val updatedPost = post.copy(isSavedOffline = saved)
         try {
             database.postDao().insertPosts(listOf(updatedPost.toEntity()))
-            database.postDao().updateSavedOffline(post.id, targetSaved)
+            database.postDao().updateSavedOffline(post.id, saved)
         } catch (_: Exception) {}
 
-        _posts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
-        _groupPosts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
-        _shorts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = targetSaved) else it } }
-        return targetSaved
+        _posts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = saved) else it } }
+        _groupPosts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = saved) else it } }
+        _shorts.update { list -> list.map { if (it.id == post.id) it.copy(isSavedOffline = saved) else it } }
     }
 
     /**
@@ -1523,7 +1713,8 @@ class FamilyRepository(
         location: String? = null,
         thumbnailFile: java.io.File? = null,
         durationLabel: String? = null,
-        isShort: Boolean = false
+        isShort: Boolean = false,
+        groupId: Int? = null
     ): Result<Int> {
         val config = _nasConfig.value
         val author = _currentMember.value
@@ -1559,7 +1750,8 @@ class FamilyRepository(
             mediaUris = effectiveUris,
             thumbnailFile = finalThumb,
             durationLabel = finalDur,
-            isShort = isShort
+            isShort = isShort,
+            groupId = groupId
         )
 
         return result.fold(
@@ -1578,6 +1770,7 @@ class FamilyRepository(
                     )
                 }
 
+                val targetGroupName = groupId?.let { gid -> _groups.value.find { it.id == gid }?.name }
                 val newPost = Post(
                     id = postId,
                     author = author,
@@ -1589,19 +1782,26 @@ class FamilyRepository(
                     feeling = feeling,
                     location = location,
                     isShort = isShort,
-                    groupId = null
+                    groupId = groupId,
+                    groupName = targetGroupName
                 )
 
                 if (isShort) {
                     _shorts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
                 } else {
                     _posts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                    if (groupId != null && activeGroupId == groupId) {
+                        _groupPosts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                    }
                 }
 
-                // Refrescar feed y shorts inmediatamente desde el NAS
+                // Refrescar feed, shorts y grupo activo desde el NAS
                 scope.launch {
                     refreshFeed()
                     refreshShorts()
+                    if (groupId != null && activeGroupId == groupId) {
+                        loadGroupPostsInitial(groupId)
+                    }
                 }
                 Result.success(postId)
             },
@@ -1675,7 +1875,8 @@ class FamilyRepository(
                 mediaUri = videoUri,
                 feeling = feeling,
                 location = location,
-                isShort = isShort
+                isShort = isShort,
+                groupId = groupId
             )
         }
 

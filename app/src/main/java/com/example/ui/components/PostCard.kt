@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material3.Card
@@ -44,6 +45,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import android.net.Uri
@@ -58,6 +60,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,10 +81,13 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FacebookCardLight
+import com.example.ui.theme.LanOfflineAmber
 import com.example.ui.theme.LanOnlineGreen
 import com.example.ui.theme.ReactionHahaYellow
 import com.example.ui.theme.ReactionLikeBlue
 import com.example.ui.theme.ReactionLoveRed
+import com.example.util.DownloadItemStatus
+import com.example.util.QueuedPostDownload
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -91,11 +97,13 @@ fun PostCard(
     onCommentClick: () -> Unit,
     onTogglePin: () -> Unit,
     onDeletePost: () -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long) -> Unit = { _, _, _, _, _, _, _ -> },
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long, startChunkIndex: Int, startPositionMs: Long) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
     onSendComment: (text: String) -> Unit = {},
     onToggleSaveOffline: () -> Unit = {},
     fallbackFolderImageUrl: String? = null,
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
+    downloadState: QueuedPostDownload? = null,
+    headerHighlightBadge: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -105,6 +113,8 @@ fun PostCard(
     var isPlayingInline by remember { mutableStateOf(false) }
     var isBuffering by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
+    var lastChunkIndex by remember(post.id) { mutableIntStateOf(0) }
+    var lastPositionMs by remember(post.id) { mutableLongStateOf(0L) }
     var activeMediaViewerIndex by remember { mutableStateOf<Int?>(null) }
 
     Surface(
@@ -117,27 +127,32 @@ fun PostCard(
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
 
-            // Pinned Banner (Destacado familiar)
-            if (post.isPinned) {
+            // Pinned Banner o insignia de conversación activa
+            if (post.isPinned || !headerHighlightBadge.isNullOrBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(FacebookBlue.copy(alpha = 0.09f))
+                        .background(
+                            if (post.isPinned) FacebookBlue.copy(alpha = 0.09f)
+                            else LanOfflineAmber.copy(alpha = 0.12f)
+                        )
                         .padding(horizontal = 16.dp, vertical = 7.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PushPin,
-                        contentDescription = "Fijado",
-                        tint = FacebookBlue,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    if (post.isPinned) {
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "Fijado",
+                            tint = FacebookBlue,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text(
-                        text = "Publicación destacada de la familia",
+                        text = headerHighlightBadge ?: "Publicación destacada de la familia",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = FacebookBlue,
+                            color = if (post.isPinned) FacebookBlue else LanOfflineAmber,
                             fontSize = 11.5.sp
                         )
                     )
@@ -286,13 +301,27 @@ fun PostCard(
                     ) {
                         DropdownMenuItem(
                             text = {
-                                Text(if (post.isSavedOffline) "Guardado offline (Quitar)" else "Guardar offline (Descargar todo)")
+                                Text(
+                                    when (downloadState?.status) {
+                                        DownloadItemStatus.QUEUED -> "En espera (Quitar de la cola)"
+                                        DownloadItemStatus.DOWNLOADING -> "Descargando ${downloadState.progressPercent}% (Cancelar)"
+                                        else -> if (post.isSavedOffline) "Guardado offline (Quitar)" else "Guardar offline (Descargar todo)"
+                                    }
+                                )
                             },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload,
+                                    imageVector = when (downloadState?.status) {
+                                        DownloadItemStatus.QUEUED -> Icons.Outlined.Schedule
+                                        DownloadItemStatus.DOWNLOADING -> Icons.Outlined.CloudDownload
+                                        else -> if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload
+                                    },
                                     contentDescription = null,
-                                    tint = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurface
+                                    tint = when (downloadState?.status) {
+                                        DownloadItemStatus.QUEUED -> LanOfflineAmber
+                                        DownloadItemStatus.DOWNLOADING -> FacebookBlue
+                                        else -> if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             },
                             onClick = {
@@ -376,10 +405,18 @@ fun PostCard(
                                 autoPlay = true,
                                 isLooping = true,
                                 showUnifiedBar = true,
+                                initialChunkIndex = lastChunkIndex,
+                                initialPositionMs = lastPositionMs,
+                                onPositionChanged = { idx, pos ->
+                                    lastChunkIndex = idx
+                                    lastPositionMs = pos
+                                },
                                 onVideoStarted = {
                                     onVideoStarted?.invoke(post.id, media.url, media.chunks.firstOrNull())
                                 },
-                                onFullscreenClick = {
+                                onFullscreenWithPosition = { chunkIdx, posMs ->
+                                    lastChunkIndex = chunkIdx
+                                    lastPositionMs = posMs
                                     isPlayingInline = false
                                     isPaused = true
                                     onPlayVideo(
@@ -389,7 +426,9 @@ fun PostCard(
                                         media.durationLabel,
                                         media.chunks,
                                         media.chunkDurationsMs,
-                                        media.totalDurationMs
+                                        media.totalDurationMs,
+                                        chunkIdx,
+                                        posMs
                                     )
                                 },
                                 onCloseClick = {
@@ -517,11 +556,13 @@ fun PostCard(
                                             media.durationLabel,
                                             media.chunks,
                                             media.chunkDurationsMs,
-                                            media.totalDurationMs
+                                            media.totalDurationMs,
+                                            lastChunkIndex,
+                                            lastPositionMs
                                         )
                                     },
                                     modifier = Modifier
-                                        .size(36.dp)
+                                        .size(48.dp)
                                         .clip(CircleShape)
                                         .background(Color.Black.copy(alpha = 0.8f))
                                 ) {
@@ -796,39 +837,99 @@ fun PostCard(
                     )
                 }
 
-                // 3. Descarga Offline (Reemplaza a Compartir)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
+                // 3. Descarga Offline en segundo plano (En espera / % progreso / Guardado / Descargar)
+                val isQueued = downloadState?.status == DownloadItemStatus.QUEUED
+                val isDownloading = downloadState?.status == DownloadItemStatus.DOWNLOADING
+                val downloadTag = when {
+                    isQueued -> "offline_queued_button_${post.id}"
+                    isDownloading -> "offline_downloading_button_${post.id}"
+                    else -> "offline_download_button_${post.id}"
+                }
+                val downloadBg = when {
+                    isDownloading -> FacebookBlue.copy(alpha = 0.1f)
+                    isQueued -> LanOfflineAmber.copy(alpha = 0.12f)
+                    post.isSavedOffline -> LanOnlineGreen.copy(alpha = 0.08f)
+                    else -> Color.Transparent
+                }
+                val downloadTint = when {
+                    isDownloading -> FacebookBlue
+                    isQueued -> LanOfflineAmber
+                    post.isSavedOffline -> LanOnlineGreen
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                val downloadLabel = when {
+                    isDownloading -> "${downloadState?.progressPercent ?: 0}%"
+                    isQueued -> "En espera"
+                    post.isSavedOffline -> "Guardado"
+                    else -> "Descargar"
+                }
+
+                Column(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (post.isSavedOffline) LanOnlineGreen.copy(alpha = 0.08f)
-                            else Color.Transparent
-                        )
+                        .background(downloadBg)
                         .clickable { onToggleSaveOffline() }
-                        .padding(horizontal = 6.dp, vertical = 8.dp)
-                        .testTag("offline_download_button_${post.id}")
+                        .padding(horizontal = 6.dp, vertical = 6.dp)
+                        .testTag(downloadTag),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(
-                        imageVector = if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload,
-                        contentDescription = if (post.isSavedOffline) "Guardado offline" else "Descargar para ver offline",
-                        tint = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(19.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (post.isSavedOffline) "Guardado" else "Descargar",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            color = if (post.isSavedOffline) LanOnlineGreen else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = if (post.isSavedOffline) FontWeight.Bold else FontWeight.SemiBold,
-                            fontSize = 13.sp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        when {
+                            isDownloading -> {
+                                CircularProgressIndicator(
+                                    progress = { (downloadState?.progressPercent ?: 0) / 100f },
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = FacebookBlue
+                                )
+                            }
+                            isQueued -> {
+                                Icon(
+                                    imageVector = Icons.Outlined.Schedule,
+                                    contentDescription = "En espera en la cola de descarga",
+                                    tint = downloadTint,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            else -> {
+                                Icon(
+                                    imageVector = if (post.isSavedOffline) Icons.Default.CloudDone else Icons.Outlined.CloudDownload,
+                                    contentDescription = if (post.isSavedOffline) "Guardado offline" else "Descargar para ver offline",
+                                    tint = downloadTint,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = downloadLabel,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                color = downloadTint,
+                                fontWeight = if (post.isSavedOffline || isDownloading || isQueued) FontWeight.Bold else FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
                         )
-                    )
+                    }
+                    if (isDownloading) {
+                        Spacer(modifier = Modifier.height(3.dp))
+                        LinearProgressIndicator(
+                            progress = { (downloadState?.progressPercent ?: 0) / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth(0.82f)
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = FacebookBlue,
+                            trackColor = FacebookBlue.copy(alpha = 0.2f)
+                        )
+                    }
                 }
             }
         }

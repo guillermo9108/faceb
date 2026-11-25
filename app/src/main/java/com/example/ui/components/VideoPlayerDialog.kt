@@ -1,6 +1,9 @@
 package com.example.ui.components
 
+import android.content.pm.ActivityInfo
+import android.os.Build
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -17,20 +20,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -53,10 +59,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -76,17 +87,26 @@ fun VideoPlayerDialog(
     chunks: List<String> = emptyList(),
     chunkDurationsMs: List<Long> = emptyList(),
     totalDurationMsHint: Long = 0L,
+    initialChunkIndex: Int = 0,
+    initialPositionMs: Long = 0L,
     onVideoStarted: (() -> Unit)? = null,
+    onDismissWithPosition: ((chunkIndex: Int, positionMs: Long) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
     var hasNotifiedThumbExtract by remember(videoUrl, chunks) { mutableStateOf(false) }
-    var localPositionMs by remember { mutableLongStateOf(0L) }
+    var localPositionMs by remember(videoUrl, chunks) {
+        mutableLongStateOf(initialPositionMs.coerceAtLeast(0L))
+    }
     var showControls by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
-    var currentMediaItemIndex by remember { mutableIntStateOf(0) }
+    var currentMediaItemIndex by remember(videoUrl, chunks) {
+        mutableIntStateOf(initialChunkIndex.coerceAtLeast(0))
+    }
+    var isLandscapeVideo by remember(videoUrl, chunks) { mutableStateOf<Boolean?>(null) }
     var exoWindowDurationsMs by remember(chunks, videoUrl) {
         mutableStateOf(List(chunks.size.coerceAtLeast(1)) { 0L })
     }
@@ -148,6 +168,12 @@ fun VideoPlayerDialog(
                     isBuffering = false
                 }
             }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    isLandscapeVideo = videoSize.width >= videoSize.height
+                }
+            }
         }
         exoPlayer.addListener(listener)
 
@@ -155,6 +181,25 @@ fun VideoPlayerDialog(
             exoPlayer.removeListener(listener)
             exoPlayer.stop()
             exoPlayer.release()
+        }
+    }
+
+    // Restaurar orientación previa al cerrar el reproductor a pantalla completa
+    DisposableEffect(activity) {
+        val previousOrientation = activity?.requestedOrientation
+            ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        onDispose {
+            activity?.requestedOrientation = previousOrientation
+        }
+    }
+
+    // Autorrotación automática según relación de aspecto del vídeo (vertical vs horizontal)
+    LaunchedEffect(isLandscapeVideo, activity) {
+        val landscape = isLandscapeVideo ?: return@LaunchedEffect
+        activity?.requestedOrientation = if (landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         }
     }
 
@@ -170,6 +215,17 @@ fun VideoPlayerDialog(
             val pUri = OfflineMediaManager.getPlayableMediaUri(context, videoUrl)
             exoPlayer.setMediaItem(MediaItem.fromUri(pUri))
         }
+
+        val safeChunkIdx = if (chunks.isNotEmpty()) {
+            initialChunkIndex.coerceIn(0, chunks.lastIndex)
+        } else 0
+        val safePosMs = initialPositionMs.coerceAtLeast(0L)
+        if (safeChunkIdx > 0 || safePosMs > 0L) {
+            exoPlayer.seekTo(safeChunkIdx, safePosMs)
+            currentMediaItemIndex = safeChunkIdx
+            localPositionMs = safePosMs
+        }
+
         exoPlayer.prepare()
         exoPlayer.play()
     }
@@ -226,10 +282,69 @@ fun VideoPlayerDialog(
         UnifiedTimelineHelper.boundaryFractions(unifiedOffsets, totalUnifiedDurationMs)
     }
 
+    val handleDismiss = {
+        onDismissWithPosition?.invoke(
+            exoPlayer.currentMediaItemIndex.coerceAtLeast(0),
+            exoPlayer.currentPosition.coerceAtLeast(0L)
+        )
+        onDismiss()
+    }
+
     Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        onDismissRequest = handleDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
+        val dialogView = LocalView.current
+        val dialogWindow = remember(dialogView) {
+            (dialogView.parent as? DialogWindowProvider)?.window
+        }
+        val activityWindow = activity?.window
+
+        // Pantalla completa inmersiva (ocultar barras de sistema + usar área de cutout)
+        DisposableEffect(dialogWindow, activityWindow) {
+            listOfNotNull(dialogWindow, activityWindow).forEach { win ->
+                WindowCompat.setDecorFitsSystemWindows(win, false)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val lp = win.attributes
+                    lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    win.attributes = lp
+                }
+                WindowInsetsControllerCompat(win, dialogView).apply {
+                    hide(WindowInsetsCompat.Type.systemBars())
+                    systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            }
+            onDispose {
+                listOfNotNull(dialogWindow, activityWindow).forEach { win ->
+                    WindowInsetsControllerCompat(win, dialogView)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                    win.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+
+        // Mantener pantalla encendida durante reproducción o carga en pantalla completa
+        val keepAwake = isPlaying || isBuffering
+        DisposableEffect(dialogWindow, activityWindow, keepAwake) {
+            listOfNotNull(dialogWindow, activityWindow).forEach { win ->
+                if (keepAwake) {
+                    win.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    win.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+            onDispose {
+                listOfNotNull(dialogWindow, activityWindow).forEach { win ->
+                    win.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -251,8 +366,12 @@ fun VideoPlayerDialog(
                         )
                         useController = false
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        keepScreenOn = keepAwake
                         player = exoPlayer
                     }
+                },
+                update = { playerView ->
+                    playerView.keepScreenOn = keepAwake
                 },
                 modifier = Modifier
                     .fillMaxSize()
@@ -293,11 +412,12 @@ fun VideoPlayerDialog(
                         .fillMaxSize()
                         .background(Color.Black.copy(alpha = 0.4f))
                 ) {
-                    // Top Bar: Título, autor y botón cerrar '✕'
+                    // Top Bar: Título, autor, rotación manual y botón cerrar '✕'
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 20.dp),
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -330,19 +450,42 @@ fun VideoPlayerDialog(
                             }
                         }
 
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.6f))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Cerrar reproductor",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    isLandscapeVideo = !(isLandscapeVideo ?: false)
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.6f))
+                                    .testTag("video_dialog_rotate_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ScreenRotation,
+                                    contentDescription = "Rotar pantalla",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            IconButton(
+                                onClick = handleDismiss,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.6f))
+                                    .testTag("video_dialog_close_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Cerrar reproductor",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                     }
 
@@ -414,10 +557,12 @@ fun VideoPlayerDialog(
                         },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
+                            .navigationBarsPadding()
+                            .padding(bottom = 8.dp)
                     )
                 }
             }
         }
     }
 }
+

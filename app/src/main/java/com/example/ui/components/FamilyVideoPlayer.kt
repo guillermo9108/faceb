@@ -1,6 +1,10 @@
 package com.example.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -71,6 +75,12 @@ import com.example.ui.theme.FacebookBlue
 import com.example.util.OfflineMediaManager
 import com.example.util.VideoHelper
 import kotlinx.coroutines.delay
+
+internal tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 /**
  * Utilidad pura para unificar la línea de tiempo de vídeos compuestos por múltiples fragmentos (chunks)
@@ -379,19 +389,29 @@ fun FamilyVideoPlayer(
     resizeMode: Int = AspectRatioFrameLayout.RESIZE_MODE_FIT,
     showControls: Boolean = false,
     showUnifiedBar: Boolean = false,
+    initialChunkIndex: Int = 0,
+    initialPositionMs: Long = 0L,
     onFullscreenClick: (() -> Unit)? = null,
+    onFullscreenWithPosition: ((chunkIndex: Int, positionMs: Long) -> Unit)? = null,
+    onPositionChanged: ((chunkIndex: Int, positionMs: Long) -> Unit)? = null,
     onCloseClick: (() -> Unit)? = null,
     onClick: (() -> Unit)? = null,
     onBufferingChanged: ((Boolean) -> Unit)? = null,
     onVideoStarted: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     var isBuffering by remember { mutableStateOf(true) }
     var isUserPaused by remember { mutableStateOf(!autoPlay) }
     var isActuallyPlaying by remember { mutableStateOf(autoPlay) }
+    var areControlsVisible by remember(videoUrl, chunks) { mutableStateOf(true) }
     var hasNotifiedThumbExtract by remember(videoUrl, chunks) { mutableStateOf(false) }
-    var currentChunkIndex by remember { mutableIntStateOf(0) }
-    var currentLocalPosMs by remember { mutableLongStateOf(0L) }
+    var currentChunkIndex by remember(videoUrl, chunks) {
+        mutableIntStateOf(initialChunkIndex.coerceAtLeast(0))
+    }
+    var currentLocalPosMs by remember(videoUrl, chunks) {
+        mutableLongStateOf(initialPositionMs.coerceAtLeast(0L))
+    }
     var exoWindowDurationsMs by remember(chunks, videoUrl) {
         mutableStateOf(List(chunks.size.coerceAtLeast(1)) { 0L })
     }
@@ -460,13 +480,31 @@ fun FamilyVideoPlayer(
         exoPlayer.addListener(listener)
 
         onDispose {
+            onPositionChanged?.invoke(
+                exoPlayer.currentMediaItemIndex.coerceAtLeast(0),
+                exoPlayer.currentPosition.coerceAtLeast(0L)
+            )
             exoPlayer.removeListener(listener)
             exoPlayer.stop()
             exoPlayer.release()
         }
     }
 
-    // Preparar lista de reproducción concatenada (gapless)
+    // Mantener la pantalla encendida mientras el vídeo de la tarjeta se está reproduciendo
+    val keepScreenAwake = !isUserPaused && (isActuallyPlaying || isBuffering)
+    DisposableEffect(activity, keepScreenAwake) {
+        val window = activity?.window
+        if (keepScreenAwake) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Preparar lista de reproducción concatenada (gapless) y restaurar posición si aplica
     LaunchedEffect(videoUrl, chunks, isChunked) {
         exoPlayer.clearMediaItems()
 
@@ -489,6 +527,16 @@ fun FamilyVideoPlayer(
             exoPlayer.setMediaItem(MediaItem.fromUri(playableUri))
         }
 
+        val safeChunkIdx = if (activeChunkUrls.isNotEmpty()) {
+            initialChunkIndex.coerceIn(0, activeChunkUrls.lastIndex)
+        } else 0
+        val safePosMs = initialPositionMs.coerceAtLeast(0L)
+        if (safeChunkIdx > 0 || safePosMs > 0L) {
+            exoPlayer.seekTo(safeChunkIdx, safePosMs)
+            currentChunkIndex = safeChunkIdx
+            currentLocalPosMs = safePosMs
+        }
+
         exoPlayer.prepare()
         if (!isUserPaused) {
             exoPlayer.play()
@@ -498,8 +546,17 @@ fun FamilyVideoPlayer(
     LaunchedEffect(isUserPaused) {
         if (isUserPaused) {
             exoPlayer.pause()
+            areControlsVisible = true
         } else {
             exoPlayer.play()
+        }
+    }
+
+    // Auto-ocultar controles en el reproductor de tarjeta tras 3.5s durante reproducción activa
+    LaunchedEffect(areControlsVisible, isUserPaused, isActuallyPlaying, isBuffering) {
+        if (areControlsVisible && !isUserPaused && isActuallyPlaying && !isBuffering) {
+            delay(3500)
+            areControlsVisible = false
         }
     }
 
@@ -512,8 +569,11 @@ fun FamilyVideoPlayer(
 
     LaunchedEffect(isActuallyPlaying, showUnifiedBar) {
         while (isActuallyPlaying || showUnifiedBar) {
-            currentChunkIndex = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
-            currentLocalPosMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val idx = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+            currentChunkIndex = idx
+            currentLocalPosMs = pos
+            onPositionChanged?.invoke(idx, pos)
             syncWindowDurations()
             delay(150)
         }
@@ -556,7 +616,7 @@ fun FamilyVideoPlayer(
                 if (onClick != null) {
                     onClick()
                 } else {
-                    isUserPaused = !isUserPaused
+                    areControlsVisible = !areControlsVisible
                 }
             },
         contentAlignment = Alignment.Center
@@ -570,6 +630,7 @@ fun FamilyVideoPlayer(
                     )
                     useController = showControls
                     this.resizeMode = resizeMode
+                    keepScreenOn = keepScreenAwake
                     player = exoPlayer
                 }
             },
@@ -577,6 +638,7 @@ fun FamilyVideoPlayer(
                 playerView.player = exoPlayer
                 playerView.resizeMode = resizeMode
                 playerView.useController = showControls
+                playerView.keepScreenOn = keepScreenAwake
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -601,56 +663,83 @@ fun FamilyVideoPlayer(
             }
         }
 
-        // Icono de pausa cuando el usuario detiene la reproducción
+        // Botón central Play/Pause (visible al pausar o mientras los controles están mostrados)
         AnimatedVisibility(
-            visible = isUserPaused && !isBuffering,
+            visible = !isBuffering && (isUserPaused || (showUnifiedBar && areControlsVisible)),
             enter = fadeIn(),
             exit = fadeOut()
         ) {
             Box(
                 modifier = Modifier
-                    .size(64.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), shape = CircleShape)
-                    .clickable { isUserPaused = false },
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable {
+                        isUserPaused = !isUserPaused
+                        areControlsVisible = true
+                    }
+                    .testTag("card_player_play_pause"),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Reproducir",
+                    imageVector = if (isUserPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                    contentDescription = if (isUserPaused) "Reproducir" else "Pausar",
                     tint = Color.White,
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(34.dp)
                 )
             }
         }
 
         if (showUnifiedBar) {
-            UnifiedVideoScrubberBar(
-                globalPositionMs = globalPosMs,
-                totalDurationMs = totalUnifiedDurationMs,
-                isPlaying = !isUserPaused && isActuallyPlaying,
-                currentChunkIndex = currentChunkIndex,
-                totalChunks = chunkCount,
-                chunkBoundaryFractions = boundaries,
-                onTogglePlayPause = { isUserPaused = !isUserPaused },
-                onSeekToGlobalMs = { targetGlobalMs ->
-                    val (targetChunk, localMs) = UnifiedTimelineHelper.seekTargetForGlobal(
-                        globalPosMs = targetGlobalMs,
-                        offsetsMs = unifiedOffsets,
-                        durationsMs = unifiedDurations
-                    )
-                    if (chunkCount > 1) {
-                        exoPlayer.seekTo(targetChunk, localMs)
-                    } else {
-                        exoPlayer.seekTo(localMs)
-                    }
-                    currentChunkIndex = targetChunk
-                    currentLocalPosMs = localMs
-                },
-                onFullscreenClick = onFullscreenClick,
-                onCloseClick = onCloseClick,
-                compact = true,
+            AnimatedVisibility(
+                visible = areControlsVisible || isUserPaused || isBuffering,
+                enter = fadeIn(),
+                exit = fadeOut(),
                 modifier = Modifier.align(Alignment.BottomCenter)
-            )
+            ) {
+                UnifiedVideoScrubberBar(
+                    globalPositionMs = globalPosMs,
+                    totalDurationMs = totalUnifiedDurationMs,
+                    isPlaying = !isUserPaused && isActuallyPlaying,
+                    currentChunkIndex = currentChunkIndex,
+                    totalChunks = chunkCount,
+                    chunkBoundaryFractions = boundaries,
+                    onTogglePlayPause = {
+                        isUserPaused = !isUserPaused
+                        areControlsVisible = true
+                    },
+                    onSeekToGlobalMs = { targetGlobalMs ->
+                        val (targetChunk, localMs) = UnifiedTimelineHelper.seekTargetForGlobal(
+                            globalPosMs = targetGlobalMs,
+                            offsetsMs = unifiedOffsets,
+                            durationsMs = unifiedDurations
+                        )
+                        if (chunkCount > 1) {
+                            exoPlayer.seekTo(targetChunk, localMs)
+                        } else {
+                            exoPlayer.seekTo(localMs)
+                        }
+                        currentChunkIndex = targetChunk
+                        currentLocalPosMs = localMs
+                        onPositionChanged?.invoke(targetChunk, localMs)
+                        areControlsVisible = true
+                    },
+                    onFullscreenClick = if (onFullscreenWithPosition != null || onFullscreenClick != null) {
+                        {
+                            val latestChunk = exoPlayer.currentMediaItemIndex.coerceAtLeast(0)
+                            val latestPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                            onPositionChanged?.invoke(latestChunk, latestPos)
+                            if (onFullscreenWithPosition != null) {
+                                onFullscreenWithPosition.invoke(latestChunk, latestPos)
+                            } else {
+                                onFullscreenClick?.invoke()
+                            }
+                        }
+                    } else null,
+                    onCloseClick = onCloseClick,
+                    compact = true
+                )
+            }
         }
     }
 }

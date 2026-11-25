@@ -1,10 +1,15 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -48,10 +53,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.ReactionType
 import com.example.model.NotificationType
@@ -105,6 +112,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val selectedPostForComments by viewModel.activePostForComments.collectAsState()
     val isCreatePostDialogOpen by viewModel.isCreatePostDialogOpen.collectAsState()
     val isCreateShortMode by viewModel.isCreateShortMode.collectAsState()
+    val targetPostGroup by viewModel.targetPostGroup.collectAsState()
     val isCreateStoryDialogOpen by viewModel.isCreateStoryDialogOpen.collectAsState()
     val selectedStoryGroupForViewing by viewModel.selectedStoryGroupForViewing.collectAsState()
     val notifications by viewModel.notifications.collectAsState()
@@ -121,7 +129,9 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         val chunks: List<String> = emptyList(),
         val chunkDurationsMs: List<Long> = emptyList(),
         val totalDurationMs: Long = 0L,
-        val postId: Int? = null
+        val postId: Int? = null,
+        val startChunkIndex: Int = 0,
+        val startPositionMs: Long = 0L
     )
 
     var activeVideoToPlay by remember { mutableStateOf<ActiveVideoPlayInfo?>(null) }
@@ -162,6 +172,28 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val detectedVolumes by viewModel.detectedVolumes.collectAsState()
     val savedOfflineOnly by viewModel.savedOfflineOnlyFilter.collectAsState()
     val savedOfflineCount by viewModel.savedOfflineCount.collectAsState()
+    val downloadStates by viewModel.downloadStates.collectAsState()
+
+    val appContext = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    val triggerOfflineToggle: (com.example.model.Post) -> Unit = { post ->
+        if (!post.isSavedOffline &&
+            downloadStates[post.id] == null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            val granted = ContextCompat.checkSelfPermission(
+                appContext,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        viewModel.toggleSavePostOffline(post)
+    }
 
     val groupCoverLookup: (Int?) -> String? = remember(groups) {
         { gid -> if (gid != null) groups.find { it.id == gid }?.coverPhotoUrl else null }
@@ -334,7 +366,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                                 onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                                 onDeletePost = { postId -> viewModel.deletePost(postId) },
-                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
                                     val matchingPostId = posts.find { p ->
                                         p.mediaItems.any { it.url == url }
                                     }?.id
@@ -346,7 +378,9 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                         chunks = chunks,
                                         chunkDurationsMs = chunkDurations,
                                         totalDurationMs = totalDur,
-                                        postId = matchingPostId
+                                        postId = matchingPostId,
+                                        startChunkIndex = startChunk,
+                                        startPositionMs = startPosMs
                                     )
                                 },
                                 onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
@@ -355,7 +389,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 hasMorePosts = hasMoreFeedPosts,
                                 isLoadingMore = isLoadingMoreFeed,
                                 onLoadMore = { viewModel.loadMoreFeed() },
-                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) },
+                                onToggleSaveOffline = triggerOfflineToggle,
                                 savedOfflineOnly = savedOfflineOnly,
                                 onClearOfflineFilter = { viewModel.setSavedOfflineFilter(false) },
                                 feedEntries = feedEntries,
@@ -369,6 +403,13 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onOpenAllShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
                                 onVideoStarted = { postId, vUrl, chunkUrl ->
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
+                                },
+                                downloadStates = downloadStates,
+                                onCancelDownload = { viewModel.cancelOfflineDownload(it) },
+                                onPostsSeen = { viewModel.markPostsSeen(it) },
+                                onOpenGroup = { group ->
+                                    viewModel.openGroup(group)
+                                    viewModel.setSelectedTab(FeedTab.GROUPS)
                                 }
                             )
                         }
@@ -380,7 +421,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                                 onDeletePost = { postId -> viewModel.deletePost(postId) },
                                 onOpenCreatePost = { viewModel.openCreatePostDialog() },
-                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
                                     val matchingPostId = posts.find { p ->
                                         p.mediaItems.any { it.url == url }
                                     }?.id
@@ -392,14 +433,17 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                         chunks = chunks,
                                         chunkDurationsMs = chunkDurations,
                                         totalDurationMs = totalDur,
-                                        postId = matchingPostId
+                                        postId = matchingPostId,
+                                        startChunkIndex = startChunk,
+                                        startPositionMs = startPosMs
                                     )
                                 },
-                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) },
+                                onToggleSaveOffline = triggerOfflineToggle,
                                 groupCoverLookup = groupCoverLookup,
                                 onVideoStarted = { postId, vUrl, chunkUrl ->
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
-                                }
+                                },
+                                downloadStates = downloadStates
                             )
                         }
                         FeedTab.SHORTS -> {
@@ -433,7 +477,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onRefreshGroups = { viewModel.refreshGroups() },
                                 onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
                                 onCommentClick = { post -> viewModel.openCommentsSheet(post) },
-                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur ->
+                                onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
                                     val matchingPostId = groupPosts.find { p ->
                                         p.mediaItems.any { it.url == url }
                                     }?.id
@@ -445,12 +489,14 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                         chunks = chunks,
                                         chunkDurationsMs = chunkDurations,
                                         totalDurationMs = totalDur,
-                                        postId = matchingPostId
+                                        postId = matchingPostId,
+                                        startChunkIndex = startChunk,
+                                        startPositionMs = startPosMs
                                     )
                                 },
                                 onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                                 onDeletePost = { postId -> viewModel.deletePost(postId) },
-                                onToggleSaveOffline = { post -> viewModel.toggleSavePostOffline(post) },
+                                onToggleSaveOffline = triggerOfflineToggle,
                                 followedGroupIds = followedGroupIds,
                                 onToggleFollowGroup = { viewModel.toggleFollowGroup(it) },
                                 groupSearchQuery = groupSearchQuery,
@@ -460,9 +506,22 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 isLoadingGroupPosts = isLoadingGroupPosts,
                                 isLoadingMoreGroupPosts = isLoadingMoreGroupPosts,
                                 onLoadMoreGroupPosts = { viewModel.loadMoreGroupPosts() },
+                                onCreateGroup = { name, desc, allowUploads, orgMode, coverUri ->
+                                    viewModel.createGroup(name, desc, allowUploads, orgMode, coverUri)
+                                },
+                                onUpdateGroup = { groupId, name, desc, allowUploads, orgMode, coverUri, coverUrl ->
+                                    viewModel.updateGroup(groupId, name, desc, allowUploads, orgMode, coverUri, coverUrl)
+                                },
+                                onDeleteGroup = { groupId ->
+                                    viewModel.deleteGroup(groupId)
+                                },
+                                onCreatePostInGroup = { group ->
+                                    viewModel.openCreatePostDialog(isShortMode = false, targetGroup = group)
+                                },
                                 onVideoStarted = { postId, vUrl, chunkUrl ->
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
-                                }
+                                },
+                                downloadStates = downloadStates
                             )
                         }
                         FeedTab.NOTIFICATIONS -> {
@@ -621,6 +680,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         CreatePostDialog(
             currentMember = currentMember,
             initiallyShortMode = isCreateShortMode,
+            targetGroupName = targetPostGroup?.name,
             onDismiss = { viewModel.closeCreatePostDialog() },
             onSubmitPost = { text, mediaUri, mediaUris, feeling, loc, thumbFile, durLabel, isShort ->
                 viewModel.createPost(
@@ -631,7 +691,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                     location = loc,
                     thumbnailFile = thumbFile,
                     durationLabel = durLabel,
-                    isShort = isShort
+                    isShort = isShort,
+                    groupId = targetPostGroup?.id
                 )
             }
         )
@@ -666,6 +727,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             chunks = info.chunks,
             chunkDurationsMs = info.chunkDurationsMs,
             totalDurationMsHint = info.totalDurationMs,
+            initialChunkIndex = info.startChunkIndex,
+            initialPositionMs = info.startPositionMs,
             onVideoStarted = {
                 viewModel.onVideoPlayed(
                     videoUrl = info.url,

@@ -2,9 +2,11 @@ package com.example
 
 import com.example.model.CheckItem
 import com.example.model.DatabaseDiagnosticReport
+import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
 import com.example.model.FeedPageResult
+import com.example.model.GroupOrganizationMode
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.NasConfig
@@ -264,5 +266,190 @@ class ExampleUnitTest {
         assertEquals(listOf(201, 202), (entries[2] as FeedStreamEntry.ShortsGroupEntry).shorts.map { it.id })
         assertTrue(entries[3] is FeedStreamEntry.PostEntry)
         assertEquals(13, (entries[3] as FeedStreamEntry.PostEntry).post.id)
+    }
+
+    @Test
+    fun testFamilyGroup_adminAndSeriesDefaults() {
+        val defaultGroup = FamilyGroup(
+            id = 42,
+            name = "Vacaciones 2026",
+            folderPath = "/volume1/photo/vacaciones"
+        )
+        assertEquals(1, defaultGroup.createdByUserId)
+        assertTrue(defaultGroup.allowUploads)
+        assertEquals(GroupOrganizationMode.NORMAL, defaultGroup.organizationMode)
+
+        val seriesGroup = FamilyGroup(
+            id = 43,
+            name = "Serie Familiar",
+            folderPath = "/volume1/photo/serie",
+            createdByUserId = 7,
+            allowUploads = false,
+            organizationMode = GroupOrganizationMode.SERIES
+        )
+        assertEquals(7, seriesGroup.createdByUserId)
+        assertFalse(seriesGroup.allowUploads)
+        assertEquals(GroupOrganizationMode.SERIES, seriesGroup.organizationMode)
+    }
+
+    @Test
+    fun testUnifiedTimelineHelper_cardToFullscreenHandoffPreservesChunkAndOffset() {
+        val durations = listOf(10000L, 12000L, 8000L)
+        val offsets = UnifiedTimelineHelper.buildChunkOffsets(durations)
+        val cardChunk = 1
+        val cardLocalPos = 6400L
+
+        val handoffGlobal = UnifiedTimelineHelper.globalPositionMs(
+            chunkIndex = cardChunk,
+            localPositionMs = cardLocalPos,
+            offsetsMs = offsets,
+            durationsMs = durations
+        )
+        assertEquals(16400L, handoffGlobal)
+
+        val (restoredChunk, restoredLocal) = UnifiedTimelineHelper.seekTargetForGlobal(
+            globalPosMs = handoffGlobal,
+            offsetsMs = offsets,
+            durationsMs = durations
+        )
+        assertEquals(cardChunk, restoredChunk)
+        assertEquals(cardLocalPos, restoredLocal)
+    }
+
+    @Test
+    fun testFeedStreamHelper_diversifyPosts_avoidsMonotony() {
+        val mama = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
+        val papa = FamilyMember(id = 3, name = "Papá", role = "Papá")
+        val posts = listOf(
+            Post(id = 1, author = mama, contentText = "M1", groupId = 10, createdAt = 5000L),
+            Post(id = 2, author = mama, contentText = "M2", groupId = 10, createdAt = 4000L),
+            Post(id = 3, author = mama, contentText = "M3", groupId = 10, createdAt = 3000L),
+            Post(id = 4, author = mama, contentText = "M4", groupId = 10, createdAt = 2000L),
+            Post(id = 5, author = papa, contentText = "P1", groupId = 20, createdAt = 1000L)
+        )
+
+        val diversified = FeedStreamHelper.diversifyPosts(posts, maxConsecutiveAuthor = 2, maxConsecutiveGroup = 2)
+        assertEquals(5, diversified.size)
+        // El tercer elemento no puede ser Mamá porque P1 está disponible en el lookahead
+        assertEquals(papa.id, diversified[2].author.id)
+    }
+
+    @Test
+    fun testFeedStreamHelper_collapseBurstEntries_groupsConsecutiveBurst() {
+        val mama = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
+        val papa = FamilyMember(id = 3, name = "Papá", role = "Papá")
+        val baseTime = 1_700_000_000_000L
+        val posts = listOf(
+            Post(id = 1, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 1", createdAt = baseTime),
+            Post(id = 2, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 2", createdAt = baseTime - 60_000L),
+            Post(id = 3, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 3", createdAt = baseTime - 120_000L),
+            Post(id = 4, author = papa, groupId = 20, groupName = "Casa", contentText = "Post de papá", createdAt = baseTime - 300_000L)
+        )
+
+        val collapsed = FeedStreamHelper.collapseBurstEntries(posts)
+        assertEquals(2, collapsed.size)
+        assertTrue(collapsed[0] is FeedStreamEntry.BurstClusterEntry)
+        val cluster = collapsed[0] as FeedStreamEntry.BurstClusterEntry
+        assertEquals(3, cluster.posts.size)
+        assertEquals(listOf(1, 2, 3), cluster.posts.map { it.id })
+        assertTrue(collapsed[1] is FeedStreamEntry.PostEntry)
+    }
+
+    @Test
+    fun testFeedStreamHelper_buildSmartFeedEntries_unseenPriorityAndRichCards() {
+        val self = FamilyMember(id = 1, name = "Yo", role = "Familiar")
+        val mama = FamilyMember(id = 2, name = "Mamá", role = "Familiar")
+        val papa = FamilyMember(id = 3, name = "Papá", role = "Familiar")
+
+        val seriesGroup = FamilyGroup(
+            id = 50,
+            name = "Serie Vacaciones",
+            folderPath = "/volume1/photo/serie",
+            organizationMode = GroupOrganizationMode.SERIES
+        )
+
+        val seenOld1 = Post(id = 1, author = mama, contentText = "Visto 1", createdAt = 100L)
+        val seenOld2 = Post(id = 2, author = papa, contentText = "Visto 2", createdAt = 200L)
+        val seenWithNewComment = Post(
+            id = 3,
+            author = mama,
+            contentText = "Con comentario nuevo",
+            createdAt = 300L,
+            comments = listOf(
+                com.example.model.Comment(id = 91, postId = 3, author = papa, text = "¡Qué bueno!"),
+                com.example.model.Comment(id = 92, postId = 3, author = self, text = "Genial")
+            )
+        )
+        val unseenFresh = Post(id = 4, author = papa, contentText = "Nuevo sin ver", createdAt = 400L)
+        val seriesEp = Post(id = 5, author = self, groupId = 50, groupName = "Serie Vacaciones", contentText = "Ep 1", createdAt = 500L)
+
+        // Usuario vio 1, 2 y 3 (cuando 3 tenía 0 comentarios), pero aún no vio 4 ni 5
+        val seenSnapshot = mapOf(1 to 0, 2 to 0, 3 to 0)
+        val entries = FeedStreamHelper.buildSmartFeedEntries(
+            posts = listOf(seriesEp, unseenFresh, seenWithNewComment, seenOld2, seenOld1),
+            shorts = listOf(Post(id = 900, author = mama, isShort = true, contentText = "Short")),
+            groups = listOf(seriesGroup),
+            followedGroupIds = setOf(50),
+            seenCommentsSnapshot = seenSnapshot,
+            sessionSeed = 12345L,
+            interval = 3,
+            groupSize = 4
+        )
+
+        val dividerIdx = entries.indexOfFirst { it is FeedStreamEntry.CaughtUpDividerEntry }
+        assertTrue("Debe aparecer el separador Ya estás al día", dividerIdx > 0)
+
+        // Los vistos antiguos (1 y 2) deben quedar después del separador
+        val beforeDividerIds = entries.take(dividerIdx).mapNotNull {
+            when (it) {
+                is FeedStreamEntry.PostEntry -> it.post.id
+                is FeedStreamEntry.ActiveConversationEntry -> it.post.id
+                else -> null
+            }
+        }
+        assertTrue("El post con nuevos comentarios (3) debe priorizarse antes del separador", beforeDividerIds.contains(3) || entries.any { it is FeedStreamEntry.ActiveConversationEntry && it.post.id == 3 })
+        assertFalse("Los vistos sin actividad nueva no deben estar antes del separador", beforeDividerIds.contains(1) || beforeDividerIds.contains(2))
+        assertTrue("Debe incluir tarjeta Continúa viendo para grupo Series", entries.any { it is FeedStreamEntry.ContinueSeriesEntry })
+    }
+
+    @Test
+    fun testOfflineDownloadQueueManager_fifoSequentialPromotion() {
+        com.example.util.OfflineDownloadQueueManager.clearPendingQueue()
+        val author = FamilyMember(id = 1, name = "Papá", role = "Admin")
+        val p1 = Post(
+            id = 501,
+            author = author,
+            contentText = "Vídeo vacaciones",
+            mediaItems = listOf(MediaItem(id = "v1", type = MediaType.VIDEO, url = "http://nas/uploads/clip1.mp4"))
+        )
+        val p2 = Post(
+            id = 502,
+            author = author,
+            contentText = "Foto parque",
+            mediaItems = listOf(MediaItem(id = "i1", type = MediaType.IMAGE, url = "http://nas/uploads/foto1.jpg"))
+        )
+
+        val q1 = com.example.util.OfflineDownloadQueueManager.enqueueForQueueOnly("http://nas/family_api", p1)
+        val q2 = com.example.util.OfflineDownloadQueueManager.enqueueForQueueOnly("http://nas/family_api", p2)
+
+        assertEquals(com.example.util.DownloadItemStatus.DOWNLOADING, q1.status)
+        assertEquals(com.example.util.DownloadItemStatus.QUEUED, q2.status)
+        assertEquals(1, com.example.util.OfflineDownloadQueueManager.getQueuedRemainingCount(p1.id))
+
+        val updated1 = com.example.util.OfflineDownloadQueueManager.updateActiveProgress(
+            postId = p1.id,
+            progressPercent = 47,
+            currentFileName = "clip1.mp4",
+            currentFileIndex = 0,
+            totalFiles = 1
+        )
+        assertEquals(47, updated1?.progressPercent)
+
+        val (finished, nextItem) = com.example.util.OfflineDownloadQueueManager.completeAndAdvance(p1.id, true)
+        assertEquals(p1.id, finished?.id)
+        assertEquals(p2.id, nextItem?.postId)
+        assertEquals(com.example.util.DownloadItemStatus.DOWNLOADING, nextItem?.status)
+
+        com.example.util.OfflineDownloadQueueManager.clearPendingQueue()
     }
 }

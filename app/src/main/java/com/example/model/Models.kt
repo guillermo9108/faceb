@@ -72,6 +72,11 @@ data class FeedPageResult(
     val nextOffset: Int
 )
 
+enum class GroupOrganizationMode(val value: String, val label: String) {
+    NORMAL("NORMAL", "Normal (Muro)"),
+    SERIES("SERIES", "Series (Episodios)")
+}
+
 data class FamilyGroup(
     val id: Int,
     val name: String,
@@ -79,7 +84,10 @@ data class FamilyGroup(
     val description: String = "",
     val coverPhotoUrl: String? = null,
     val postsCount: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val createdByUserId: Int = 1,
+    val allowUploads: Boolean = true,
+    val organizationMode: GroupOrganizationMode = GroupOrganizationMode.NORMAL
 )
 
 data class ScannedFolder(

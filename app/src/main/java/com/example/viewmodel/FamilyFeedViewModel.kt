@@ -5,10 +5,12 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.FamilyRepository
+import com.example.data.OfflineToggleAction
 import com.example.model.DatabaseDiagnosticReport
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
+import com.example.model.GroupOrganizationMode
 import com.example.model.NasConfig
 import com.example.model.Post
 import com.example.model.ReactionType
@@ -17,6 +19,7 @@ import com.example.model.UploadStage
 import com.example.model.VideoUploadProgress
 import com.example.util.FeedStreamEntry
 import com.example.util.FeedStreamHelper
+import com.example.util.QueuedPostDownload
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,6 +62,11 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val isLoadingMoreFeed = repository.isLoadingMoreFeed
     val followedUserIds = repository.followedUserIds
     val followedGroupIds = repository.followedGroupIds
+    val downloadStates: StateFlow<Map<Int, QueuedPostDownload>> = repository.downloadStates
+
+    // Snapshot de vistos y semilla de sesión: se actualizan al abrir o refrescar para no mover el scroll en vivo
+    private val _seenCommentsSnapshot = MutableStateFlow(repository.getSeenCommentsSnapshot())
+    private val _sessionSeed = MutableStateFlow(System.currentTimeMillis())
 
     private val _selectedTab = MutableStateFlow(FeedTab.FEED)
     val selectedTab: StateFlow<FeedTab> = _selectedTab.asStateFlow()
@@ -108,6 +116,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _isCreateShortMode = MutableStateFlow(false)
     val isCreateShortMode: StateFlow<Boolean> = _isCreateShortMode.asStateFlow()
+
+    private val _targetPostGroup = MutableStateFlow<FamilyGroup?>(null)
+    val targetPostGroup: StateFlow<FamilyGroup?> = _targetPostGroup.asStateFlow()
 
     private val _isCreateStoryDialogOpen = MutableStateFlow(false)
     val isCreateStoryDialogOpen: StateFlow<Boolean> = _isCreateStoryDialogOpen.asStateFlow()
@@ -257,6 +268,85 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _isSearchingGroup.value = false
         _selectedGroupForViewing.value = null
         repository.clearActiveGroup()
+    }
+
+    fun createGroup(
+        name: String,
+        description: String,
+        allowUploads: Boolean,
+        organizationMode: GroupOrganizationMode,
+        coverUri: Uri? = null
+    ) {
+        viewModelScope.launch {
+            showStatus("Creando grupo \"$name\" en el NAS...")
+            val res = repository.createGroup(
+                name = name,
+                description = description,
+                allowUploads = allowUploads,
+                organizationMode = organizationMode,
+                coverUri = coverUri
+            )
+            res.fold(
+                onSuccess = { created ->
+                    showStatus("¡Grupo \"${created.name}\" creado!")
+                    openGroup(created)
+                },
+                onFailure = { err ->
+                    showStatus("No se pudo crear el grupo: ${err.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun updateGroup(
+        groupId: Int,
+        name: String,
+        description: String,
+        allowUploads: Boolean,
+        organizationMode: GroupOrganizationMode,
+        coverUri: Uri? = null,
+        coverPhotoUrl: String? = null
+    ) {
+        viewModelScope.launch {
+            showStatus("Guardando ajustes del grupo...")
+            val res = repository.updateGroup(
+                groupId = groupId,
+                name = name,
+                description = description,
+                allowUploads = allowUploads,
+                organizationMode = organizationMode,
+                coverUri = coverUri,
+                coverPhotoUrl = coverPhotoUrl
+            )
+            res.fold(
+                onSuccess = { updated ->
+                    if (_selectedGroupForViewing.value?.id == updated.id) {
+                        _selectedGroupForViewing.value = updated
+                    }
+                    showStatus("Grupo \"${updated.name}\" actualizado")
+                },
+                onFailure = { err ->
+                    showStatus("Error al actualizar el grupo: ${err.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun deleteGroup(groupId: Int) {
+        viewModelScope.launch {
+            val res = repository.deleteGroup(groupId)
+            res.fold(
+                onSuccess = {
+                    if (_selectedGroupForViewing.value?.id == groupId) {
+                        closeGroup()
+                    }
+                    showStatus("Grupo eliminado")
+                },
+                onFailure = { err ->
+                    showStatus("No se pudo eliminar el grupo: ${err.localizedMessage}")
+                }
+            )
+        }
     }
 
     fun toggleFollowUser(targetUserId: Int) {
@@ -482,25 +572,52 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Flujo del muro con grupos horizontales de Shorts intercalados respetando el orden de publicaciones
+    // Flujo inteligente del muro: no vistos primero + anti-monotonía + ráfagas + bloques ricos + rotación al refrescar
     val feedEntries: StateFlow<List<FeedStreamEntry>> = combine(
         filteredPosts,
         repository.shorts,
+        repository.groups,
+        repository.followedGroupIds,
+        _seenCommentsSnapshot,
+        _sessionSeed,
         _searchQuery,
         _selectedMemberFilter,
         _savedOfflineOnlyFilter
-    ) { posts, shortsList, query, memberFilter, offlineOnly ->
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
+        val posts = values[0] as List<Post>
+        @Suppress("UNCHECKED_CAST")
+        val shortsList = values[1] as List<Post>
+        @Suppress("UNCHECKED_CAST")
+        val allGroups = values[2] as List<FamilyGroup>
+        @Suppress("UNCHECKED_CAST")
+        val followedGroups = values[3] as Set<Int>
+        @Suppress("UNCHECKED_CAST")
+        val seenSnap = values[4] as Map<Int, Int>
+        val seed = values[5] as Long
+        val query = values[6] as String
+        val memberFilter = values[7] as FamilyMember?
+        val offlineOnly = values[8] as Boolean
+
         if (query.isNotBlank() || memberFilter != null || offlineOnly) {
             posts.map { FeedStreamEntry.PostEntry(it) }
         } else {
-            FeedStreamHelper.buildFeedEntries(
+            FeedStreamHelper.buildSmartFeedEntries(
                 posts = posts,
                 shorts = shortsList,
+                groups = allGroups,
+                followedGroupIds = followedGroups,
+                seenCommentsSnapshot = seenSnap,
+                sessionSeed = seed,
                 interval = 4,
                 groupSize = 6
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun markPostsSeen(visiblePosts: List<Post>) {
+        repository.markPostsSeen(visiblePosts)
+    }
 
     fun setSelectedTab(tab: FeedTab) {
         if (tab != FeedTab.SHORTS) {
@@ -539,14 +656,16 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _savedOfflineOnlyFilter.value = enabled
     }
 
-    fun openCreatePostDialog(isShortMode: Boolean = false) {
+    fun openCreatePostDialog(isShortMode: Boolean = false, targetGroup: FamilyGroup? = null) {
         _isCreateShortMode.value = isShortMode
+        _targetPostGroup.value = targetGroup
         _isCreatePostDialogOpen.value = true
     }
 
     fun closeCreatePostDialog() {
         _isCreatePostDialogOpen.value = false
         _isCreateShortMode.value = false
+        _targetPostGroup.value = null
     }
 
     fun openCreateStoryDialog() {
@@ -594,6 +713,8 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun refreshFeed() {
+        _seenCommentsSnapshot.value = repository.getSeenCommentsSnapshot()
+        _sessionSeed.value = System.currentTimeMillis()
         viewModelScope.launch {
             val result = repository.refreshFeed()
             result.fold(
@@ -671,8 +792,11 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         val effectiveUris = if (mediaUris.isNotEmpty()) mediaUris else listOfNotNull(mediaUri)
         if (text.isBlank() && effectiveUris.isEmpty()) return
 
+        val effectiveGroupId = groupId ?: _targetPostGroup.value?.id
+
         viewModelScope.launch {
             _isCreatePostDialogOpen.value = false
+            _targetPostGroup.value = null
 
             val primaryUri = effectiveUris.firstOrNull()
             val mimeType = if (primaryUri != null) {
@@ -691,7 +815,7 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                     feeling = feeling,
                     location = location,
                     isShort = isShort,
-                    groupId = groupId,
+                    groupId = effectiveGroupId,
                     onProgress = { step, fraction ->
                         _uploadProgress.value = step
                         _uploadProgressFraction.value = fraction
@@ -733,7 +857,8 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                     location = location,
                     thumbnailFile = thumbnailFile,
                     durationLabel = durationLabel,
-                    isShort = isShort
+                    isShort = isShort,
+                    groupId = effectiveGroupId
                 )
 
                 result.fold(
@@ -936,12 +1061,20 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
 
     fun toggleSavePostOffline(post: Post) {
         viewModelScope.launch {
-            val saved = repository.toggleSavePostOffline(post)
-            showStatus(
-                if (saved) "Publicación guardada completa para ver sin conexión"
-                else "Publicación quitada de guardados offline"
-            )
+            val action = repository.toggleSavePostOffline(post)
+            val message = when (action) {
+                OfflineToggleAction.ENQUEUED_ACTIVE -> "Descargando en segundo plano..."
+                OfflineToggleAction.ENQUEUED_WAITING -> "Añadida a la cola de descarga (en espera)"
+                OfflineToggleAction.CANCELLED_FROM_QUEUE -> "Descarga cancelada de la cola"
+                OfflineToggleAction.REMOVED_SAVED -> "Publicación quitada de guardados offline"
+            }
+            showStatus(message)
         }
+    }
+
+    fun cancelOfflineDownload(postId: Int) {
+        repository.cancelOfflineDownload(postId)
+        showStatus("Descarga cancelada")
     }
 
     fun updateNasSettings(config: NasConfig) {

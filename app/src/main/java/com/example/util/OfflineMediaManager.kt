@@ -317,10 +317,28 @@ object OfflineMediaManager {
         return getLocalCacheFile(context, url) ?: url
     }
 
+    fun extractDisplayFileName(url: String): String {
+        val candidate = extractCandidatePath(url)
+        val rawName = candidate.substringAfterLast('/', "").ifBlank { "archivo_multimedia" }
+        return rawName.take(48)
+    }
+
     /**
      * Descarga y almacena un archivo multimedia en la carpeta oculta del dispositivo.
      */
-    suspend fun downloadAndCache(context: Context, url: String, maxBytesLimit: Long = 0L): File? = withContext(Dispatchers.IO) {
+    suspend fun downloadAndCache(context: Context, url: String, maxBytesLimit: Long = 0L): File? {
+        return downloadAndCacheWithProgress(context, url, maxBytesLimit)
+    }
+
+    /**
+     * Descarga un archivo multimedia con reporte continuo de bytes descargados para cola offline y notificaciones.
+     */
+    suspend fun downloadAndCacheWithProgress(
+        context: Context,
+        url: String,
+        maxBytesLimit: Long = 0L,
+        onBytesProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
+    ): File? = withContext(Dispatchers.IO) {
         if (url.isBlank() || url.startsWith("file://") || url.startsWith("content://")) {
             return@withContext null
         }
@@ -328,6 +346,8 @@ object OfflineMediaManager {
         val existing = getLocalCacheFile(context, url)
         if (existing != null) {
             existing.setLastModified(System.currentTimeMillis())
+            val len = existing.length()
+            onBytesProgress(len, len)
             return@withContext existing
         }
 
@@ -356,7 +376,22 @@ object OfflineMediaManager {
             }
             body.byteStream().use { input ->
                 FileOutputStream(partFile).use { output ->
-                    input.copyTo(output)
+                    val buffer = ByteArray(16 * 1024)
+                    var totalRead = 0L
+                    var lastReported = 0L
+                    onBytesProgress(0L, contentLength)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        totalRead += read
+                        if (totalRead - lastReported >= 32 * 1024 || (contentLength > 0 && totalRead >= contentLength)) {
+                            lastReported = totalRead
+                            onBytesProgress(totalRead, contentLength)
+                        }
+                    }
+                    output.flush()
+                    onBytesProgress(totalRead, if (contentLength > 0) contentLength else totalRead)
                 }
             }
 

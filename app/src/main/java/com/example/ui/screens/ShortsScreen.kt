@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.net.Uri
+import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -78,6 +79,7 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.ui.components.UnifiedTimelineHelper
 import com.example.ui.components.UnifiedVideoScrubberBar
+import com.example.ui.components.findActivity
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.ReactionLoveRed
 import com.example.util.OfflineMediaManager
@@ -374,6 +376,20 @@ private fun ShortItemPage(
         }
     }
 
+    val activity = remember(context) { context.findActivity() }
+    val keepShortAwake = isActive && (isPlaying || isBuffering)
+    DisposableEffect(activity, keepShortAwake) {
+        val window = activity?.window
+        if (keepShortAwake) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     LaunchedEffect(isActive, isPlaying) {
         if (isActive && isPlaying) {
             exoPlayer.play()
@@ -438,8 +454,12 @@ private fun ShortItemPage(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = false
+                    keepScreenOn = keepShortAwake
                     resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 }
+            },
+            update = { playerView ->
+                playerView.keepScreenOn = keepShortAwake
             },
             modifier = Modifier.fillMaxSize()
         )

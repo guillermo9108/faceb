@@ -53,6 +53,7 @@ import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.ui.components.PostCard
 import com.example.ui.theme.FacebookBlue
+import com.example.util.QueuedPostDownload
 
 @Composable
 fun WatchScreen(
@@ -62,10 +63,11 @@ fun WatchScreen(
     onTogglePin: (Int) -> Unit,
     onDeletePost: (Int) -> Unit,
     onOpenCreatePost: () -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long) -> Unit,
+    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long, startChunkIndex: Int, startPositionMs: Long) -> Unit,
     onToggleSaveOffline: (Post) -> Unit = {},
     groupCoverLookup: (Int?) -> String? = { null },
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
+    downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     // Filtrar publicaciones que contengan vídeos
@@ -201,7 +203,8 @@ fun WatchScreen(
                     onPlayVideo = onPlayVideo,
                     onToggleSaveOffline = { onToggleSaveOffline(post) },
                     fallbackFolderImageUrl = groupCoverLookup(post.groupId),
-                    onVideoStarted = onVideoStarted
+                    onVideoStarted = onVideoStarted,
+                    downloadState = downloadStates[post.id]
                 )
             }
         }
