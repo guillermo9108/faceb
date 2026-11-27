@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,7 +37,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,6 +71,7 @@ fun WatchScreen(
     groupCoverLookup: (Int?) -> String? = { null },
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
+    onPostsSeen: (List<Post>) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Filtrar publicaciones que contengan vídeos
@@ -76,8 +80,21 @@ fun WatchScreen(
             post.mediaItems.any { it.type == MediaType.VIDEO }
         }
     }
+    val listState = rememberLazyListState()
+
+    // Sincronizar con Inicio los vídeos ya vistos desde Watch
+    LaunchedEffect(listState.firstVisibleItemIndex, videoPosts) {
+        if (videoPosts.isEmpty()) return@LaunchedEffect
+        delay(1200L)
+        val visibleIds = listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? Int }.toSet()
+        val seenHere = videoPosts.filter { it.id in visibleIds }
+        if (seenHere.isNotEmpty()) {
+            onPostsSeen(seenHere)
+        }
+    }
 
     LazyColumn(
+        state = listState,
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)

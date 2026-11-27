@@ -26,10 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Movie
@@ -75,6 +72,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
@@ -143,7 +142,6 @@ fun FeedScreen(
 ) {
     val context = LocalContext.current
     val thumbTick by OfflineMediaManager.thumbnailTick.collectAsState()
-    var expandedClusterIds by remember { mutableStateOf(emptySet<String>()) }
     val groupCoverMap = remember(groups) {
         groups.associate { it.id to it.coverPhotoUrl }
     }
@@ -181,7 +179,6 @@ fun FeedScreen(
                 when (entry) {
                     is FeedStreamEntry.PostEntry -> listOf(entry.post)
                     is FeedStreamEntry.ActiveConversationEntry -> listOf(entry.post)
-                    is FeedStreamEntry.BurstClusterEntry -> entry.posts
                     else -> emptyList()
                 }
             }
@@ -532,7 +529,6 @@ fun FeedScreen(
                         is FeedStreamEntry.PostEntry -> "post_card"
                         is FeedStreamEntry.ShortsGroupEntry -> "shorts_carousel"
                         is FeedStreamEntry.CaughtUpDividerEntry -> "caught_up_divider"
-                        is FeedStreamEntry.BurstClusterEntry -> "burst_cluster"
                         is FeedStreamEntry.MemoriesCardEntry -> "memories_card"
                         is FeedStreamEntry.ActiveConversationEntry -> "active_conv"
                         is FeedStreamEntry.ContinueSeriesEntry -> "continue_series"
@@ -570,32 +566,6 @@ fun FeedScreen(
                         CaughtUpDividerSection(
                             unseenCount = entry.unseenCount,
                             seenCount = entry.seenCount
-                        )
-                    }
-                    is FeedStreamEntry.BurstClusterEntry -> {
-                        val isExpanded = expandedClusterIds.contains(entry.clusterId)
-                        BurstClusterSection(
-                            entry = entry,
-                            isExpanded = isExpanded,
-                            groupCoverMap = groupCoverMap,
-                            thumbTick = thumbTick,
-                            context = context,
-                            downloadStates = downloadStates,
-                            onToggleExpand = {
-                                expandedClusterIds = if (isExpanded) {
-                                    expandedClusterIds - entry.clusterId
-                                } else {
-                                    expandedClusterIds + entry.clusterId
-                                }
-                            },
-                            onReactionClick = onReactionClick,
-                            onCommentClick = onCommentClick,
-                            onTogglePin = onTogglePin,
-                            onDeletePost = onDeletePost,
-                            onPlayVideo = onPlayVideo,
-                            onSendComment = onSendComment,
-                            onToggleSaveOffline = onToggleSaveOffline,
-                            onVideoStarted = onVideoStarted
                         )
                     }
                     is FeedStreamEntry.MemoriesCardEntry -> {
@@ -949,8 +919,16 @@ private fun ShortsCarouselSection(
                             .testTag("feed_short_card_${shortPost.id}")
                     ) {
                         if (displayModel != null) {
+                            val shortReq = remember(displayModel) {
+                                ImageRequest.Builder(context)
+                                    .data(displayModel)
+                                    .size(480)
+                                    .precision(Precision.INEXACT)
+                                    .crossfade(true)
+                                    .build()
+                            }
                             AsyncImage(
-                                model = displayModel,
+                                model = shortReq,
                                 contentDescription = shortPost.contentText.ifBlank { "Short de ${shortPost.author.name}" },
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
@@ -1196,171 +1174,6 @@ private fun CaughtUpDividerSection(
 }
 
 @Composable
-private fun BurstClusterSection(
-    entry: FeedStreamEntry.BurstClusterEntry,
-    isExpanded: Boolean,
-    groupCoverMap: Map<Int, String?>,
-    thumbTick: Int,
-    context: android.content.Context,
-    downloadStates: Map<Int, QueuedPostDownload>,
-    onToggleExpand: () -> Unit,
-    onReactionClick: (Int, ReactionType) -> Unit,
-    onCommentClick: (Post) -> Unit,
-    onTogglePin: (Int) -> Unit,
-    onDeletePost: (Int) -> Unit,
-    onPlayVideo: (videoUrl: String, title: String, authorName: String, durationLabel: String?, chunks: List<String>, chunkDurationsMs: List<Long>, totalDurationMs: Long, startChunkIndex: Int, startPositionMs: Long) -> Unit,
-    onSendComment: (Int, String) -> Unit,
-    onToggleSaveOffline: (Post) -> Unit,
-    onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)?
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 0.dp,
-        shadowElevation = 1.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("burst_cluster_card_${entry.clusterId}")
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(Color(entry.author.avatarColorHex)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(text = entry.author.avatarEmoji, fontSize = 20.sp)
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "${entry.author.name} compartió ${entry.posts.size} momentos seguidos",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (!entry.groupName.isNullOrBlank()) {
-                            Text(
-                                text = "En ${entry.groupName}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = FacebookBlue
-                            )
-                        }
-                    }
-                }
-                IconButton(
-                    onClick = onToggleExpand,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("expand_burst_${entry.clusterId}")
-                ) {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (isExpanded) "Colapsar grupo" else "Expandir publicaciones",
-                        tint = FacebookBlue
-                    )
-                }
-            }
-
-            if (!isExpanded) {
-                Spacer(modifier = Modifier.height(10.dp))
-                val previewItems = remember(entry.posts) {
-                    entry.posts.mapNotNull { p -> p.mediaItems.firstOrNull()?.let { p to it } }.take(3)
-                }
-                if (previewItems.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(110.dp)
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        previewItems.forEach { (p, media) ->
-                            val isVid = media.type == MediaType.VIDEO
-                            val model = remember(media.thumbnailUrl, media.url, p.groupId, thumbTick, groupCoverMap) {
-                                OfflineMediaManager.getDisplayModel(
-                                    context = context,
-                                    url = if (isVid) media.thumbnailUrl else media.url,
-                                    isVideo = isVid,
-                                    fallbackFolderImageUrl = p.groupId?.let { groupCoverMap[it] },
-                                    videoUrl = media.url
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF1E293B))
-                                    .clickable { onToggleExpand() },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (model != null) {
-                                    AsyncImage(
-                                        model = model,
-                                        contentDescription = p.contentText.ifBlank { "Miniatura agrupada" },
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Default.Collections,
-                                        contentDescription = null,
-                                        tint = Color.White.copy(alpha = 0.55f),
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                OutlinedButton(
-                    onClick = onToggleExpand,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                        .padding(horizontal = 16.dp)
-                ) {
-                    Text("Ver las ${entry.posts.size} publicaciones")
-                }
-            } else {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    entry.posts.forEach { post ->
-                        PostCard(
-                            post = post,
-                            onReactionClick = { rx -> onReactionClick(post.id, rx) },
-                            onCommentClick = { onCommentClick(post) },
-                            onTogglePin = { onTogglePin(post.id) },
-                            onDeletePost = { onDeletePost(post.id) },
-                            onPlayVideo = onPlayVideo,
-                            onSendComment = { txt -> onSendComment(post.id, txt) },
-                            onToggleSaveOffline = { onToggleSaveOffline(post) },
-                            fallbackFolderImageUrl = groupCoverMap[post.groupId],
-                            onVideoStarted = onVideoStarted,
-                            downloadState = downloadStates[post.id]
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun MemoriesCardSection(
     entry: FeedStreamEntry.MemoriesCardEntry,
     groupCoverMap: Map<Int, String?>,
@@ -1441,8 +1254,16 @@ private fun MemoriesCardSection(
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             if (model != null) {
+                                val memReq = remember(model) {
+                                    ImageRequest.Builder(context)
+                                        .data(model)
+                                        .size(480)
+                                        .precision(Precision.INEXACT)
+                                        .crossfade(true)
+                                        .build()
+                                }
                                 AsyncImage(
-                                    model = model,
+                                    model = memReq,
                                     contentDescription = post.contentText.ifBlank { "Recuerdo de ${post.author.name}" },
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()

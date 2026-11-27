@@ -317,46 +317,45 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun testFeedStreamHelper_diversifyPosts_avoidsMonotony() {
-        val mama = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
-        val papa = FamilyMember(id = 3, name = "Papá", role = "Papá")
-        val posts = listOf(
-            Post(id = 1, author = mama, contentText = "M1", groupId = 10, createdAt = 5000L),
-            Post(id = 2, author = mama, contentText = "M2", groupId = 10, createdAt = 4000L),
-            Post(id = 3, author = mama, contentText = "M3", groupId = 10, createdAt = 3000L),
-            Post(id = 4, author = mama, contentText = "M4", groupId = 10, createdAt = 2000L),
-            Post(id = 5, author = papa, contentText = "P1", groupId = 20, createdAt = 1000L)
+    fun testOfflineMediaManager_thumbnailProxyUrl() {
+        assertEquals(
+            "http://nas/family_api/index.php?action=media_proxy&path=foto.jpg&thumb=1",
+            OfflineMediaManager.toThumbnailProxyUrl("http://nas/family_api/index.php?action=media_proxy&path=foto.jpg")
         )
-
-        val diversified = FeedStreamHelper.diversifyPosts(posts, maxConsecutiveAuthor = 2, maxConsecutiveGroup = 2)
-        assertEquals(5, diversified.size)
-        // El tercer elemento no puede ser Mamá porque P1 está disponible en el lookahead
-        assertEquals(papa.id, diversified[2].author.id)
+        // Idempotente si ya contiene thumb=
+        assertEquals(
+            "http://nas/family_api/index.php?action=media_proxy&path=foto.jpg&thumb=1",
+            OfflineMediaManager.toThumbnailProxyUrl("http://nas/family_api/index.php?action=media_proxy&path=foto.jpg&thumb=1")
+        )
+        // URLs que no son media_proxy permanecen intactas
+        assertEquals(
+            "http://nas/family_api/uploads/foto.jpg",
+            OfflineMediaManager.toThumbnailProxyUrl("http://nas/family_api/uploads/foto.jpg")
+        )
     }
 
     @Test
-    fun testFeedStreamHelper_collapseBurstEntries_groupsConsecutiveBurst() {
+    fun testFeedStreamHelper_diversifyPosts_avoidsMonotonyAndConsecutiveVideo() {
         val mama = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
         val papa = FamilyMember(id = 3, name = "Papá", role = "Papá")
-        val baseTime = 1_700_000_000_000L
         val posts = listOf(
-            Post(id = 1, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 1", createdAt = baseTime),
-            Post(id = 2, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 2", createdAt = baseTime - 60_000L),
-            Post(id = 3, author = mama, groupId = 10, groupName = "Viaje", contentText = "Foto 3", createdAt = baseTime - 120_000L),
-            Post(id = 4, author = papa, groupId = 20, groupName = "Casa", contentText = "Post de papá", createdAt = baseTime - 300_000L)
+            Post(id = 1, author = mama, contentText = "Video 1", groupId = 10, createdAt = 5000L, mediaItems = listOf(MediaItem(id = "v1", type = MediaType.VIDEO, url = "http://nas/v1.mp4"))),
+            Post(id = 2, author = papa, contentText = "Video 2", groupId = 20, createdAt = 4900L, mediaItems = listOf(MediaItem(id = "v2", type = MediaType.VIDEO, url = "http://nas/v2.mp4"))),
+            Post(id = 3, author = papa, contentText = "Foto P1", groupId = 20, createdAt = 4800L, mediaItems = listOf(MediaItem(id = "i1", type = MediaType.IMAGE, url = "http://nas/i1.jpg"))),
+            Post(id = 4, author = mama, contentText = "Foto M1", groupId = 10, createdAt = 4700L, mediaItems = listOf(MediaItem(id = "i2", type = MediaType.IMAGE, url = "http://nas/i2.jpg")))
         )
 
-        val collapsed = FeedStreamHelper.collapseBurstEntries(posts)
-        assertEquals(2, collapsed.size)
-        assertTrue(collapsed[0] is FeedStreamEntry.BurstClusterEntry)
-        val cluster = collapsed[0] as FeedStreamEntry.BurstClusterEntry
-        assertEquals(3, cluster.posts.size)
-        assertEquals(listOf(1, 2, 3), cluster.posts.map { it.id })
-        assertTrue(collapsed[1] is FeedStreamEntry.PostEntry)
+        val diversified = FeedStreamHelper.diversifyPosts(posts, maxConsecutiveAuthor = 1, maxConsecutiveGroup = 1)
+        assertEquals(4, diversified.size)
+        // Después de Video 1 no debe ir inmediatamente Video 2 si Foto M1/P1 rompen autor/grupo y formato
+        assertFalse(
+            diversified[0].mediaItems.first().type == MediaType.VIDEO &&
+                diversified[1].mediaItems.first().type == MediaType.VIDEO
+        )
     }
 
     @Test
-    fun testFeedStreamHelper_buildSmartFeedEntries_unseenPriorityAndRichCards() {
+    fun testFeedStreamHelper_buildSmartFeedEntries_unseenPrioritySeriesOrderAndOfflineBoost() {
         val self = FamilyMember(id = 1, name = "Yo", role = "Familiar")
         val mama = FamilyMember(id = 2, name = "Mamá", role = "Familiar")
         val papa = FamilyMember(id = 3, name = "Papá", role = "Familiar")
@@ -381,12 +380,13 @@ class ExampleUnitTest {
             )
         )
         val unseenFresh = Post(id = 4, author = papa, contentText = "Nuevo sin ver", createdAt = 400L)
-        val seriesEp = Post(id = 5, author = self, groupId = 50, groupName = "Serie Vacaciones", contentText = "Ep 1", createdAt = 500L)
+        val seriesEp1 = Post(id = 5, author = self, groupId = 50, groupName = "Serie Vacaciones", contentText = "Ep 1", createdAt = 450L)
+        val seriesEp2 = Post(id = 6, author = self, groupId = 50, groupName = "Serie Vacaciones", contentText = "Ep 2", createdAt = 550L)
 
-        // Usuario vio 1, 2 y 3 (cuando 3 tenía 0 comentarios), pero aún no vio 4 ni 5
+        // Usuario vio 1, 2 y 3 (cuando 3 tenía 0 comentarios), pero aún no vio 4, 5 ni 6
         val seenSnapshot = mapOf(1 to 0, 2 to 0, 3 to 0)
         val entries = FeedStreamHelper.buildSmartFeedEntries(
-            posts = listOf(seriesEp, unseenFresh, seenWithNewComment, seenOld2, seenOld1),
+            posts = listOf(seriesEp2, seriesEp1, unseenFresh, seenWithNewComment, seenOld2, seenOld1),
             shorts = listOf(Post(id = 900, author = mama, isShort = true, contentText = "Short")),
             groups = listOf(seriesGroup),
             followedGroupIds = setOf(50),
@@ -399,7 +399,6 @@ class ExampleUnitTest {
         val dividerIdx = entries.indexOfFirst { it is FeedStreamEntry.CaughtUpDividerEntry }
         assertTrue("Debe aparecer el separador Ya estás al día", dividerIdx > 0)
 
-        // Los vistos antiguos (1 y 2) deben quedar después del separador
         val beforeDividerIds = entries.take(dividerIdx).mapNotNull {
             when (it) {
                 is FeedStreamEntry.PostEntry -> it.post.id
@@ -409,7 +408,23 @@ class ExampleUnitTest {
         }
         assertTrue("El post con nuevos comentarios (3) debe priorizarse antes del separador", beforeDividerIds.contains(3) || entries.any { it is FeedStreamEntry.ActiveConversationEntry && it.post.id == 3 })
         assertFalse("Los vistos sin actividad nueva no deben estar antes del separador", beforeDividerIds.contains(1) || beforeDividerIds.contains(2))
+        assertTrue("Ep 1 de la serie debe ir antes que Ep 2 en el muro", beforeDividerIds.indexOf(5) < beforeDividerIds.indexOf(6))
         assertTrue("Debe incluir tarjeta Continúa viendo para grupo Series", entries.any { it is FeedStreamEntry.ContinueSeriesEntry })
+
+        // En modo offline, las publicaciones guardadas localmente reciben prioridad frente a otras sin caché
+        val cachedScore = FeedStreamHelper.computeRelevanceScore(
+            post = seenOld1.copy(isSavedOffline = true),
+            seenCommentsSnapshot = seenSnapshot,
+            isOfflineOrSlow = true,
+            referenceTimeMs = 1000L
+        )
+        val uncachedScore = FeedStreamHelper.computeRelevanceScore(
+            post = seenOld2.copy(isSavedOffline = false),
+            seenCommentsSnapshot = seenSnapshot,
+            isOfflineOrSlow = true,
+            referenceTimeMs = 1000L
+        )
+        assertTrue("Modo offline debe priorizar publicaciones cacheadas", cachedScore > uncachedScore)
     }
 
     @Test

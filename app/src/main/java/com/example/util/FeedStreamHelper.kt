@@ -33,19 +33,6 @@ sealed interface FeedStreamEntry {
     }
 
     /**
-     * 4) Agrupación automática de ráfagas (>= 3 publicaciones seguidas del mismo autor y grupo en ventana corta).
-     */
-    data class BurstClusterEntry(
-        val clusterId: String,
-        val author: FamilyMember,
-        val groupId: Int?,
-        val groupName: String?,
-        val posts: List<Post>
-    ) : FeedStreamEntry {
-        override val stableKey: String = "burst_$clusterId"
-    }
-
-    /**
      * 3a) Tarjeta intercalada de recuerdos familiares del NAS.
      */
     data class MemoriesCardEntry(
@@ -78,7 +65,22 @@ sealed interface FeedStreamEntry {
     }
 }
 
+enum class FeedMediaFormat {
+    TEXT,
+    SINGLE_IMAGE,
+    MOSAIC,
+    VIDEO
+}
+
 object FeedStreamHelper {
+
+    fun classifyMediaFormat(post: Post): FeedMediaFormat {
+        if (post.mediaItems.isEmpty()) return FeedMediaFormat.TEXT
+        if (post.mediaItems.any { it.type == com.example.model.MediaType.VIDEO }) {
+            return FeedMediaFormat.VIDEO
+        }
+        return if (post.mediaItems.size > 1) FeedMediaFormat.MOSAIC else FeedMediaFormat.SINGLE_IMAGE
+    }
 
     /**
      * Filtra las publicaciones del muro para mostrar únicamente:
@@ -111,95 +113,137 @@ object FeedStreamHelper {
     }
 
     /**
-     * 2) Regla anti-monotonía: evita más de [maxConsecutiveAuthor] publicaciones seguidas del mismo autor
-     * o más de [maxConsecutiveGroup] del mismo grupo intercambiando candidatos cercanos dentro de [lookahead].
+     * Puntuación ligera estilo ranking de Facebook combinando novedad, frescura,
+     * conversación/reacciones, afinidad familiar y disponibilidad offline en caché local.
+     */
+    fun computeRelevanceScore(
+        post: Post,
+        seenCommentsSnapshot: Map<Int, Int> = emptyMap(),
+        preferredAuthorIds: Set<Int> = emptySet(),
+        preferredGroupIds: Set<Int> = emptySet(),
+        isOfflineOrSlow: Boolean = false,
+        cachedPostIds: Set<Int> = emptySet(),
+        referenceTimeMs: Long = post.createdAt.coerceAtLeast(1L)
+    ): Double {
+        val lastSeenCount = seenCommentsSnapshot[post.id]
+        val isUnseen = lastSeenCount == null
+        val newCommentsDelta = if (lastSeenCount != null) (post.comments.size - lastSeenCount).coerceAtLeast(0) else 0
+
+        var score = 0.0
+        if (isUnseen) {
+            score += 45.0
+        } else if (newCommentsDelta > 0) {
+            score += 36.0 + (newCommentsDelta * 4.0).coerceAtMost(20.0)
+        }
+
+        // Decaimiento suave de frescura por horas (evita congelamiento cronológico de una sola carpeta)
+        val ageHours = ((referenceTimeMs - post.createdAt).coerceAtLeast(0L)) / 3_600_000.0
+        score += 35.0 / (1.0 + (ageHours / 12.0))
+
+        // Señales de interacción familiar
+        val totalReactions = post.reactions.values.sum()
+        score += (totalReactions * 1.6).coerceAtMost(18.0)
+        score += (post.comments.size * 3.2).coerceAtMost(24.0)
+
+        // Afinidad personal y de grupo
+        if (preferredAuthorIds.contains(post.author.id)) score += 12.0
+        if (post.groupId != null && preferredGroupIds.contains(post.groupId)) score += 10.0
+
+        // Pequeño impulso a álbumes mosaico variados frente a ítems individuales repetitivos
+        if (classifyMediaFormat(post) == FeedMediaFormat.MOSAIC) score += 4.0
+
+        // Bonus offline cuando no hay conexión LAN con el NAS
+        if (isOfflineOrSlow && (post.isSavedOffline || cachedPostIds.contains(post.id))) {
+            score += 30.0
+        }
+
+        return score
+    }
+
+    /**
+     * Regla anti-monotonía + espaciado + mezcla de formatos estilo Facebook:
+     * evita más de [maxConsecutiveAuthor] del mismo autor, [maxConsecutiveGroup] del mismo grupo,
+     * aplica enfriamiento de grupo de [minGroupCooldown] pasos y evita dos vídeos seguidos en el muro
+     * cuando hay variedad disponible dentro de [lookahead].
      */
     fun diversifyPosts(
         posts: List<Post>,
-        maxConsecutiveAuthor: Int = 2,
-        maxConsecutiveGroup: Int = 2,
-        lookahead: Int = 12
+        maxConsecutiveAuthor: Int = 1,
+        maxConsecutiveGroup: Int = 1,
+        minGroupCooldown: Int = 2,
+        avoidConsecutiveVideo: Boolean = true,
+        lookahead: Int = 16
     ): List<Post> {
         if (posts.size <= 2) return posts
         val remaining = posts.toMutableList()
         val result = ArrayList<Post>(posts.size)
 
         while (remaining.isNotEmpty()) {
-            val pickedIndex = pickDiverseIndex(
+            val pickedIndex = pickDiversePostIndex(
                 remaining = remaining,
                 history = result,
                 maxConsecutiveAuthor = maxConsecutiveAuthor,
                 maxConsecutiveGroup = maxConsecutiveGroup,
-                lookahead = lookahead,
-                authorOf = { it.author.id },
-                groupOf = { it.groupId }
+                minGroupCooldown = minGroupCooldown,
+                avoidConsecutiveVideo = avoidConsecutiveVideo,
+                lookahead = lookahead
             )
             result.add(remaining.removeAt(pickedIndex))
         }
         return result
     }
 
-    private fun <T> diversifyItems(
-        items: List<T>,
-        maxConsecutiveAuthor: Int = 2,
-        maxConsecutiveGroup: Int = 2,
-        lookahead: Int = 12,
-        authorOf: (T) -> Int?,
-        groupOf: (T) -> Int?
-    ): List<T> {
-        if (items.size <= 2) return items
-        val remaining = items.toMutableList()
-        val result = ArrayList<T>(items.size)
-        while (remaining.isNotEmpty()) {
-            val idx = pickDiverseIndex(
-                remaining = remaining,
-                history = result,
-                maxConsecutiveAuthor = maxConsecutiveAuthor,
-                maxConsecutiveGroup = maxConsecutiveGroup,
-                lookahead = lookahead,
-                authorOf = authorOf,
-                groupOf = groupOf
-            )
-            result.add(remaining.removeAt(idx))
-        }
-        return result
-    }
-
-    private fun <T> pickDiverseIndex(
-        remaining: List<T>,
-        history: List<T>,
+    private fun pickDiversePostIndex(
+        remaining: List<Post>,
+        history: List<Post>,
         maxConsecutiveAuthor: Int,
         maxConsecutiveGroup: Int,
-        lookahead: Int,
-        authorOf: (T) -> Int?,
-        groupOf: (T) -> Int?
+        minGroupCooldown: Int,
+        avoidConsecutiveVideo: Boolean,
+        lookahead: Int
     ): Int {
         val searchLimit = minOf(remaining.size, lookahead.coerceAtLeast(1))
 
-        fun consecutiveAuthorViolated(candidate: T): Boolean {
-            val candidateAuthor = authorOf(candidate) ?: return false
+        fun authorConsecutiveViolated(cand: Post): Boolean {
             if (history.size < maxConsecutiveAuthor) return false
-            val tail = history.takeLast(maxConsecutiveAuthor)
-            return tail.all { authorOf(it) == candidateAuthor }
+            return history.takeLast(maxConsecutiveAuthor).all { it.author.id == cand.author.id }
         }
 
-        fun consecutiveGroupViolated(candidate: T): Boolean {
-            val candidateGroup = groupOf(candidate) ?: return false
+        fun groupConsecutiveViolated(cand: Post): Boolean {
+            val gId = cand.groupId ?: return false
             if (history.size < maxConsecutiveGroup) return false
-            val tail = history.takeLast(maxConsecutiveGroup)
-            return tail.all { groupOf(it) == candidateGroup }
+            return history.takeLast(maxConsecutiveGroup).all { it.groupId == gId }
         }
 
-        // Pasada 1: respetar autor y grupo
+        fun groupCooldownViolated(cand: Post): Boolean {
+            val gId = cand.groupId ?: return false
+            if (minGroupCooldown <= 0 || history.isEmpty()) return false
+            return history.takeLast(minGroupCooldown).any { it.groupId == gId }
+        }
+
+        fun videoBackToBackViolated(cand: Post): Boolean {
+            if (!avoidConsecutiveVideo || history.isEmpty()) return false
+            return classifyMediaFormat(history.last()) == FeedMediaFormat.VIDEO &&
+                classifyMediaFormat(cand) == FeedMediaFormat.VIDEO
+        }
+
+        // Pasada 1: autor + enfriamiento de grupo + mezcla de formato
         for (i in 0 until searchLimit) {
-            val cand = remaining[i]
-            if (!consecutiveAuthorViolated(cand) && !consecutiveGroupViolated(cand)) {
+            val c = remaining[i]
+            if (!authorConsecutiveViolated(c) && !groupCooldownViolated(c) && !videoBackToBackViolated(c)) {
                 return i
             }
         }
-        // Pasada 2: respetar al menos autor
+        // Pasada 2: evitar autor consecutivo y grupo consecutivo
         for (i in 0 until searchLimit) {
-            if (!consecutiveAuthorViolated(remaining[i])) {
+            val c = remaining[i]
+            if (!authorConsecutiveViolated(c) && !groupConsecutiveViolated(c)) {
+                return i
+            }
+        }
+        // Pasada 3: evitar al menos mismo grupo consecutivo
+        for (i in 0 until searchLimit) {
+            if (!groupConsecutiveViolated(remaining[i])) {
                 return i
             }
         }
@@ -207,66 +251,38 @@ object FeedStreamHelper {
     }
 
     /**
-     * 4) Agrupa >= [minBurstCount] publicaciones seguidas del mismo autor y mismo grupo
-     * creadas dentro de una ventana de [windowMs] (p.ej. 2 horas) en una tarjeta colapsable BurstClusterEntry.
+     * Protege grupos en modo SERIES dentro de un bloque para priorizar el episodio más antiguo no visto
+     * antes que los posteriores, evitando spoilers al mostrar contenido en el muro principal.
      */
-    fun collapseBurstEntries(
+    private fun applySeriesProgressionOrder(
         posts: List<Post>,
-        minBurstCount: Int = 3,
-        windowMs: Long = 2L * 3600_000L
-    ): List<FeedStreamEntry> {
-        if (posts.isEmpty()) return emptyList()
-        val entries = ArrayList<FeedStreamEntry>(posts.size)
-        var i = 0
-        while (i < posts.size) {
-            val head = posts[i]
-            if (head.isPinned || head.isShort) {
-                entries.add(FeedStreamEntry.PostEntry(head))
-                i++
-                continue
+        seriesGroupIds: Set<Int>
+    ): List<Post> {
+        if (seriesGroupIds.isEmpty() || posts.size <= 1) return posts
+        val groupedQueues = posts
+            .filter { it.groupId != null && seriesGroupIds.contains(it.groupId) }
+            .groupBy { it.groupId!! }
+            .mapValues { (_, list) ->
+                list.sortedWith(compareBy<Post> { it.createdAt }.thenBy { it.id }).toMutableList()
             }
-            val run = mutableListOf(head)
-            var j = i + 1
-            while (j < posts.size) {
-                val next = posts[j]
-                if (!next.isPinned &&
-                    !next.isShort &&
-                    next.author.id == head.author.id &&
-                    next.groupId == head.groupId &&
-                    abs(run.last().createdAt - next.createdAt) <= windowMs
-                ) {
-                    run.add(next)
-                    j++
-                } else {
-                    break
-                }
-            }
-            if (run.size >= minBurstCount) {
-                val clusterId = "${head.author.id}_${head.groupId ?: "wall"}_${head.id}"
-                entries.add(
-                    FeedStreamEntry.BurstClusterEntry(
-                        clusterId = clusterId,
-                        author = head.author,
-                        groupId = head.groupId,
-                        groupName = head.groupName,
-                        posts = run
-                    )
-                )
+        if (groupedQueues.isEmpty()) return posts
+
+        return posts.map { post ->
+            val gid = post.groupId
+            if (gid != null && groupedQueues.containsKey(gid)) {
+                groupedQueues.getValue(gid).removeAt(0)
             } else {
-                run.forEach { entries.add(FeedStreamEntry.PostEntry(it)) }
+                post
             }
-            i = j
         }
-        return entries
     }
 
     /**
-     * Construye el flujo inteligente del muro aplicando:
-     * 1) Prioridad a contenido no visto o con comentarios nuevos + separador "Ya estás al día"
-     * 2) Anti-monotonía (máx. 2 seguidos mismo autor / mismo grupo)
-     * 3) Bloques variados intercalados: Shorts, Recuerdos del NAS, Conversación activa, Continúa viendo (Series)
-     * 4) Agrupación automática de ráfagas (>= 3 seguidos)
-     * 5) Rotación ligera determinista con [sessionSeed] al refrescar
+     * Construye el flujo inteligente del muro al estilo Facebook sin agrupar en tarjetas colapsables:
+     * 1) Prioridad por puntuación de relevancia + novedad + afinidad + modo offline
+     * 2) Protección secuencial de grupos en modo SERIES (episodio más antiguo sin ver primero)
+     * 3) Diversidad estricta y espaciado anti-ráfaga (evita monopolio de autor/grupo y mezcla formatos)
+     * 4) Bloques intercalados (Shorts, Continúa viendo, Conversación activa, Recuerdos) y separador "Ya estás al día"
      */
     fun buildSmartFeedEntries(
         posts: List<Post>,
@@ -274,50 +290,106 @@ object FeedStreamHelper {
         groups: List<FamilyGroup> = emptyList(),
         followedGroupIds: Set<Int> = emptySet(),
         seenCommentsSnapshot: Map<Int, Int> = emptyMap(),
+        preferredAuthorIds: Set<Int> = emptySet(),
+        preferredGroupIds: Set<Int> = emptySet(),
+        isOfflineOrSlow: Boolean = false,
+        cachedPostIds: Set<Int> = emptySet(),
         sessionSeed: Long = 0L,
         interval: Int = 4,
         groupSize: Int = 6
     ): List<FeedStreamEntry> {
         if (posts.isEmpty()) return emptyList()
 
+        val referenceTimeMs = posts.maxOfOrNull { it.createdAt } ?: System.currentTimeMillis()
+        val seriesGroupIds = groups
+            .filter { it.organizationMode == GroupOrganizationMode.SERIES }
+            .map { it.id }
+            .toSet()
+
         val pinnedPosts = posts.filter { it.isPinned }
         val unpinnedPosts = posts.filter { !it.isPinned }
 
         val hasSeenHistory = seenCommentsSnapshot.isNotEmpty()
-        val unseenPosts = if (hasSeenHistory) {
+        val unseenRaw = if (hasSeenHistory) {
             unpinnedPosts.filter { isPostUnseenOrHasNewActivity(it, seenCommentsSnapshot) }
         } else {
             unpinnedPosts
         }
-        val seenPostsRaw = if (hasSeenHistory) {
+        val seenRaw = if (hasSeenHistory) {
             unpinnedPosts.filter { !isPostUnseenOrHasNewActivity(it, seenCommentsSnapshot) }
         } else {
             emptyList()
         }
 
-        // 5) Ligera variación de orden en el bloque ya visto cuando el usuario refresca el muro
-        val seenPosts = rotateSeenWithSessionSeed(seenPostsRaw, sessionSeed)
+        // Ordenar por relevancia dentro de no vistos
+        val unseenRanked = unseenRaw.sortedWith(
+            compareByDescending<Post> {
+                computeRelevanceScore(
+                    post = it,
+                    seenCommentsSnapshot = seenCommentsSnapshot,
+                    preferredAuthorIds = preferredAuthorIds,
+                    preferredGroupIds = preferredGroupIds,
+                    isOfflineOrSlow = isOfflineOrSlow,
+                    cachedPostIds = cachedPostIds,
+                    referenceTimeMs = referenceTimeMs
+                )
+            }.thenByDescending { it.createdAt }
+        )
+
+        val unseenSeriesProtected = applySeriesProgressionOrder(unseenRanked, seriesGroupIds)
+
+        // Rotación ligera para contenido ya visto al refrescar
+        val seenRanked = seenRaw.sortedWith(
+            compareByDescending<Post> {
+                computeRelevanceScore(
+                    post = it,
+                    seenCommentsSnapshot = seenCommentsSnapshot,
+                    preferredAuthorIds = preferredAuthorIds,
+                    preferredGroupIds = preferredGroupIds,
+                    isOfflineOrSlow = isOfflineOrSlow,
+                    cachedPostIds = cachedPostIds,
+                    referenceTimeMs = referenceTimeMs
+                )
+            }.thenByDescending { it.createdAt }
+        )
+        val seenRotated = rotateSeenWithSessionSeed(seenRanked, sessionSeed)
 
         // Detectar conversación familiar activa fuera de los 2 primeros posts para no duplicar arriba
         val activeConvCandidate: Post? = selectActiveConversationCandidate(
-            unseenPosts = unseenPosts,
-            seenPosts = seenPosts,
+            unseenPosts = unseenSeriesProtected,
+            seenPosts = seenRotated,
             pinnedIds = pinnedPosts.map { it.id }.toSet(),
             sessionSeed = sessionSeed
         )
 
         val unseenFiltered = if (activeConvCandidate != null) {
-            unseenPosts.filter { it.id != activeConvCandidate.id }
-        } else unseenPosts
+            unseenSeriesProtected.filter { it.id != activeConvCandidate.id }
+        } else unseenSeriesProtected
         val seenFiltered = if (activeConvCandidate != null) {
-            seenPosts.filter { it.id != activeConvCandidate.id }
-        } else seenPosts
+            seenRotated.filter { it.id != activeConvCandidate.id }
+        } else seenRotated
 
-        // 4) Agrupar ráfagas + 2) Diversificar dentro de cada bloque
-        val unseenBaseEntries = diversifyBaseEntries(collapseBurstEntries(unseenFiltered))
-        val seenBaseEntries = diversifyBaseEntries(collapseBurstEntries(seenFiltered))
+        // Espaciado contextual estricto + mezcla de formatos (sin tarjetas BurstCluster)
+        val unseenDiversified = diversifyPosts(
+            posts = unseenFiltered,
+            maxConsecutiveAuthor = 1,
+            maxConsecutiveGroup = 1,
+            minGroupCooldown = 2,
+            avoidConsecutiveVideo = true,
+            lookahead = 16
+        )
+        val seenDiversified = diversifyPosts(
+            posts = seenFiltered,
+            maxConsecutiveAuthor = 1,
+            maxConsecutiveGroup = 1,
+            minGroupCooldown = 2,
+            avoidConsecutiveVideo = true,
+            lookahead = 16
+        )
 
-        // Unificar secuencia de base con separador "Ya estás al día" si corresponde
+        val unseenBaseEntries = unseenDiversified.map { FeedStreamEntry.PostEntry(it) }
+        val seenBaseEntries = seenDiversified.map { FeedStreamEntry.PostEntry(it) }
+
         val timelineEntries = ArrayList<FeedStreamEntry>(pinnedPosts.size + unseenBaseEntries.size + seenBaseEntries.size + 6)
         pinnedPosts.forEach { timelineEntries.add(FeedStreamEntry.PostEntry(it)) }
         timelineEntries.addAll(unseenBaseEntries)
@@ -332,7 +404,6 @@ object FeedStreamHelper {
         }
         timelineEntries.addAll(seenBaseEntries)
 
-        // Preparar bloques especiales ricos (3a, 3b, 3c) y carrusel de Shorts
         val validShorts = shorts.filter { it.isShort || it.mediaItems.isNotEmpty() }
         val continueSeriesEntry = buildContinueSeriesEntry(
             groups = groups,
@@ -353,7 +424,6 @@ object FeedStreamHelper {
             )
         }
 
-        // Intercalado limpio respetando el flujo y evitando bloques especiales consecutivos
         val safeInterval = interval.coerceAtLeast(1)
         val safeGroupSize = groupSize.coerceAtLeast(1)
         val initialShortOffset = if (validShorts.isNotEmpty()) {
@@ -395,7 +465,6 @@ object FeedStreamHelper {
             }
         }
 
-        // Asegurar aparición de bloques especiales clave si el muro es corto
         if (!seriesInserted && continueSeriesEntry != null) {
             result.add(continueSeriesEntry)
         }
@@ -415,35 +484,11 @@ object FeedStreamHelper {
         return result
     }
 
-    private fun diversifyBaseEntries(entries: List<FeedStreamEntry>): List<FeedStreamEntry> {
-        return diversifyItems(
-            items = entries,
-            maxConsecutiveAuthor = 2,
-            maxConsecutiveGroup = 2,
-            lookahead = 12,
-            authorOf = { entry ->
-                when (entry) {
-                    is FeedStreamEntry.PostEntry -> entry.post.author.id
-                    is FeedStreamEntry.BurstClusterEntry -> entry.author.id
-                    else -> null
-                }
-            },
-            groupOf = { entry ->
-                when (entry) {
-                    is FeedStreamEntry.PostEntry -> entry.post.groupId
-                    is FeedStreamEntry.BurstClusterEntry -> entry.groupId
-                    else -> null
-                }
-            }
-        )
-    }
-
     private fun rotateSeenWithSessionSeed(seenPosts: List<Post>, sessionSeed: Long): List<Post> {
         if (seenPosts.size <= 3 || sessionSeed == 0L) return seenPosts
         val rng = Random(sessionSeed)
         val first = seenPosts.first()
         val tail = seenPosts.drop(1)
-        // Barajado suave por ventanas de 4 para variar ligeramente sin mandar lo nuevo al fondo absoluto
         val rotated = ArrayList<Post>(seenPosts.size).apply { add(first) }
         tail.chunked(4).forEach { chunk ->
             rotated.addAll(chunk.shuffled(rng))

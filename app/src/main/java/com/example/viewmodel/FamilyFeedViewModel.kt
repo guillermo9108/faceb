@@ -572,7 +572,7 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Flujo inteligente del muro: no vistos primero + anti-monotonía + ráfagas + bloques ricos + rotación al refrescar
+    // Flujo inteligente del muro al estilo Facebook: relevancia + afinidad + modo series + anti-monotonía + rotación al refrescar
     val feedEntries: StateFlow<List<FeedStreamEntry>> = combine(
         filteredPosts,
         repository.shorts,
@@ -582,7 +582,9 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _sessionSeed,
         _searchQuery,
         _selectedMemberFilter,
-        _savedOfflineOnlyFilter
+        _savedOfflineOnlyFilter,
+        repository.nasConfig,
+        repository.currentMember
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         val posts = values[0] as List<Post>
@@ -598,16 +600,32 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         val query = values[6] as String
         val memberFilter = values[7] as FamilyMember?
         val offlineOnly = values[8] as Boolean
+        val nas = values[9] as NasConfig
+        val curMember = values[10] as FamilyMember
 
         if (query.isNotBlank() || memberFilter != null || offlineOnly) {
             posts.map { FeedStreamEntry.PostEntry(it) }
         } else {
+            val preferredAuthors = posts
+                .filter { p -> p.userReaction != null || p.isSavedOffline || p.comments.any { it.author.id == curMember.id } }
+                .map { it.author.id }
+                .toSet()
+            val preferredGroups = posts
+                .filter { p -> p.groupId != null && (p.userReaction != null || p.isSavedOffline || p.comments.any { it.author.id == curMember.id }) }
+                .mapNotNull { it.groupId }
+                .toSet()
+            val cachedIds = posts.filter { it.isSavedOffline }.map { it.id }.toSet()
+
             FeedStreamHelper.buildSmartFeedEntries(
                 posts = posts,
                 shorts = shortsList,
                 groups = allGroups,
                 followedGroupIds = followedGroups,
                 seenCommentsSnapshot = seenSnap,
+                preferredAuthorIds = preferredAuthors,
+                preferredGroupIds = preferredGroups,
+                isOfflineOrSlow = !nas.isConnected,
+                cachedPostIds = cachedIds,
                 sessionSeed = seed,
                 interval = 4,
                 groupSize = 6

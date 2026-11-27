@@ -114,6 +114,17 @@ object OfflineMediaManager {
     }
 
     /**
+     * Convierte una URL `media_proxy` en su variante ligera de vista previa (`&thumb=1`, ~60-120 KB)
+     * para tarjetas del muro y mosaicos sin saturar el ancho de banda LAN.
+     * No modifica URLs externas ni archivos locales, y conserva compatibilidad hacia atrás con PHP antiguos.
+     */
+    fun toThumbnailProxyUrl(url: String): String {
+        if (url.isBlank()) return url
+        if (!url.contains("action=media_proxy") || url.contains("thumb=")) return url
+        return if (url.contains("?")) "$url&thumb=1" else "$url?thumb=1"
+    }
+
+    /**
      * Resuelve de forma pura qué URL imagen utilizar para miniatura sin provocar descargas de vídeo.
      */
     internal fun resolveThumbnailCandidate(
@@ -288,14 +299,16 @@ object OfflineMediaManager {
      * Retorna el modelo de imagen ligero para Coil:
      * 1. Para vídeos: devuelve la miniatura local generada si existe en disco; si no, una miniatura imagen válida
      *    o la imagen por defecto de la carpeta del grupo. Si no hay ninguna, devuelve null (sin descargar vídeos).
-     * 2. Para imágenes: devuelve el File cacheado si existe, o la URL remota de la imagen.
+     * 2. Para imágenes: devuelve el File cacheado si existe, o la URL remota (en versión ligera `&thumb=1` si
+     *    [preferLightweightThumb] es true, o original completa en el visor ampliado).
      */
     fun getDisplayModel(
         context: Context,
         url: String?,
         isVideo: Boolean = false,
         fallbackFolderImageUrl: String? = null,
-        videoUrl: String? = null
+        videoUrl: String? = null,
+        preferLightweightThumb: Boolean = true
     ): Any? {
         val actualVideoKey = videoUrl?.takeIf { it.isNotBlank() } ?: url
         if (isVideo || isVideoExtension(url) || isVideoExtension(videoUrl)) {
@@ -310,11 +323,15 @@ object OfflineMediaManager {
                 fallbackFolderImageUrl = fallbackFolderImageUrl
             ) ?: return null
 
-            return getLocalCacheFile(context, candidateImage) ?: candidateImage
+            getLocalCacheFile(context, candidateImage)?.let { return it }
+            val targetUrl = if (preferLightweightThumb) toThumbnailProxyUrl(candidateImage) else candidateImage
+            return getLocalCacheFile(context, targetUrl) ?: targetUrl
         }
 
         if (url.isNullOrBlank()) return null
-        return getLocalCacheFile(context, url) ?: url
+        getLocalCacheFile(context, url)?.let { return it }
+        val targetUrl = if (preferLightweightThumb) toThumbnailProxyUrl(url) else url
+        return getLocalCacheFile(context, targetUrl) ?: targetUrl
     }
 
     fun extractDisplayFileName(url: String): String {
@@ -428,9 +445,10 @@ object OfflineMediaManager {
     }
 
     /**
-     * Precarga progresiva por página (10 publicaciones):
-     * Descarga únicamente las miniaturas imagen y fotografías del lote recibido para lectura offline,
-     * SIN descargar ni generar miniaturas de vídeos en segundo plano.
+     * Precarga progresiva ligera por página (10 publicaciones):
+     * Descarga únicamente miniaturas comprimidas (`&thumb=1`, máx. 1 MB c/u y tope 16 por lote)
+     * para tarjetas rápidas sin saturar la red LAN ni bajar fotos originales completas en segundo plano.
+     * Las descargas completas solo se ejecutan cuando el usuario pulsa "Descargar".
      */
     fun prefetchPageMedia(
         context: Context,
@@ -443,26 +461,26 @@ object OfflineMediaManager {
         scope.launch {
             val urls = mutableListOf<String>()
             pagePosts.forEach { post ->
-                post.mediaItems.forEach { media ->
+                post.mediaItems.take(4).forEach { media ->
                     val isVideo = media.type == MediaType.VIDEO
 
-                    // 1. Miniatura (solo si es imagen real, nunca archivos de vídeo)
-                    resolveFullUrl(baseUrl, media.thumbnailUrl)?.let { thumb ->
-                        if (!isVideoExtension(thumb) && thumb != resolveFullUrl(baseUrl, media.url)) {
-                            urls.add(thumb)
+                    // 1. Miniatura ligera de imagen o póster explícito de vídeo (nunca archivos .mp4)
+                    val explicitThumb = resolveFullUrl(baseUrl, media.thumbnailUrl)
+                    if (explicitThumb != null && !isVideoExtension(explicitThumb) && explicitThumb != resolveFullUrl(baseUrl, media.url)) {
+                        urls.add(toThumbnailProxyUrl(explicitThumb))
+                    } else if (!isVideo) {
+                        resolveFullUrl(baseUrl, media.url)?.let { fullImg ->
+                            if (!isCached(appContext, fullImg)) {
+                                urls.add(toThumbnailProxyUrl(fullImg))
+                            }
                         }
-                    }
-
-                    // 2. Fotos completas del mosaico
-                    if (!isVideo) {
-                        resolveFullUrl(baseUrl, media.url)?.let { urls.add(it) }
                     }
                 }
             }
 
-            urls.distinct().forEach { url ->
+            urls.distinct().take(16).forEach { url ->
                 if (!isCached(appContext, url)) {
-                    downloadAndCache(appContext, url, maxBytesLimit = 25 * 1024 * 1024L)
+                    downloadAndCache(appContext, url, maxBytesLimit = 1024L * 1024L)
                 }
             }
 

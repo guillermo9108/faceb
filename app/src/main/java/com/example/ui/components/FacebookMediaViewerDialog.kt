@@ -298,7 +298,12 @@ private fun ZoomableMediaImage(
     var offsetY by remember { mutableFloatStateOf(0f) }
 
     val displayModel = remember(mediaItem.url, mediaItem.thumbnailUrl) {
-        OfflineMediaManager.getDisplayModel(context, mediaItem.url, isVideo = false)
+        OfflineMediaManager.getDisplayModel(
+            context = context,
+            url = mediaItem.url,
+            isVideo = false,
+            preferLightweightThumb = false
+        )
     }
 
     Box(

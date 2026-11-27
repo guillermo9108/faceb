@@ -76,6 +76,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
@@ -451,8 +453,16 @@ fun PostCard(
                                 )
                         ) {
                             if (imageModel != null) {
+                                val thumbRequest = remember(imageModel) {
+                                    ImageRequest.Builder(context)
+                                        .data(imageModel)
+                                        .size(640)
+                                        .precision(Precision.INEXACT)
+                                        .crossfade(true)
+                                        .build()
+                                }
                                 AsyncImage(
-                                    model = imageModel,
+                                    model = thumbRequest,
                                     contentDescription = media.caption.ifBlank { "Miniatura de vídeo" },
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
@@ -577,6 +587,14 @@ fun PostCard(
                         }
                     } else {
                         // Single Photo - Dynamic Facebook sizing, tap opens split viewer
+                        val singlePhotoRequest = remember(imageModel) {
+                            ImageRequest.Builder(context)
+                                .data(imageModel)
+                                .size(640)
+                                .precision(Precision.INEXACT)
+                                .crossfade(true)
+                                .build()
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -585,7 +603,7 @@ fun PostCard(
                                 .clickable { activeMediaViewerIndex = 0 }
                         ) {
                             AsyncImage(
-                                model = imageModel,
+                                model = singlePhotoRequest,
                                 contentDescription = media.caption.ifBlank { "Foto de publicación" },
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
@@ -1125,8 +1143,16 @@ private fun FacebookGridItem(
             .clickable(onClick = onClick)
     ) {
         if (imageModel != null) {
+            val gridRequest = remember(imageModel) {
+                ImageRequest.Builder(context)
+                    .data(imageModel)
+                    .size(480)
+                    .precision(Precision.INEXACT)
+                    .crossfade(true)
+                    .build()
+            }
             AsyncImage(
-                model = imageModel,
+                model = gridRequest,
                 contentDescription = media.caption.ifBlank { "Foto de publicación" },
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

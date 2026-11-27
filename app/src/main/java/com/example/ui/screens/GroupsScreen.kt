@@ -97,6 +97,7 @@ import com.example.ui.components.PostCard
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.LanOnlineGreen
 import com.example.util.QueuedPostDownload
+import kotlinx.coroutines.delay
 
 @Composable
 fun GroupsScreen(
@@ -129,7 +130,8 @@ fun GroupsScreen(
     onDeleteGroup: (groupId: Int) -> Unit = {},
     onCreatePostInGroup: (FamilyGroup) -> Unit = {},
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
-    downloadStates: Map<Int, QueuedPostDownload> = emptyMap()
+    downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
+    onPostsSeen: (List<Post>) -> Unit = {}
 ) {
     val isAdmin = currentMember.role.equals("Administrador", ignoreCase = true) ||
             currentMember.name.equals("Administrador", ignoreCase = true) ||
@@ -168,7 +170,8 @@ fun GroupsScreen(
             onDeletePost = onDeletePost,
             onToggleSaveOffline = onToggleSaveOffline,
             onVideoStarted = onVideoStarted,
-            downloadStates = downloadStates
+            downloadStates = downloadStates,
+            onPostsSeen = onPostsSeen
         )
     } else {
         GroupsListView(
@@ -661,7 +664,8 @@ private fun GroupDetailView(
     onDeletePost: (Int) -> Unit,
     onToggleSaveOffline: (Post) -> Unit = {},
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
-    downloadStates: Map<Int, QueuedPostDownload> = emptyMap()
+    downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
+    onPostsSeen: (List<Post>) -> Unit = {}
 ) {
     val canManageGroup = isAdmin || group.createdByUserId == currentMember.id
     val canUserPost = group.allowUploads || canManageGroup
@@ -679,6 +683,17 @@ private fun GroupDetailView(
     LaunchedEffect(shouldLoadMore) {
         if (shouldLoadMore) {
             onLoadMore()
+        }
+    }
+
+    // Sincronizar con Inicio lo que ya se vio dentro del grupo
+    LaunchedEffect(listState.firstVisibleItemIndex, posts, searchQuery) {
+        if (searchQuery.isNotBlank() || posts.isEmpty()) return@LaunchedEffect
+        delay(1200L)
+        val visibleIds = listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? Int }.toSet()
+        val seenHere = posts.filter { it.id in visibleIds }
+        if (seenHere.isNotEmpty()) {
+            onPostsSeen(seenHere)
         }
     }
 

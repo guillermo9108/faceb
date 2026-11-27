@@ -443,7 +443,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onVideoStarted = { postId, vUrl, chunkUrl ->
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
                                 },
-                                downloadStates = downloadStates
+                                downloadStates = downloadStates,
+                                onPostsSeen = { viewModel.markPostsSeen(it) }
                             )
                         }
                         FeedTab.SHORTS -> {
@@ -521,7 +522,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onVideoStarted = { postId, vUrl, chunkUrl ->
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
                                 },
-                                downloadStates = downloadStates
+                                downloadStates = downloadStates,
+                                onPostsSeen = { viewModel.markPostsSeen(it) }
                             )
                         }
                         FeedTab.NOTIFICATIONS -> {

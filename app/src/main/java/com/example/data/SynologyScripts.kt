@@ -627,6 +627,148 @@ object SynologyScripts {
             exit;
         }
 
+        function streamLightweightThumbOrFallback(${D}filePath, ${D}maxDim = 640) {
+            if (!@file_exists(${D}filePath) || !@is_readable(${D}filePath)) {
+                streamMediaFile(${D}filePath);
+            }
+            ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
+            if (!in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) {
+                streamMediaFile(${D}filePath);
+            }
+            if (!function_exists('imagecreatefromstring') || !function_exists('imagecreatetruecolor') || !function_exists('imagejpeg')) {
+                streamMediaFile(${D}filePath);
+            }
+            ${D}size = @filesize(${D}filePath);
+            if (${D}size !== false && ${D}size <= 140 * 1024) {
+                streamMediaFile(${D}filePath);
+            }
+            if (${D}size !== false && ${D}size > 25 * 1024 * 1024) {
+                streamMediaFile(${D}filePath);
+            }
+
+            ${D}thumbDir = __DIR__ . '/uploads/thumbs_cache';
+            if (!is_dir(${D}thumbDir)) {
+                @mkdir(${D}thumbDir, 0777, true);
+            }
+            ${D}mtime = @filemtime(${D}filePath) ?: 0;
+            ${D}cacheFile = ${D}thumbDir . '/t_' . md5(${D}filePath . '_' . ${D}mtime . '_' . ${D}maxDim) . '.jpg';
+            if (@file_exists(${D}cacheFile) && @filesize(${D}cacheFile) > 0) {
+                streamMediaFile(${D}cacheFile);
+            }
+
+            try {
+                ${D}raw = @file_get_contents(${D}filePath);
+                if (${D}raw === false) streamMediaFile(${D}filePath);
+                ${D}src = @imagecreatefromstring(${D}raw);
+                unset(${D}raw);
+                if (!${D}src) streamMediaFile(${D}filePath);
+
+                // Corregir orientación EXIF para fotos JPEG tomadas en móvil
+                if (in_array(${D}ext, ['jpg', 'jpeg']) && function_exists('exif_read_data') && function_exists('imagerotate')) {
+                    ${D}exif = @exif_read_data(${D}filePath);
+                    if (!empty(${D}exif['Orientation'])) {
+                        switch ((int)${D}exif['Orientation']) {
+                            case 3: ${D}src = @imagerotate(${D}src, 180, 0) ?: ${D}src; break;
+                            case 6: ${D}src = @imagerotate(${D}src, -90, 0) ?: ${D}src; break;
+                            case 8: ${D}src = @imagerotate(${D}src, 90, 0) ?: ${D}src; break;
+                        }
+                    }
+                }
+
+                ${D}w = imagesx(${D}src);
+                ${D}h = imagesy(${D}src);
+                if (${D}w <= 0 || ${D}h <= 0) {
+                    @imagedestroy(${D}src);
+                    streamMediaFile(${D}filePath);
+                }
+
+                if (${D}w <= ${D}maxDim && ${D}h <= ${D}maxDim) {
+                    @imagejpeg(${D}src, ${D}cacheFile, 82);
+                    @imagedestroy(${D}src);
+                } else {
+                    ${D}ratio = min(${D}maxDim / ${D}w, ${D}maxDim / ${D}h);
+                    ${D}nw = max(1, (int)round(${D}w * ${D}ratio));
+                    ${D}nh = max(1, (int)round(${D}h * ${D}ratio));
+                    ${D}dst = imagecreatetruecolor(${D}nw, ${D}nh);
+                    imagecopyresampled(${D}dst, ${D}src, 0, 0, 0, 0, ${D}nw, ${D}nh, ${D}w, ${D}h);
+                    @imagejpeg(${D}dst, ${D}cacheFile, 80);
+                    @imagedestroy(${D}dst);
+                    @imagedestroy(${D}src);
+                }
+
+                if (@file_exists(${D}cacheFile) && @filesize(${D}cacheFile) > 0) {
+                    streamMediaFile(${D}cacheFile);
+                }
+            } catch (Exception ${D}eThumb) {
+                // Fallback seguro al archivo original
+            }
+            streamMediaFile(${D}filePath);
+        }
+
+        function buildDiversifiedFeedIds(${D}metaRows, ${D}inventoryCapPerGroup = 3, ${D}inventoryWindow = 30) {
+            if (count(${D}metaRows) <= 2) {
+                return array_map(function(${D}r) { return (int)${D}r['id']; }, ${D}metaRows);
+            }
+            ${D}pinned = [];
+            ${D}pool = [];
+            foreach (${D}metaRows as ${D}r) {
+                if ((int)(${D}r['is_pinned'] ?? 0) === 1) {
+                    ${D}pinned[] = (int)${D}r['id'];
+                } else {
+                    ${D}pool[] = ${D}r;
+                }
+            }
+            ${D}ordered = ${D}pinned;
+            ${D}remaining = array_values(${D}pool);
+            ${D}groupCounts = [];
+            ${D}lastAuthor = null;
+            ${D}lastGroup = null;
+            ${D}slotIdx = 0;
+
+            while (!empty(${D}remaining)) {
+                ${D}pick = -1;
+                ${D}limitScan = min(count(${D}remaining), 28);
+                ${D}applyCap = (${D}slotIdx < ${D}inventoryWindow);
+
+                // Pasada 1: distinto autor y distinto grupo y respetando cupo de grupo en ventana superior
+                for (${D}i = 0; ${D}i < ${D}limitScan; ${D}i++) {
+                    ${D}cand = ${D}remaining[${D}i];
+                    ${D}au = ${D}cand['user_id'] ?? null;
+                    ${D}gr = ${D}cand['group_id'] ?? null;
+                    ${D}grKey = (${D}gr === null || ${D}gr === '') ? 'wall' : (string)${D}gr;
+                    ${D}overCap = ${D}applyCap && ${D}gr !== null && ((${D}groupCounts[${D}grKey] ?? 0) >= ${D}inventoryCapPerGroup);
+                    if (!${D}overCap && ${D}au !== ${D}lastAuthor && (${D}gr === null || ${D}gr !== ${D}lastGroup)) {
+                        ${D}pick = ${D}i;
+                        break;
+                    }
+                }
+                // Pasada 2: evitar al menos el mismo grupo consecutivo
+                if (${D}pick === -1) {
+                    for (${D}i = 0; ${D}i < ${D}limitScan; ${D}i++) {
+                        ${D}cand = ${D}remaining[${D}i];
+                        ${D}gr = ${D}cand['group_id'] ?? null;
+                        if (${D}gr === null || ${D}gr !== ${D}lastGroup) {
+                            ${D}pick = ${D}i;
+                            break;
+                        }
+                    }
+                }
+                if (${D}pick === -1) ${D}pick = 0;
+
+                ${D}chosen = ${D}remaining[${D}pick];
+                array_splice(${D}remaining, ${D}pick, 1);
+                ${D}ordered[] = (int)${D}chosen['id'];
+                ${D}lastAuthor = ${D}chosen['user_id'] ?? null;
+                ${D}lastGroup = ${D}chosen['group_id'] ?? null;
+                if (${D}lastGroup !== null && ${D}lastGroup !== '') {
+                    ${D}k = (string)${D}lastGroup;
+                    ${D}groupCounts[${D}k] = (${D}groupCounts[${D}k] ?? 0) + 1;
+                }
+                ${D}slotIdx++;
+            }
+            return ${D}ordered;
+        }
+
         // 1. Health check / Ping
         if (matchRoute(${D}action, ${D}uri, 'ping') || matchRoute(${D}action, ${D}uri, 'health')) {
             try {
@@ -1437,45 +1579,130 @@ object SynologyScripts {
                     ${D}cntStmt->execute([${D}userId, ${D}userId, ${D}userId]);
                     ${D}totalCount = (int)${D}cntStmt->fetchColumn();
 
-                    ${D}stmt = ${D}db->prepare("
-                        SELECT p.*, 
-                               COALESCE(u.display_name, 'Familiar') as display_name,
-                               COALESCE(u.role, 'Familiar') as role,
-                               COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
-                               COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
-                               g.name as group_name,
-                               g.cover_photo_url as group_cover_photo_url,
-                               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
-                               (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
-                        FROM posts p
-                        LEFT JOIN users u ON p.user_id = u.id
-                        LEFT JOIN family_groups g ON g.id = p.group_id
-                        WHERE ${D}whereClause
-                        ORDER BY p.is_pinned DESC, p.created_at DESC
-                        LIMIT ${D}limit OFFSET ${D}offset
-                    ");
-                    ${D}stmt->execute([${D}userId, ${D}userId, ${D}userId]);
-                    ${D}rawRows = ${D}stmt->fetchAll();
+                    // Aplicar Inventory Cap y diversificación determinista sobre la ventana reciente (sin pérdida ni duplicados)
+                    ${D}rawRows = [];
+                    if (${D}offset < 250) {
+                        ${D}metaStmt = ${D}db->prepare("
+                            SELECT p.id, p.user_id, p.group_id, p.is_pinned, p.created_at
+                            FROM posts p
+                            WHERE ${D}whereClause
+                            ORDER BY p.is_pinned DESC, p.created_at DESC
+                            LIMIT 250
+                        ");
+                        ${D}metaStmt->execute([${D}userId, ${D}userId, ${D}userId]);
+                        ${D}metaRows = ${D}metaStmt->fetchAll();
+                        ${D}orderedIds = buildDiversifiedFeedIds(${D}metaRows, 3, 30);
+                        ${D}pageIds = array_slice(${D}orderedIds, ${D}offset, ${D}limit);
+                        if (!empty(${D}pageIds)) {
+                            ${D}placeholders = implode(',', array_fill(0, count(${D}pageIds), '?'));
+                            ${D}stmt = ${D}db->prepare("
+                                SELECT p.*, 
+                                       COALESCE(u.display_name, 'Familiar') as display_name,
+                                       COALESCE(u.role, 'Familiar') as role,
+                                       COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                       COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                                       g.name as group_name,
+                                       g.cover_photo_url as group_cover_photo_url,
+                                       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                                FROM posts p
+                                LEFT JOIN users u ON p.user_id = u.id
+                                LEFT JOIN family_groups g ON g.id = p.group_id
+                                WHERE p.id IN (${D}placeholders)
+                            ");
+                            ${D}stmt->execute(${D}pageIds);
+                            ${D}byId = [];
+                            foreach (${D}stmt->fetchAll() as ${D}row) {
+                                ${D}byId[(int)${D}row['id']] = ${D}row;
+                            }
+                            foreach (${D}pageIds as ${D}pid) {
+                                if (isset(${D}byId[${D}pid])) {
+                                    ${D}rawRows[] = ${D}byId[${D}pid];
+                                }
+                            }
+                        }
+                    } else {
+                        ${D}stmt = ${D}db->prepare("
+                            SELECT p.*, 
+                                   COALESCE(u.display_name, 'Familiar') as display_name,
+                                   COALESCE(u.role, 'Familiar') as role,
+                                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                                   g.name as group_name,
+                                   g.cover_photo_url as group_cover_photo_url,
+                                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                            FROM posts p
+                            LEFT JOIN users u ON p.user_id = u.id
+                            LEFT JOIN family_groups g ON g.id = p.group_id
+                            WHERE ${D}whereClause
+                            ORDER BY p.is_pinned DESC, p.created_at DESC
+                            LIMIT ${D}limit OFFSET ${D}offset
+                        ");
+                        ${D}stmt->execute([${D}userId, ${D}userId, ${D}userId]);
+                        ${D}rawRows = ${D}stmt->fetchAll();
+                    }
                 } else {
                     ${D}totalCount = (int)${D}db->query("SELECT COUNT(*) FROM posts WHERE (is_short = 0 OR is_short IS NULL)")->fetchColumn();
-                    ${D}stmt = ${D}db->query("
-                        SELECT p.*, 
-                               COALESCE(u.display_name, 'Familiar') as display_name,
-                               COALESCE(u.role, 'Familiar') as role,
-                               COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
-                               COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
-                               g.name as group_name,
-                               g.cover_photo_url as group_cover_photo_url,
-                               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
-                               (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
-                        FROM posts p
-                        LEFT JOIN users u ON p.user_id = u.id
-                        LEFT JOIN family_groups g ON g.id = p.group_id
-                        WHERE (p.is_short = 0 OR p.is_short IS NULL)
-                        ORDER BY p.is_pinned DESC, p.created_at DESC
-                        LIMIT ${D}limit OFFSET ${D}offset
-                    ");
-                    ${D}rawRows = ${D}stmt->fetchAll();
+                    ${D}rawRows = [];
+                    if (${D}offset < 250) {
+                        ${D}metaStmt = ${D}db->query("
+                            SELECT p.id, p.user_id, p.group_id, p.is_pinned, p.created_at
+                            FROM posts p
+                            WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                            ORDER BY p.is_pinned DESC, p.created_at DESC
+                            LIMIT 250
+                        ");
+                        ${D}orderedIds = buildDiversifiedFeedIds(${D}metaStmt->fetchAll(), 3, 30);
+                        ${D}pageIds = array_slice(${D}orderedIds, ${D}offset, ${D}limit);
+                        if (!empty(${D}pageIds)) {
+                            ${D}placeholders = implode(',', array_fill(0, count(${D}pageIds), '?'));
+                            ${D}stmt = ${D}db->prepare("
+                                SELECT p.*, 
+                                       COALESCE(u.display_name, 'Familiar') as display_name,
+                                       COALESCE(u.role, 'Familiar') as role,
+                                       COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                       COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                                       g.name as group_name,
+                                       g.cover_photo_url as group_cover_photo_url,
+                                       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                                FROM posts p
+                                LEFT JOIN users u ON p.user_id = u.id
+                                LEFT JOIN family_groups g ON g.id = p.group_id
+                                WHERE p.id IN (${D}placeholders)
+                            ");
+                            ${D}stmt->execute(${D}pageIds);
+                            ${D}byId = [];
+                            foreach (${D}stmt->fetchAll() as ${D}row) {
+                                ${D}byId[(int)${D}row['id']] = ${D}row;
+                            }
+                            foreach (${D}pageIds as ${D}pid) {
+                                if (isset(${D}byId[${D}pid])) {
+                                    ${D}rawRows[] = ${D}byId[${D}pid];
+                                }
+                            }
+                        }
+                    } else {
+                        ${D}stmt = ${D}db->query("
+                            SELECT p.*, 
+                                   COALESCE(u.display_name, 'Familiar') as display_name,
+                                   COALESCE(u.role, 'Familiar') as role,
+                                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                                   g.name as group_name,
+                                   g.cover_photo_url as group_cover_photo_url,
+                                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                            FROM posts p
+                            LEFT JOIN users u ON p.user_id = u.id
+                            LEFT JOIN family_groups g ON g.id = p.group_id
+                            WHERE (p.is_short = 0 OR p.is_short IS NULL)
+                            ORDER BY p.is_pinned DESC, p.created_at DESC
+                            LIMIT ${D}limit OFFSET ${D}offset
+                        ");
+                        ${D}rawRows = ${D}stmt->fetchAll();
+                    }
                 }
                 ${D}rows = hydratePostsWithDetails(${D}db, ${D}rawRows);
                 ${D}nextOffset = ${D}offset + count(${D}rows);
@@ -2134,9 +2361,42 @@ object SynologyScripts {
                         ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}rootFallbackImg, ${D}groupId]);
                     }
 
-                    // Procesar por lote progresivo o completo
+                    // Procesar por lote progresivo o completo agrupando fotos contiguas de la misma subcarpeta en mosaicos (máx. 6 fotos/post)
                     ${D}slice = ${D}isBatch ? array_slice(${D}allMedia, ${D}batchOffset, ${D}batchLimit) : ${D}allMedia;
                     ${D}coverSet = !empty(${D}existingCover);
+                    ${D}imageBatch = [];
+                    ${D}batchSubfolder = null;
+
+                    ${D}flushImageBatch = function() use (&${D}imageBatch, &${D}batchSubfolder, &${D}importedPosts, &${D}coverSet, ${D}db, ${D}adminUserId, ${D}groupId, ${D}groupName) {
+                        if (empty(${D}imageBatch)) return;
+                        ${D}imgCount = count(${D}imageBatch);
+                        if (${D}imgCount === 1) {
+                            ${D}only = ${D}imageBatch[0];
+                            ${D}caption = ${D}only['name'];
+                            if (!empty(${D}only['rel_subfolder'])) {
+                                ${D}caption .= " (" . ${D}only['rel_subfolder'] . ")";
+                            }
+                        } else {
+                            ${D}albumTitle = !empty(${D}batchSubfolder) ? ${D}batchSubfolder : ${D}groupName;
+                            ${D}caption = "Álbum: " . ${D}albumTitle . " (" . ${D}imgCount . " fotos)";
+                        }
+
+                        ${D}stmtPost = ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)");
+                        ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
+                        ${D}newPostId = (int)${D}db->lastInsertId();
+
+                        ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, 'IMAGE', ?, ?)");
+                        foreach (${D}imageBatch as ${D}imgItem) {
+                            ${D}stmtMedia->execute([${D}newPostId, ${D}imgItem['proxy_url'], ${D}imgItem['proxy_url']]);
+                            if (!${D}coverSet) {
+                                ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}imgItem['proxy_url'], ${D}groupId]);
+                                ${D}coverSet = true;
+                            }
+                        }
+                        ${D}importedPosts++;
+                        ${D}imageBatch = [];
+                        ${D}batchSubfolder = null;
+                    };
 
                     foreach (${D}slice as ${D}mediaInfo) {
                         ${D}fullFile = ${D}mediaInfo['path'];
@@ -2150,6 +2410,20 @@ object SynologyScripts {
                         ${D}checkMedia->execute([${D}proxyUrl]);
                         if (${D}checkMedia->fetchColumn()) continue;
 
+                        if (${D}isImg) {
+                            ${D}curSub = (string)(${D}mediaInfo['rel_subfolder'] ?? '');
+                            if (!empty(${D}imageBatch) && (${D}batchSubfolder !== ${D}curSub || count(${D}imageBatch) >= 6)) {
+                                ${D}flushImageBatch();
+                            }
+                            ${D}batchSubfolder = ${D}curSub;
+                            ${D}mediaInfo['proxy_url'] = ${D}proxyUrl;
+                            ${D}imageBatch[] = ${D}mediaInfo;
+                            continue;
+                        }
+
+                        // Vídeo individual (ideal para Reproducción o Episodio en Serie)
+                        ${D}flushImageBatch();
+
                         ${D}caption = ${D}mediaInfo['name'];
                         if (!empty(${D}mediaInfo['rel_subfolder'])) {
                             ${D}caption .= " (" . ${D}mediaInfo['rel_subfolder'] . ")";
@@ -2160,25 +2434,18 @@ object SynologyScripts {
                         ${D}newPostId = (int)${D}db->lastInsertId();
 
                         // Para vídeos usar una imagen en su carpeta -> carpeta madre -> siguiente madre -> portada del grupo
-                        ${D}itemThumb = ${D}isVid
-                            ? (${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg)
-                            : ${D}proxyUrl;
+                        ${D}itemThumb = ${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg;
 
-                        ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, ?, ?, ?)");
+                        ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, 'VIDEO', ?, ?)");
                         ${D}stmtMedia->execute([
                             ${D}newPostId,
-                            ${D}isVid ? 'VIDEO' : 'IMAGE',
                             ${D}proxyUrl,
                             ${D}itemThumb
                         ]);
 
                         ${D}importedPosts++;
-
-                        if (!${D}coverSet && ${D}isImg) {
-                            ${D}db->prepare("UPDATE family_groups SET cover_photo_url = ? WHERE id = ?")->execute([${D}proxyUrl, ${D}groupId]);
-                            ${D}coverSet = true;
-                        }
                     }
+                    ${D}flushImageBatch();
 
                     if (${D}isBatch) {
                         ${D}currentProcessed = ${D}batchOffset + count(${D}slice);
@@ -2213,13 +2480,18 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.7. STREAMING/PROXY DE MEDIOS DESDE VOLUMEN DEL SYNOLOGY NAS
+        // 3.7. STREAMING/PROXY DE MEDIOS DESDE VOLUMEN DEL SYNOLOGY NAS (CON SOPORTE ?thumb=1 LIGERO)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'media_proxy') || matchRoute(${D}action, ${D}uri, 'stream') || str_ends_with(${D}uri, '/media_proxy'))) {
             ${D}filePath = ${D}_GET['path'] ?? '';
             if (!empty(${D}filePath) && !str_starts_with(${D}filePath, '/')) {
                 ${D}filePath = __DIR__ . '/' . ltrim(${D}filePath, '/');
             }
-            streamMediaFile(${D}filePath);
+            ${D}isThumb = ((${D}_GET['thumb'] ?? '') === '1');
+            if (${D}isThumb) {
+                streamLightweightThumbOrFallback(${D}filePath, 640);
+            } else {
+                streamMediaFile(${D}filePath);
+            }
             exit;
         }
 
