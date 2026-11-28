@@ -172,23 +172,28 @@ object FeedStreamHelper {
         maxConsecutiveGroup: Int = 1,
         minGroupCooldown: Int = 2,
         avoidConsecutiveVideo: Boolean = true,
-        lookahead: Int = 16
+        lookahead: Int = 16,
+        initialHistory: List<Post> = emptyList()
     ): List<Post> {
-        if (posts.size <= 2) return posts
+        if (posts.isEmpty()) return emptyList()
+        if (posts.size == 1 && initialHistory.isEmpty()) return posts
         val remaining = posts.toMutableList()
+        val combinedHistory = initialHistory.toMutableList()
         val result = ArrayList<Post>(posts.size)
 
         while (remaining.isNotEmpty()) {
             val pickedIndex = pickDiversePostIndex(
                 remaining = remaining,
-                history = result,
+                history = combinedHistory,
                 maxConsecutiveAuthor = maxConsecutiveAuthor,
                 maxConsecutiveGroup = maxConsecutiveGroup,
                 minGroupCooldown = minGroupCooldown,
                 avoidConsecutiveVideo = avoidConsecutiveVideo,
                 lookahead = lookahead
             )
-            result.add(remaining.removeAt(pickedIndex))
+            val chosen = remaining.removeAt(pickedIndex)
+            combinedHistory.add(chosen)
+            result.add(chosen)
         }
         return result
     }
@@ -256,14 +261,22 @@ object FeedStreamHelper {
      */
     private fun applySeriesProgressionOrder(
         posts: List<Post>,
-        seriesGroupIds: Set<Int>
+        seriesGroupIds: Set<Int>,
+        watchedPostIds: Set<Int> = emptySet()
     ): List<Post> {
         if (seriesGroupIds.isEmpty() || posts.size <= 1) return posts
         val groupedQueues = posts
             .filter { it.groupId != null && seriesGroupIds.contains(it.groupId) }
             .groupBy { it.groupId!! }
             .mapValues { (_, list) ->
-                list.sortedWith(compareBy<Post> { it.createdAt }.thenBy { it.id }).toMutableList()
+                val sorted = list.sortedWith(SeriesEpisodeHelper.seriesComparator())
+                if (watchedPostIds.isEmpty()) {
+                    sorted.toMutableList()
+                } else {
+                    val unwatched = sorted.filter { !watchedPostIds.contains(it.id) }
+                    val watched = sorted.filter { watchedPostIds.contains(it.id) }
+                    (unwatched + watched).toMutableList()
+                }
             }
         if (groupedQueues.isEmpty()) return posts
 
@@ -294,6 +307,7 @@ object FeedStreamHelper {
         preferredGroupIds: Set<Int> = emptySet(),
         isOfflineOrSlow: Boolean = false,
         cachedPostIds: Set<Int> = emptySet(),
+        watchedPostIds: Set<Int> = emptySet(),
         sessionSeed: Long = 0L,
         interval: Int = 4,
         groupSize: Int = 6
@@ -336,7 +350,7 @@ object FeedStreamHelper {
             }.thenByDescending { it.createdAt }
         )
 
-        val unseenSeriesProtected = applySeriesProgressionOrder(unseenRanked, seriesGroupIds)
+        val unseenSeriesProtected = applySeriesProgressionOrder(unseenRanked, seriesGroupIds, watchedPostIds)
 
         // Rotación ligera para contenido ya visto al refrescar
         val seenRanked = seenRaw.sortedWith(
@@ -410,6 +424,7 @@ object FeedStreamHelper {
             followedGroupIds = followedGroupIds,
             posts = posts,
             seenCommentsSnapshot = seenCommentsSnapshot,
+            watchedPostIds = watchedPostIds,
             sessionSeed = sessionSeed
         )
         val memoriesEntry = buildMemoriesEntry(
@@ -484,6 +499,82 @@ object FeedStreamHelper {
         return result
     }
 
+    /**
+     * Formatea y diversifica EXCLUSIVAMENTE un lote recién paginado al hacer scroll hacia abajo,
+     * para anexarlo estrictamente al final del muro sin mover ni reordenar las publicaciones ya visibles arriba.
+     */
+    fun buildAppendedFeedEntries(
+        newPosts: List<Post>,
+        shorts: List<Post>,
+        groups: List<FamilyGroup> = emptyList(),
+        seenCommentsSnapshot: Map<Int, Int> = emptyMap(),
+        preferredAuthorIds: Set<Int> = emptySet(),
+        preferredGroupIds: Set<Int> = emptySet(),
+        isOfflineOrSlow: Boolean = false,
+        cachedPostIds: Set<Int> = emptySet(),
+        watchedPostIds: Set<Int> = emptySet(),
+        previousTailPosts: List<Post> = emptyList(),
+        existingShortsGroupCount: Int = 0,
+        sessionSeed: Long = 0L,
+        interval: Int = 4,
+        groupSize: Int = 6
+    ): List<FeedStreamEntry> {
+        if (newPosts.isEmpty()) return emptyList()
+
+        val referenceTimeMs = newPosts.maxOfOrNull { it.createdAt } ?: System.currentTimeMillis()
+        val seriesGroupIds = groups
+            .filter { it.organizationMode == GroupOrganizationMode.SERIES }
+            .map { it.id }
+            .toSet()
+
+        val rankedNew = newPosts.sortedWith(
+            compareByDescending<Post> {
+                computeRelevanceScore(
+                    post = it,
+                    seenCommentsSnapshot = seenCommentsSnapshot,
+                    preferredAuthorIds = preferredAuthorIds,
+                    preferredGroupIds = preferredGroupIds,
+                    isOfflineOrSlow = isOfflineOrSlow,
+                    cachedPostIds = cachedPostIds,
+                    referenceTimeMs = referenceTimeMs
+                )
+            }.thenByDescending { it.createdAt }
+        )
+
+        val seriesProtected = applySeriesProgressionOrder(rankedNew, seriesGroupIds, watchedPostIds)
+        val diversified = diversifyPosts(
+            posts = seriesProtected,
+            maxConsecutiveAuthor = 1,
+            maxConsecutiveGroup = 1,
+            minGroupCooldown = 2,
+            avoidConsecutiveVideo = true,
+            lookahead = 16,
+            initialHistory = previousTailPosts.takeLast(2)
+        )
+
+        val validShorts = shorts.filter { it.isShort || it.mediaItems.isNotEmpty() }
+        val safeInterval = interval.coerceAtLeast(1)
+        val safeGroupSize = groupSize.coerceAtLeast(1)
+        var groupCounter = existingShortsGroupCount
+        var shortsOffset = if (validShorts.isNotEmpty()) {
+            (((abs(sessionSeed) + (existingShortsGroupCount * safeGroupSize)) % validShorts.size.toLong()).toInt())
+        } else 0
+
+        val result = ArrayList<FeedStreamEntry>(diversified.size + 3)
+        diversified.forEachIndexed { idx, post ->
+            result.add(FeedStreamEntry.PostEntry(post))
+            val pos = idx + 1
+            if (validShorts.isNotEmpty() && pos % safeInterval == 0 && idx < diversified.lastIndex) {
+                val slice = sliceShortsBatch(validShorts, shortsOffset, safeGroupSize)
+                if (slice.isNotEmpty()) {
+                    result.add(FeedStreamEntry.ShortsGroupEntry(groupIndex = groupCounter++, shorts = slice))
+                    shortsOffset += slice.size
+                }
+            }
+        }
+        return result
+    }
+
     private fun rotateSeenWithSessionSeed(seenPosts: List<Post>, sessionSeed: Long): List<Post> {
         if (seenPosts.size <= 3 || sessionSeed == 0L) return seenPosts
         val rng = Random(sessionSeed)
@@ -518,6 +609,7 @@ object FeedStreamHelper {
         followedGroupIds: Set<Int>,
         posts: List<Post>,
         seenCommentsSnapshot: Map<Int, Int>,
+        watchedPostIds: Set<Int>,
         sessionSeed: Long
     ): FeedStreamEntry.ContinueSeriesEntry? {
         val seriesGroups = groups.filter { g ->
@@ -527,14 +619,16 @@ object FeedStreamHelper {
         if (seriesGroups.isEmpty()) return null
 
         val withPosts = seriesGroups.mapNotNull { group ->
-            val episodes = posts.filter { it.groupId == group.id }.sortedBy { it.createdAt }
+            val episodes = posts.filter { it.groupId == group.id }.sortedWith(SeriesEpisodeHelper.seriesComparator())
             if (episodes.isEmpty()) null else group to episodes
         }
         if (withPosts.isEmpty()) return null
 
         val chosenIdx = (abs(sessionSeed) % withPosts.size.toLong()).toInt()
         val (group, episodes) = withPosts[chosenIdx]
-        val nextEpisode = episodes.firstOrNull { !seenCommentsSnapshot.containsKey(it.id) } ?: episodes.first()
+        val nextEpisode = episodes.firstOrNull { !watchedPostIds.contains(it.id) }
+            ?: episodes.firstOrNull { !seenCommentsSnapshot.containsKey(it.id) }
+            ?: episodes.first()
         return FeedStreamEntry.ContinueSeriesEntry(
             group = group,
             nextPost = nextEpisode,

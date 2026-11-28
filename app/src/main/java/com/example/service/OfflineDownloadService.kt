@@ -86,6 +86,9 @@ class OfflineDownloadService : Service() {
                         val downloadedFile = OfflineMediaManager.downloadAndCacheWithProgress(
                             context = applicationContext,
                             url = url,
+                            isCancelled = {
+                                OfflineDownloadQueueManager.downloadStates.value[item.postId] == null
+                            },
                             onBytesProgress = { bytesRead, totalBytes ->
                                 val fileFrac = if (totalBytes > 0L) {
                                     (bytesRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
@@ -116,6 +119,11 @@ class OfflineDownloadService : Service() {
                                 }
                             }
                         )
+
+                        if (OfflineDownloadQueueManager.downloadStates.value[item.postId] == null) {
+                            allSucceeded = false
+                            break
+                        }
 
                         if (downloadedFile == null) {
                             allSucceeded = false

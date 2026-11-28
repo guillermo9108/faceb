@@ -7,6 +7,7 @@ import com.example.data.local.GroupEntity
 import com.example.data.local.PostEntity
 import com.example.data.local.toEntity
 import com.example.data.remote.NasApiClient
+import com.example.model.AppThemeMode
 import com.example.model.Comment
 import com.example.model.DatabaseDiagnosticReport
 import com.example.model.ErrorCategory
@@ -18,12 +19,20 @@ import com.example.model.GroupOrganizationMode
 import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.NasConfig
+import com.example.model.NasScanResult
+import com.example.model.NasSyncGroupResult
 import com.example.model.NotificationType
+import com.example.model.OfflineStorageStats
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
 import com.example.model.UploadStage
 import com.example.model.VideoUploadProgress
+import com.example.model.VideoWatchProgress
+import com.example.util.FamilyActivityNotifier
+import com.example.util.SearchHelper
+import com.example.util.SeriesEpisodeHelper
+import com.example.util.WatchProgressManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -196,6 +205,9 @@ class FamilyRepository(
     private val _isLoadingMoreFeed = MutableStateFlow(false)
     val isLoadingMoreFeed: StateFlow<Boolean> = _isLoadingMoreFeed.asStateFlow()
 
+    private val _feedGeneration = MutableStateFlow(0)
+    val feedGeneration: StateFlow<Int> = _feedGeneration.asStateFlow()
+
     private var loadedRemoteOffset = 0
 
     // Seguimientos del usuario (otros miembros y grupos familiares)
@@ -228,6 +240,121 @@ class FamilyRepository(
 
     val downloadStates: StateFlow<Map<Int, com.example.util.QueuedPostDownload>> =
         com.example.util.OfflineDownloadQueueManager.downloadStates
+
+    // Progreso de reproducción y episodios vistos
+    private val watchProgressManager = WatchProgressManager(context)
+    val watchProgressMap: StateFlow<Map<Int, VideoWatchProgress>> = watchProgressManager.progressMap
+
+    fun saveVideoProgress(
+        postId: Int,
+        chunkIndex: Int,
+        localPositionMs: Long,
+        globalPositionMs: Long,
+        totalDurationMs: Long,
+        markEnded: Boolean = false
+    ) {
+        watchProgressManager.updateProgress(
+            postId = postId,
+            chunkIndex = chunkIndex,
+            localPositionMs = localPositionMs,
+            globalPositionMs = globalPositionMs,
+            totalDurationMs = totalDurationMs,
+            markEnded = markEnded
+        )
+    }
+
+    fun setVideoWatched(postId: Int, watched: Boolean) {
+        watchProgressManager.setWatched(postId, watched)
+    }
+
+    // Preferencias locales: Tema, Bloqueo PIN e Historial de búsqueda
+    private val appSettingsPrefs = context.getSharedPreferences("family_app_settings", Context.MODE_PRIVATE)
+
+    private val _themeMode = MutableStateFlow(
+        AppThemeMode.fromValue(appSettingsPrefs.getString("theme_mode", AppThemeMode.SYSTEM.value))
+    )
+    val themeMode: StateFlow<AppThemeMode> = _themeMode.asStateFlow()
+
+    fun setThemeMode(mode: AppThemeMode) {
+        _themeMode.value = mode
+        appSettingsPrefs.edit().putString("theme_mode", mode.value).apply()
+    }
+
+    private val _isAdminPinLockEnabled = MutableStateFlow(
+        appSettingsPrefs.getBoolean("admin_pin_lock_enabled", false)
+    )
+    val isAdminPinLockEnabled: StateFlow<Boolean> = _isAdminPinLockEnabled.asStateFlow()
+
+    fun setAdminPinLockEnabled(enabled: Boolean) {
+        _isAdminPinLockEnabled.value = enabled
+        appSettingsPrefs.edit().putBoolean("admin_pin_lock_enabled", enabled).apply()
+    }
+
+    fun hasCustomSecurityPin(): Boolean {
+        return !appSettingsPrefs.getString("security_pin_code", "").isNullOrBlank()
+    }
+
+    fun updateSecurityPin(newPin: String) {
+        val clean = newPin.trim()
+        if (clean.isNotEmpty()) {
+            appSettingsPrefs.edit().putString("security_pin_code", clean).apply()
+        }
+    }
+
+    fun verifySecurityPin(input: String): Boolean {
+        val clean = input.trim()
+        val storedPin = appSettingsPrefs.getString("security_pin_code", "").orEmpty()
+        if (storedPin.isNotEmpty()) {
+            return clean == storedPin
+        }
+        val adminPin = _familyMembers.value.find { it.id == 1 || it.role.contains("admin", ignoreCase = true) }?.pin
+            ?: _currentMember.value.pin
+        return clean == adminPin || clean == "1234" || clean == "admin"
+    }
+
+    private val _searchHistory = MutableStateFlow(loadSearchHistory())
+    val searchHistory: StateFlow<List<String>> = _searchHistory.asStateFlow()
+
+    private fun loadSearchHistory(): List<String> {
+        val raw = appSettingsPrefs.getString("search_history_json", "").orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { idx ->
+                arr.optString(idx).trim().takeIf { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun persistSearchHistory(list: List<String>) {
+        val arr = JSONArray(list.take(20))
+        appSettingsPrefs.edit().putString("search_history_json", arr.toString()).apply()
+    }
+
+    fun addSearchHistory(query: String) {
+        val clean = query.trim()
+        if (clean.length < 2) return
+        _searchHistory.update { current ->
+            val next = (listOf(clean) + current.filterNot { it.equals(clean, ignoreCase = true) }).take(20)
+            persistSearchHistory(next)
+            next
+        }
+    }
+
+    fun removeSearchHistoryItem(query: String) {
+        _searchHistory.update { current ->
+            val next = current.filterNot { it.equals(query, ignoreCase = true) }
+            persistSearchHistory(next)
+            next
+        }
+    }
+
+    fun clearSearchHistory() {
+        _searchHistory.value = emptyList()
+        appSettingsPrefs.edit().remove("search_history_json").apply()
+    }
 
     private fun loadSeenCommentsMap(): LinkedHashMap<Int, Int> {
         val raw = seenPostsPrefs.getString("seen_comments_map", "").orEmpty()
@@ -803,15 +930,30 @@ class FamilyRepository(
         _isLoadingGroupPosts.value = true
         _isLoadingMoreGroupPosts.value = false
 
-        val cachedImmediate = try {
-            database.postDao().getPostsByGroupIdPaged(groupId, 10, 0)
-                .map { it.toDomainPost(findMember(it.authorId)) }
+        val isSeriesGroup = _groups.value.find { it.id == groupId }?.organizationMode == GroupOrganizationMode.SERIES
+
+        val cachedAll = try {
+            if (isSeriesGroup) {
+                database.postDao().getPostsByGroupIdSync(groupId)
+                    .map { it.toDomainPost(findMember(it.authorId)) }
+                    .sortedWith(SeriesEpisodeHelper.seriesComparator())
+            } else {
+                database.postDao().getPostsByGroupIdPaged(groupId, 10, 0)
+                    .map { it.toDomainPost(findMember(it.authorId)) }
+            }
         } catch (_: Exception) { emptyList() }
+        val cachedImmediate = cachedAll.take(10)
+
         if (cachedImmediate.isNotEmpty()) {
             _groupPosts.value = cachedImmediate
-            _hasMoreGroupPosts.value = cachedImmediate.size >= 10
+            _hasMoreGroupPosts.value = if (isSeriesGroup) cachedAll.size > 10 else cachedImmediate.size >= 10
         } else {
-            _groupPosts.value = _posts.value.filter { it.groupId == groupId }.take(10)
+            val memFiltered = _posts.value.filter { it.groupId == groupId }
+            _groupPosts.value = if (isSeriesGroup) {
+                memFiltered.sortedWith(SeriesEpisodeHelper.seriesComparator()).take(10)
+            } else {
+                memFiltered.take(10)
+            }
         }
 
         val config = _nasConfig.value
@@ -822,11 +964,12 @@ class FamilyRepository(
         return result.fold(
             onSuccess = { page ->
                 val savedIds = getSavedOfflinePostIds()
-                val merged = page.posts.map { p ->
+                val mergedRaw = page.posts.map { p ->
                     val isSaved = p.isSavedOffline || savedIds.contains(p.id)
                     val cachedComments = _commentsByPostId[p.id] ?: p.comments
                     p.copy(comments = cachedComments, isSavedOffline = isSaved)
                 }
+                val merged = if (isSeriesGroup) mergedRaw.sortedWith(SeriesEpisodeHelper.seriesComparator()) else mergedRaw
                 if (activeGroupId == groupId) {
                     _groupPosts.value = merged
                     _hasMoreGroupPosts.value = page.hasMore
@@ -873,6 +1016,8 @@ class FamilyRepository(
             offset = groupRemoteOffset
         )
 
+        val isSeriesGroup = _groups.value.find { it.id == groupId }?.organizationMode == GroupOrganizationMode.SERIES
+
         return result.fold(
             onSuccess = { page ->
                 val savedIds = getSavedOfflinePostIds()
@@ -882,7 +1027,10 @@ class FamilyRepository(
                     p.copy(comments = cachedComments, isSavedOffline = isSaved)
                 }
                 if (activeGroupId == groupId) {
-                    _groupPosts.update { current -> (current + mergedPage).distinctBy { it.id } }
+                    _groupPosts.update { current ->
+                        val combined = (current + mergedPage).distinctBy { it.id }
+                        if (isSeriesGroup) combined.sortedWith(SeriesEpisodeHelper.seriesComparator()) else combined
+                    }
                     _hasMoreGroupPosts.value = page.hasMore
                     groupRemoteOffset = page.nextOffset
                 }
@@ -904,15 +1052,26 @@ class FamilyRepository(
             },
             onFailure = { error ->
                 val currentOffset = _groupPosts.value.size
-                val cachedPage = try {
-                    database.postDao().getPostsByGroupIdPaged(groupId, 10, currentOffset)
+                val domainPage = try {
+                    if (isSeriesGroup) {
+                        database.postDao().getPostsByGroupIdSync(groupId)
+                            .map { it.toDomainPost(findMember(it.authorId)) }
+                            .sortedWith(SeriesEpisodeHelper.seriesComparator())
+                            .drop(currentOffset)
+                            .take(10)
+                    } else {
+                        database.postDao().getPostsByGroupIdPaged(groupId, 10, currentOffset)
+                            .map { it.toDomainPost(findMember(it.authorId)) }
+                    }
                 } catch (_: Exception) {
                     emptyList()
                 }
-                if (cachedPage.isNotEmpty() && activeGroupId == groupId) {
-                    val domainPage = cachedPage.map { it.toDomainPost(findMember(it.authorId)) }
-                    _groupPosts.update { current -> (current + domainPage).distinctBy { it.id } }
-                    _hasMoreGroupPosts.value = cachedPage.size >= 10
+                if (domainPage.isNotEmpty() && activeGroupId == groupId) {
+                    _groupPosts.update { current ->
+                        val combined = (current + domainPage).distinctBy { it.id }
+                        if (isSeriesGroup) combined.sortedWith(SeriesEpisodeHelper.seriesComparator()) else combined
+                    }
+                    _hasMoreGroupPosts.value = domainPage.size >= 10
                     _isLoadingMoreGroupPosts.value = false
                     Result.success(domainPage)
                 } else {
@@ -950,18 +1109,32 @@ class FamilyRepository(
                     }
                 } catch (_: Exception) {}
             }
-            return Result.success(merged)
+            // Combinar con coincidencias cacheadas locales usando puntuación inteligente por tokens sin importar orden
+            val localCandidates = try {
+                val allEntities = if (groupId != null) {
+                    database.postDao().getPostsByGroupIdSync(groupId)
+                } else {
+                    database.postDao().getAllPostsSync()
+                }
+                allEntities.map { it.toDomainPost(findMember(it.authorId)) }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            val combined = (merged + localCandidates).distinctBy { it.id }
+            val ranked = SearchHelper.filterAndRankPosts(combined, clean)
+            return Result.success(if (ranked.isNotEmpty()) ranked else merged)
         }
 
-        // Fallback offline en Room sobre toda la tabla local cached_posts
+        // Fallback offline inteligente en Room: tokeniza palabras en cualquier orden y tolera tildes
         return try {
-            val pattern = "%$clean%"
-            val entities = if (groupId != null) {
-                database.postDao().searchPostsInGroup(groupId, pattern)
+            val allEntities = if (groupId != null) {
+                database.postDao().getPostsByGroupIdSync(groupId)
             } else {
-                database.postDao().searchPostsGlobal(pattern)
+                database.postDao().getAllPostsSync()
             }
-            Result.success(entities.map { it.toDomainPost(findMember(it.authorId)) })
+            val domainAll = allEntities.map { it.toDomainPost(findMember(it.authorId)) }
+            val ranked = SearchHelper.filterAndRankPosts(domainAll, clean)
+            Result.success(ranked)
         } catch (_: Exception) {
             remote
         }
@@ -1001,23 +1174,71 @@ class FamilyRepository(
         return result
     }
 
-    suspend fun scanNasFolders(basePath: String): Result<List<ScannedFolder>> {
+    suspend fun scanNasFolders(basePath: String): Result<NasScanResult> {
         val config = _nasConfig.value
         return apiClient.scanNasFolders(config.ip, config.port, config.path, basePath)
     }
 
     suspend fun importNasFolders(
         folderPaths: List<String>,
+        allowUploads: Boolean = true,
+        organizationMode: GroupOrganizationMode = GroupOrganizationMode.NORMAL,
         onProgress: ((processed: Int, total: Int) -> Unit)? = null
     ): Result<Int> {
         val config = _nasConfig.value
         val adminId = _currentMember.value.id
-        val result = apiClient.importNasGroups(config.ip, config.port, config.path, folderPaths, adminId, onProgress)
+        val result = apiClient.importNasGroups(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            folderPaths = folderPaths,
+            adminUserId = adminId,
+            allowUploads = allowUploads,
+            organizationMode = organizationMode,
+            onProgress = onProgress
+        )
         result.onSuccess {
             refreshGroups()
             refreshFeed()
         }
         return result
+    }
+
+    suspend fun syncGroupFromNas(groupId: Int, removeMissing: Boolean = false): Result<NasSyncGroupResult> {
+        val config = _nasConfig.value
+        val res = apiClient.syncNasGroup(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            groupId = groupId,
+            userId = _currentMember.value.id,
+            removeMissing = removeMissing
+        )
+        res.onSuccess {
+            refreshGroups()
+            if (activeGroupId == groupId) {
+                loadGroupPostsInitial(groupId)
+            }
+            refreshFeed()
+        }
+        return res
+    }
+
+    suspend fun getOfflineStorageStats(): OfflineStorageStats = withContext(Dispatchers.IO) {
+        val baseUrl = buildBaseUrl(_nasConfig.value)
+        val protectedUrls = getProtectedOfflineUrls(baseUrl)
+        val savedCount = getSavedOfflinePostIds().size
+        com.example.util.OfflineMediaManager.getDetailedStorageStats(
+            context = context,
+            protectedUrls = protectedUrls,
+            savedOfflinePostsCount = savedCount
+        )
+    }
+
+    suspend fun clearTransientCache(): Int = withContext(Dispatchers.IO) {
+        val baseUrl = buildBaseUrl(_nasConfig.value)
+        val protectedUrls = getProtectedOfflineUrls(baseUrl)
+        com.example.util.OfflineMediaManager.clearNonOfflineCache(context, protectedUrls)
     }
 
     private fun getReadNotificationIds(): Set<String> {
@@ -1129,6 +1350,27 @@ class FamilyRepository(
         val sorted = list.distinctBy { it.id }.sortedByDescending { it.timestamp }
         _notifications.value = sorted
         _unreadNotificationsCount.value = sorted.count { it.isUnread }
+
+        if (sorted.isNotEmpty()) {
+            val seedDone = sessionPrefs.getBoolean("notif_seed_done", false)
+            val knownSet = (sessionPrefs.getStringSet("known_notified_ids", emptySet()) ?: emptySet()).toMutableSet()
+            if (!seedDone) {
+                knownSet.addAll(sorted.map { it.id })
+                sessionPrefs.edit()
+                    .putBoolean("notif_seed_done", true)
+                    .putStringSet("known_notified_ids", knownSet.take(500).toSet())
+                    .apply()
+            } else {
+                val newlyArrived = sorted.filter { it.isUnread && it.id !in knownSet }
+                if (newlyArrived.isNotEmpty()) {
+                    knownSet.addAll(newlyArrived.map { it.id })
+                    sessionPrefs.edit()
+                        .putStringSet("known_notified_ids", knownSet.take(500).toSet())
+                        .apply()
+                    FamilyActivityNotifier.notifyNewItems(context, newlyArrived)
+                }
+            }
+        }
     }
 
     fun updateNasConfig(
@@ -1475,6 +1717,7 @@ class FamilyRepository(
                 loadedRemoteOffset = page.nextOffset
                 _hasMoreFeedPosts.value = page.hasMore
                 _posts.value = mergedPosts
+                _feedGeneration.update { it + 1 }
                 _nasConfig.update { it.copy(isConnected = true, lastError = null) }
                 updateNotifications()
 
@@ -1521,6 +1764,7 @@ class FamilyRepository(
                     if (curated.isNotEmpty()) {
                         _posts.value = curated.take(10)
                         _hasMoreFeedPosts.value = curated.size > 10
+                        _feedGeneration.update { it + 1 }
                     } else if (_posts.value.isNotEmpty()) {
                         _posts.value = com.example.util.FeedStreamHelper.filterFeedByFollows(
                             posts = _posts.value,
@@ -1528,11 +1772,57 @@ class FamilyRepository(
                             followedUserIds = _followedUserIds.value,
                             followedGroupIds = _followedGroupIds.value
                         )
+                        _feedGeneration.update { it + 1 }
                     }
                 } catch (_: Exception) {}
                 Result.failure(error)
             }
         )
+    }
+
+    /**
+     * Sondeo silencioso en segundo plano para detectar publicaciones o comentarios nuevos
+     * y emitir notificaciones locales sin reiniciar la posición del scroll del muro.
+     */
+    suspend fun pollActivityInBackground() {
+        val config = _nasConfig.value
+        val curUserId = _currentMember.value.id
+        apiClient.fetchFeedPage(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            limit = 10,
+            offset = 0,
+            userId = curUserId,
+            onlyFollowed = true
+        ).onSuccess { page ->
+            val savedIds = getSavedOfflinePostIds()
+            val incoming = page.posts.map { post ->
+                if (post.comments.isNotEmpty()) {
+                    _commentsByPostId[post.id] = post.comments
+                }
+                post.copy(isSavedOffline = post.isSavedOffline || savedIds.contains(post.id))
+            }
+            val incomingMap = incoming.associateBy { it.id }
+            _posts.update { current ->
+                val updatedExisting = current.map { existing -> incomingMap[existing.id] ?: existing }
+                val brandNew = incoming.filter { inc -> current.none { it.id == inc.id } }
+                if (current.isEmpty()) incoming else (brandNew + updatedExisting).distinctBy { it.id }
+            }
+            _nasConfig.update { it.copy(isConnected = true, lastError = null) }
+            updateNotifications()
+        }
+    }
+
+    suspend fun findPostById(postId: Int): Post? {
+        _posts.value.find { it.id == postId }?.let { return it }
+        _groupPosts.value.find { it.id == postId }?.let { return it }
+        _shorts.value.find { it.id == postId }?.let { return it }
+        return try {
+            database.postDao().getPostById(postId)?.toDomainPost(findMember(0))
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -1547,15 +1837,20 @@ class FamilyRepository(
         val baseUrl = buildBaseUrl(config)
         val curUserId = _currentMember.value.id
 
-        val result = apiClient.fetchFeedPage(
-            ip = config.ip,
-            port = config.port,
-            path = config.path,
-            limit = 10,
-            offset = loadedRemoteOffset,
-            userId = curUserId,
-            onlyFollowed = true
-        )
+        // Si ya sabemos que no hay conexión LAN y estamos leyendo Room local, avanzar de inmediato sin esperar timeout HTTP
+        val result = if (!config.isConnected && loadedRemoteOffset == 0 && _posts.value.isNotEmpty()) {
+            Result.failure(Exception("Modo sin conexión local"))
+        } else {
+            apiClient.fetchFeedPage(
+                ip = config.ip,
+                port = config.port,
+                path = config.path,
+                limit = 10,
+                offset = loadedRemoteOffset,
+                userId = curUserId,
+                onlyFollowed = true
+            )
+        }
 
         return result.fold(
             onSuccess = { page ->
@@ -1790,6 +2085,7 @@ class FamilyRepository(
                     _shorts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
                 } else {
                     _posts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                    _feedGeneration.update { it + 1 }
                     if (groupId != null && activeGroupId == groupId) {
                         _groupPosts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
                     }
@@ -2010,6 +2306,7 @@ class FamilyRepository(
                     _shorts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
                 } else {
                     _posts.update { listOf(newPost) + it.filter { p -> p.id != postId } }
+                    _feedGeneration.update { it + 1 }
                 }
 
                 onProgress("¡Completado!", 1.0f)
@@ -2207,6 +2504,51 @@ class FamilyRepository(
             updateNotifications()
         }
         return result
+    }
+
+    suspend fun editPost(
+        postId: Int,
+        contentText: String,
+        feeling: String?,
+        location: String?,
+        groupId: Int?
+    ): Result<Post> {
+        val config = _nasConfig.value
+        val curUserId = _currentMember.value.id
+        val res = apiClient.updatePost(
+            ip = config.ip,
+            port = config.port,
+            path = config.path,
+            postId = postId,
+            userId = curUserId,
+            contentText = contentText,
+            feeling = feeling,
+            location = location,
+            groupId = groupId
+        )
+        res.onSuccess { updatedRemote ->
+            val savedIds = getSavedOfflinePostIds()
+            val updated = updatedRemote.copy(
+                comments = _commentsByPostId[postId] ?: updatedRemote.comments,
+                isSavedOffline = updatedRemote.isSavedOffline || savedIds.contains(postId)
+            )
+            _posts.update { list -> list.map { if (it.id == postId) updated else it } }
+            _groupPosts.update { list ->
+                if (activeGroupId != null && updated.groupId != activeGroupId) {
+                    list.filterNot { it.id == postId }
+                } else {
+                    list.map { if (it.id == postId) updated else it }
+                }
+            }
+            _shorts.update { list -> list.map { if (it.id == postId) updated else it } }
+            scope.launch {
+                try {
+                    database.postDao().insertPosts(listOf(updated.toEntity()))
+                    refreshGroups()
+                } catch (_: Exception) {}
+            }
+        }
+        return res
     }
 
     /**

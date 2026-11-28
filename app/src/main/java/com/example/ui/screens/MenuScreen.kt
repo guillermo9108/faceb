@@ -33,6 +33,8 @@ import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Folder
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.OndemandVideo
@@ -49,15 +52,20 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,9 +84,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.model.AppThemeMode
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.NasConfig
+import com.example.model.OfflineStorageStats
 import com.example.ui.theme.FacebookBadgeRed
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FacebookFeelingYellow
@@ -111,7 +121,14 @@ fun MenuScreen(
     onRepairDatabase: () -> Unit = {},
     errorCount: Int = 0,
     onOpenProfileSettings: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    offlineStorageStats: OfflineStorageStats = OfflineStorageStats(),
+    onOpenDownloadManager: () -> Unit = {},
+    themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    onThemeModeChange: (AppThemeMode) -> Unit = {},
+    isAdminPinLockEnabled: Boolean = false,
+    onToggleAdminPinLock: (Boolean) -> Unit = {},
+    onConfigureAdminPin: () -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     var showMoreShortcuts by remember { mutableStateOf(false) }
@@ -431,24 +448,39 @@ fun MenuScreen(
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically()
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    MenuGridTile(
-                        icon = Icons.Default.FolderOpen,
-                        iconTint = FacebookBlue,
-                        title = "Escanear NAS",
-                        onClick = onOpenScanFolders,
-                        modifier = Modifier.weight(1f).testTag("menu_tile_scan_nas")
-                    )
-                    MenuGridTile(
-                        icon = Icons.Default.Storage,
-                        iconTint = LanOnlineGreen,
-                        title = "Diagnóstico BD",
-                        onClick = onRunDiagnostics,
-                        modifier = Modifier.weight(1f).testTag("menu_tile_db_diag")
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        MenuGridTile(
+                            icon = Icons.Default.FolderOpen,
+                            iconTint = FacebookBlue,
+                            title = "Escanear NAS",
+                            onClick = onOpenScanFolders,
+                            modifier = Modifier.weight(1f).testTag("menu_tile_scan_nas")
+                        )
+                        MenuGridTile(
+                            icon = Icons.Default.Storage,
+                            iconTint = LanOnlineGreen,
+                            title = "Diagnóstico BD",
+                            onClick = onRunDiagnostics,
+                            modifier = Modifier.weight(1f).testTag("menu_tile_db_diag")
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        MenuGridTile(
+                            icon = Icons.Default.CloudDownload,
+                            iconTint = FacebookBlue,
+                            title = "Descargas y caché (${offlineStorageStats.formattedTotalSize})",
+                            onClick = onOpenDownloadManager,
+                            modifier = Modifier.weight(1f).testTag("menu_tile_download_manager")
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
             }
 
@@ -544,6 +576,116 @@ fun MenuScreen(
                     .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Selector de Tema (Claro / Oscuro / Automático)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.DarkMode,
+                                contentDescription = null,
+                                tint = FacebookBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Tema visual de la aplicación",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            AppThemeMode.values().forEach { mode ->
+                                val label = when (mode) {
+                                    AppThemeMode.SYSTEM -> "Auto"
+                                    AppThemeMode.LIGHT -> "Claro"
+                                    AppThemeMode.DARK -> "Oscuro"
+                                }
+                                FilterChip(
+                                    selected = themeMode == mode,
+                                    onClick = { onThemeModeChange(mode) },
+                                    label = { Text(label, fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = FacebookBlue,
+                                        selectedLabelColor = Color.White
+                                    ),
+                                    modifier = Modifier.testTag("theme_chip_${mode.value}")
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Bloqueo PIN de administración
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = FacebookBlue,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Bloqueo PIN de administración",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Protege ajustes NAS, diagnóstico y escaneo",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isAdminPinLockEnabled,
+                                onCheckedChange = onToggleAdminPinLock,
+                                modifier = Modifier.testTag("admin_pin_lock_switch")
+                            )
+                        }
+                        if (isAdminPinLockEnabled) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(
+                                    onClick = onConfigureAdminPin,
+                                    modifier = Modifier.testTag("configure_admin_pin_button")
+                                ) {
+                                    Icon(Icons.Default.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp), tint = FacebookBlue)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Configurar / Cambiar PIN", color = FacebookBlue, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MenuSubItemCard(
+                    icon = Icons.Default.CloudDownload,
+                    iconTint = FacebookBlue,
+                    title = "Gestor de descargas y caché",
+                    subtitle = "Offline: ${offlineStorageStats.formattedProtectedSize} · Caché: ${offlineStorageStats.formattedCacheSize}",
+                    onClick = onOpenDownloadManager
+                )
                 MenuSubItemCard(
                     icon = Icons.Default.Dns,
                     iconTint = FacebookBlue,

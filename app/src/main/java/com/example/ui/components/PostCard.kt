@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ThumbUp
@@ -81,6 +83,7 @@ import coil.size.Precision
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.VideoWatchProgress
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FacebookCardLight
 import com.example.ui.theme.LanOfflineAmber
@@ -90,6 +93,7 @@ import com.example.ui.theme.ReactionLikeBlue
 import com.example.ui.theme.ReactionLoveRed
 import com.example.util.DownloadItemStatus
 import com.example.util.QueuedPostDownload
+import com.example.util.SearchHelper
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -106,6 +110,10 @@ fun PostCard(
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     downloadState: QueuedPostDownload? = null,
     headerHighlightBadge: String? = null,
+    watchProgress: VideoWatchProgress? = null,
+    highlightQuery: String = "",
+    onEditPost: (() -> Unit)? = null,
+    onToggleWatched: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -343,6 +351,37 @@ fun PostCard(
                                 onTogglePin()
                             }
                         )
+                        if (onEditPost != null) {
+                            DropdownMenuItem(
+                                text = { Text("Editar publicación") },
+                                leadingIcon = {
+                                    Icon(Icons.Outlined.Edit, contentDescription = null)
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onEditPost()
+                                }
+                            )
+                        }
+                        if (onToggleWatched != null && post.mediaItems.any { it.type == MediaType.VIDEO }) {
+                            val isWatched = watchProgress?.isWatched == true
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (isWatched) "Marcar como no visto" else "Marcar como visto")
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = if (isWatched) LanOnlineGreen else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onToggleWatched()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Eliminar publicación") },
                             leadingIcon = {
@@ -357,19 +396,43 @@ fun PostCard(
                 }
             }
 
-            // 2. Post Content Text
+            // 2. Post Content Text (con resaltado de búsqueda cuando hay query activa)
             if (post.contentText.isNotBlank()) {
-                Text(
-                    text = post.contentText,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = 15.5.sp,
-                        lineHeight = 22.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                )
+                val displayAnnotatedText = remember(post.contentText, highlightQuery) {
+                    if (highlightQuery.isNotBlank()) {
+                        SearchHelper.buildHighlightedText(
+                            text = post.contentText,
+                            query = highlightQuery,
+                            highlightColor = FacebookBlue,
+                            highlightBackground = FacebookBlue.copy(alpha = 0.16f)
+                        )
+                    } else null
+                }
+                if (displayAnnotatedText != null) {
+                    Text(
+                        text = displayAnnotatedText,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = 15.5.sp,
+                            lineHeight = 22.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                } else {
+                    Text(
+                        text = post.contentText,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = 15.5.sp,
+                            lineHeight = 22.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
             }
 
             // 3. Full-bleed Media Container (Images or Videos) - Facebook Style Dynamic Sizing & Mosaic
@@ -389,6 +452,13 @@ fun PostCard(
                     }
                     val isChunked = media.isChunked && media.chunks.isNotEmpty()
 
+                    val effectiveStartChunk = if (lastChunkIndex == 0 && lastPositionMs == 0L && watchProgress != null && !watchProgress.isWatched) {
+                        watchProgress.chunkIndex
+                    } else lastChunkIndex
+                    val effectiveStartPos = if (lastChunkIndex == 0 && lastPositionMs == 0L && watchProgress != null && !watchProgress.isWatched) {
+                        watchProgress.positionMs
+                    } else lastPositionMs
+
                     if (isVideo && isPlayingInline) {
                         Box(
                             modifier = Modifier
@@ -407,8 +477,8 @@ fun PostCard(
                                 autoPlay = true,
                                 isLooping = true,
                                 showUnifiedBar = true,
-                                initialChunkIndex = lastChunkIndex,
-                                initialPositionMs = lastPositionMs,
+                                initialChunkIndex = effectiveStartChunk,
+                                initialPositionMs = effectiveStartPos,
                                 onPositionChanged = { idx, pos ->
                                     lastChunkIndex = idx
                                     lastPositionMs = pos
@@ -567,8 +637,8 @@ fun PostCard(
                                             media.chunks,
                                             media.chunkDurationsMs,
                                             media.totalDurationMs,
-                                            lastChunkIndex,
-                                            lastPositionMs
+                                            effectiveStartChunk,
+                                            effectiveStartPos
                                         )
                                     },
                                     modifier = Modifier
@@ -583,6 +653,48 @@ fun PostCard(
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
+                            }
+
+                            // Insignia "✓ Visto" o barra de progreso en vista previa
+                            if (watchProgress?.isWatched == true) {
+                                Surface(
+                                    color = LanOnlineGreen.copy(alpha = 0.92f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(10.dp)
+                                        .testTag("video_watched_badge_${post.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Vídeo visto",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Visto",
+                                            color = Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            } else if (watchProgress != null && watchProgress.progressFraction > 0.02f) {
+                                LinearProgressIndicator(
+                                    progress = { watchProgress.progressFraction },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .align(Alignment.BottomCenter)
+                                        .testTag("video_progress_bar_${post.id}"),
+                                    color = FacebookBlue,
+                                    trackColor = Color.White.copy(alpha = 0.35f)
+                                )
                             }
                         }
                     } else {

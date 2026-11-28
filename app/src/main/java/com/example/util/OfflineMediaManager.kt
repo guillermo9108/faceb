@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.example.data.remote.NasApiClient
 import com.example.model.MediaType
+import com.example.model.OfflineStorageStats
 import com.example.model.Post
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -354,9 +355,10 @@ object OfflineMediaManager {
         context: Context,
         url: String,
         maxBytesLimit: Long = 0L,
+        isCancelled: () -> Boolean = { false },
         onBytesProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ): File? = withContext(Dispatchers.IO) {
-        if (url.isBlank() || url.startsWith("file://") || url.startsWith("content://")) {
+        if (url.isBlank() || url.startsWith("file://") || url.startsWith("content://") || isCancelled()) {
             return@withContext null
         }
 
@@ -391,6 +393,7 @@ object OfflineMediaManager {
                 body.close()
                 return@withContext null
             }
+            var abortedByCancel = false
             body.byteStream().use { input ->
                 FileOutputStream(partFile).use { output ->
                     val buffer = ByteArray(16 * 1024)
@@ -398,6 +401,10 @@ object OfflineMediaManager {
                     var lastReported = 0L
                     onBytesProgress(0L, contentLength)
                     while (true) {
+                        if (isCancelled()) {
+                            abortedByCancel = true
+                            break
+                        }
                         val read = input.read(buffer)
                         if (read == -1) break
                         output.write(buffer, 0, read)
@@ -408,8 +415,14 @@ object OfflineMediaManager {
                         }
                     }
                     output.flush()
-                    onBytesProgress(totalRead, if (contentLength > 0) contentLength else totalRead)
+                    if (!abortedByCancel) {
+                        onBytesProgress(totalRead, if (contentLength > 0) contentLength else totalRead)
+                    }
                 }
+            }
+            if (abortedByCancel) {
+                if (partFile.exists()) partFile.delete()
+                return@withContext null
             }
 
             if (partFile.exists() && partFile.length() > 0) {
@@ -459,28 +472,30 @@ object OfflineMediaManager {
     ) {
         val appContext = context.applicationContext
         scope.launch {
+            // Dar prioridad absoluta al renderizado en curso y a la siguiente petición de paginación
+            kotlinx.coroutines.delay(900L)
+
             val urls = mutableListOf<String>()
             pagePosts.forEach { post ->
-                post.mediaItems.take(4).forEach { media ->
-                    val isVideo = media.type == MediaType.VIDEO
+                val media = post.mediaItems.firstOrNull() ?: return@forEach
+                val isVideo = media.type == MediaType.VIDEO
 
-                    // 1. Miniatura ligera de imagen o póster explícito de vídeo (nunca archivos .mp4)
-                    val explicitThumb = resolveFullUrl(baseUrl, media.thumbnailUrl)
-                    if (explicitThumb != null && !isVideoExtension(explicitThumb) && explicitThumb != resolveFullUrl(baseUrl, media.url)) {
-                        urls.add(toThumbnailProxyUrl(explicitThumb))
-                    } else if (!isVideo) {
-                        resolveFullUrl(baseUrl, media.url)?.let { fullImg ->
-                            if (!isCached(appContext, fullImg)) {
-                                urls.add(toThumbnailProxyUrl(fullImg))
-                            }
+                // 1. Solo una miniatura ligera por publicación para no saturar PHP-FPM del NAS
+                val explicitThumb = resolveFullUrl(baseUrl, media.thumbnailUrl)
+                if (explicitThumb != null && !isVideoExtension(explicitThumb) && explicitThumb != resolveFullUrl(baseUrl, media.url)) {
+                    urls.add(toThumbnailProxyUrl(explicitThumb))
+                } else if (!isVideo) {
+                    resolveFullUrl(baseUrl, media.url)?.let { fullImg ->
+                        if (!isCached(appContext, fullImg)) {
+                            urls.add(toThumbnailProxyUrl(fullImg))
                         }
                     }
                 }
             }
 
-            urls.distinct().take(16).forEach { url ->
+            urls.distinct().take(6).forEach { url ->
                 if (!isCached(appContext, url)) {
-                    downloadAndCache(appContext, url, maxBytesLimit = 1024L * 1024L)
+                    downloadAndCache(appContext, url, maxBytesLimit = 512L * 1024L)
                 }
             }
 
@@ -590,6 +605,71 @@ object OfflineMediaManager {
             totalBytes = totalBytes,
             formattedSize = formatted
         )
+    }
+
+    fun formatBytes(bytes: Long): String {
+        if (bytes <= 0L) return "0 KB"
+        val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+        if (gb >= 1.0) return "%.2f GB".format(gb)
+        val mb = bytes / (1024.0 * 1024.0)
+        if (mb >= 1.0) return "%.1f MB".format(mb)
+        return "%.0f KB".format((bytes / 1024.0).coerceAtLeast(1.0))
+    }
+
+    /**
+     * Calcula el desglose del espacio usado entre descargas guardadas offline (protegidas)
+     * y caché temporal de miniaturas/navegación.
+     */
+    fun getDetailedStorageStats(
+        context: Context,
+        protectedUrls: Set<String> = emptySet(),
+        savedOfflinePostsCount: Int = 0
+    ): OfflineStorageStats {
+        val dir = getOfflineDir(context)
+        val protectedHashes = protectedUrls.map { hashUrl(it) }.toSet()
+        val mainFiles = dir.listFiles { f -> f.isFile && !f.name.equals(".nomedia") && !f.name.endsWith(".part") } ?: emptyArray()
+        val thumbFiles = getThumbsDir(context).listFiles { f -> f.isFile && !f.name.endsWith(".part") } ?: emptyArray()
+        val allFiles = mainFiles + thumbFiles
+
+        var protectedBytes = 0L
+        var cacheBytes = 0L
+        allFiles.forEach { file ->
+            val len = file.length()
+            val isProtected = protectedHashes.any { h -> file.name.contains(h) }
+            if (isProtected) protectedBytes += len else cacheBytes += len
+        }
+        val totalBytes = protectedBytes + cacheBytes
+        return OfflineStorageStats(
+            totalFilesCount = allFiles.size,
+            savedOfflinePostsCount = savedOfflinePostsCount,
+            totalBytes = totalBytes,
+            protectedBytes = protectedBytes,
+            cacheBytes = cacheBytes,
+            formattedTotalSize = formatBytes(totalBytes),
+            formattedProtectedSize = formatBytes(protectedBytes),
+            formattedCacheSize = formatBytes(cacheBytes)
+        )
+    }
+
+    /**
+     * Elimina únicamente caché temporal (miniaturas y pre-carga) conservando intactas
+     * las publicaciones guardadas explícitamente como Offline.
+     */
+    fun clearNonOfflineCache(context: Context, protectedUrls: Set<String> = emptySet()): Int {
+        var deletedCount = 0
+        try {
+            val dir = getOfflineDir(context)
+            val protectedHashes = protectedUrls.map { hashUrl(it) }.toSet()
+            val mainFiles = dir.listFiles { f -> f.isFile && !f.name.equals(".nomedia") } ?: emptyArray()
+            val thumbFiles = getThumbsDir(context).listFiles { f -> f.isFile } ?: emptyArray()
+            (mainFiles + thumbFiles).forEach { file ->
+                val isProtected = protectedHashes.any { h -> file.name.contains(h) }
+                if (!isProtected && file.delete()) {
+                    deletedCount++
+                }
+            }
+        } catch (_: Exception) {}
+        return deletedCount
     }
 
     /**

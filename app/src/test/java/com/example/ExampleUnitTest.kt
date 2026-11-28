@@ -428,6 +428,58 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun testFeedStreamHelper_buildAppendedFeedEntries_neverJumpsAboveAnchoredPosts() {
+        val mama = FamilyMember(id = 2, name = "Mamá", role = "Familiar")
+        val papa = FamilyMember(id = 3, name = "Papá", role = "Familiar")
+
+        val page0Posts = listOf(
+            Post(id = 1, author = mama, contentText = "Inicial 1 (ya visto)", createdAt = 2000L),
+            Post(id = 2, author = papa, contentText = "Inicial 2 (ya visto)", createdAt = 1900L)
+        )
+        // Aunque página 1 venga sin visto y con muchas reacciones, nunca debe saltar arriba de página 0
+        val page1NewPosts = listOf(
+            Post(
+                id = 11,
+                author = mama,
+                contentText = "Paginado 11",
+                createdAt = 1000L,
+                reactions = mapOf(ReactionType.LOVE to 25)
+            ),
+            Post(id = 12, author = papa, contentText = "Paginado 12", createdAt = 900L)
+        )
+        val shorts = listOf(Post(id = 901, author = mama, isShort = true, contentText = "Short 1"))
+        val seenSnapshot = mapOf(1 to 0, 2 to 0)
+
+        val initialAnchored = FeedStreamHelper.buildSmartFeedEntries(
+            posts = page0Posts,
+            shorts = shorts,
+            seenCommentsSnapshot = seenSnapshot,
+            interval = 2,
+            groupSize = 4
+        )
+        val existingShortsCount = initialAnchored.count { it is FeedStreamEntry.ShortsGroupEntry }
+        val appendedTail = FeedStreamHelper.buildAppendedFeedEntries(
+            newPosts = page1NewPosts,
+            shorts = shorts,
+            seenCommentsSnapshot = seenSnapshot,
+            previousTailPosts = page0Posts,
+            existingShortsGroupCount = existingShortsCount,
+            interval = 2,
+            groupSize = 4
+        )
+
+        val fullTimeline = initialAnchored + appendedTail
+        val postIdsInOrder = fullTimeline.filterIsInstance<FeedStreamEntry.PostEntry>().map { it.post.id }
+
+        // Las publicaciones de página 0 conservan sus posiciones iniciales antes que página 1
+        assertEquals(listOf(1, 2, 11, 12), postIdsInOrder)
+
+        // Las claves de bloques Shorts no colisionan entre lotes
+        val allKeys = fullTimeline.map { it.stableKey }
+        assertEquals(allKeys.distinct().size, allKeys.size)
+    }
+
+    @Test
     fun testOfflineDownloadQueueManager_fifoSequentialPromotion() {
         com.example.util.OfflineDownloadQueueManager.clearPendingQueue()
         val author = FamilyMember(id = 1, name = "Papá", role = "Admin")
@@ -467,4 +519,168 @@ class ExampleUnitTest {
 
         com.example.util.OfflineDownloadQueueManager.clearPendingQueue()
     }
+
+    @Test
+    fun testSeriesEpisodeHelper_heterogeneousChaptersAndSeasonsOrder() {
+        val author = FamilyMember(id = 1, name = "Admin", role = "Admin")
+        val rawTitles = listOf(
+            "7",
+            "0006",
+            "Cap 01 (Temporada 2)",
+            "t1x05",
+            "3",
+            "Cap 12 Parte 2",
+            "cap 01",
+            "004",
+            "Cap 08 (Temporada 1)",
+            "Cap 12 Parte 1",
+            "02",
+            "Novela 2024 - 10 [1080p x264]",
+            "t1x09 [720p]"
+        )
+
+        val posts = rawTitles.mapIndexed { idx, title ->
+            Post(
+                id = 100 + idx,
+                author = author,
+                contentText = title,
+                createdAt = 10_000_000L - (idx * 1000L), // Desordenado cronológicamente a propósito
+                groupId = 9
+            )
+        }
+
+        val sorted = posts.sortedWith(com.example.util.SeriesEpisodeHelper.seriesComparator())
+        val sortedTitles = sorted.map { it.contentText }
+
+        assertEquals(
+            listOf(
+                "cap 01",
+                "02",
+                "3",
+                "004",
+                "t1x05",
+                "0006",
+                "7",
+                "Cap 08 (Temporada 1)",
+                "t1x09 [720p]",
+                "Novela 2024 - 10 [1080p x264]",
+                "Cap 12 Parte 1",
+                "Cap 12 Parte 2",
+                "Cap 01 (Temporada 2)"
+            ),
+            sortedTitles
+        )
+
+        assertEquals("Cap. 1", com.example.util.SeriesEpisodeHelper.formatEpisodeBadge(sorted[0], 0))
+        assertEquals("Temp. 1 · Ep. 5", com.example.util.SeriesEpisodeHelper.formatEpisodeBadge(sorted[4], 4))
+        assertEquals("Cap. 12 · Pt. 2", com.example.util.SeriesEpisodeHelper.formatEpisodeBadge(sorted[11], 11))
+        assertEquals("Temp. 2 · Ep. 1", com.example.util.SeriesEpisodeHelper.formatEpisodeBadge(sorted[12], 12))
+    }
+
+    @Test
+    fun testSearchHelper_tokenizedOutOfOrderAccentsAndNumericEquivalence() {
+        val mama = FamilyMember(id = 2, name = "Mamá", role = "Mamá")
+        val papa = FamilyMember(id = 3, name = "Papá", role = "Papá")
+
+        val pBeach = Post(
+            id = 1,
+            author = mama,
+            contentText = "Vacaciones en Familia por la Playa",
+            createdAt = 3000L
+        )
+        val pEpisode = Post(
+            id = 2,
+            author = papa,
+            contentText = "Novela Familiar - cap 01 [1080p]",
+            groupId = 7,
+            groupName = "Novelas",
+            createdAt = 2000L
+        )
+        val pOther = Post(
+            id = 3,
+            author = papa,
+            contentText = "Receta de cocina rápida",
+            createdAt = 1000L
+        )
+
+        // Búsqueda desordenada y sin tildes
+        val outOfOrder = com.example.util.SearchHelper.filterAndRankPosts(
+            posts = listOf(pOther, pEpisode, pBeach),
+            query = "playa familia"
+        )
+        assertEquals(listOf(1), outOfOrder.map { it.id })
+
+        // Equivalencia numérica ("cap 1" debe encontrar "cap 01") + tildes ("mamá" -> "mama")
+        val numericMatch = com.example.util.SearchHelper.filterAndRankPosts(
+            posts = listOf(pOther, pEpisode, pBeach),
+            query = "cap 1"
+        )
+        assertEquals(listOf(2), numericMatch.map { it.id })
+
+        val accentMemberMatch = com.example.util.SearchHelper.filterAndRankPosts(
+            posts = listOf(pOther, pEpisode, pBeach),
+            query = "playa mama"
+        )
+        assertEquals(listOf(1), accentMemberMatch.map { it.id })
+
+        // Resaltado de términos tolerante a tildes y mayúsculas
+        val highlighted = com.example.util.SearchHelper.buildHighlightedText(
+            text = "Capítulo 1 con Mamá en la playa",
+            query = "capitulo mama",
+            highlightColor = androidx.compose.ui.graphics.Color.Blue,
+            highlightBackground = androidx.compose.ui.graphics.Color.Yellow
+        )
+        assertEquals(2, highlighted.spanStyles.size)
+    }
+
+    @Test
+    fun testFeedStreamHelper_continueSeriesSkipsWatchedEpisodes() {
+        val self = FamilyMember(id = 1, name = "Yo", role = "Admin")
+        val seriesGroup = FamilyGroup(
+            id = 88,
+            name = "Telenovela",
+            folderPath = "/volume1/video/novela",
+            organizationMode = GroupOrganizationMode.SERIES
+        )
+        val ep1 = Post(
+            id = 301,
+            author = self,
+            groupId = 88,
+            groupName = "Telenovela",
+            contentText = "Cap 01",
+            createdAt = 100L,
+            mediaItems = listOf(MediaItem(id = "v1", type = MediaType.VIDEO, url = "http://nas/ep1.mp4"))
+        )
+        val ep2 = Post(
+            id = 302,
+            author = self,
+            groupId = 88,
+            groupName = "Telenovela",
+            contentText = "Cap 02",
+            createdAt = 200L,
+            mediaItems = listOf(MediaItem(id = "v2", type = MediaType.VIDEO, url = "http://nas/ep2.mp4"))
+        )
+
+        val entries = FeedStreamHelper.buildSmartFeedEntries(
+            posts = listOf(ep2, ep1),
+            shorts = emptyList(),
+            groups = listOf(seriesGroup),
+            followedGroupIds = setOf(88),
+            watchedPostIds = setOf(301),
+            sessionSeed = 42L
+        )
+
+        val continueEntry = entries.filterIsInstance<FeedStreamEntry.ContinueSeriesEntry>().firstOrNull()
+        assertEquals(302, continueEntry?.nextPost?.id)
+    }
+
+    @Test
+    fun testOfflineMediaManager_formatBytesFormatting() {
+        assertEquals("0 KB", OfflineMediaManager.formatBytes(0L))
+        assertTrue(OfflineMediaManager.formatBytes(2048L).endsWith("KB"))
+        assertTrue(OfflineMediaManager.formatBytes(5L * 1024L * 1024L).endsWith("MB"))
+        assertTrue(OfflineMediaManager.formatBytes(2L * 1024L * 1024L * 1024L).endsWith("GB"))
+    }
 }
+
+

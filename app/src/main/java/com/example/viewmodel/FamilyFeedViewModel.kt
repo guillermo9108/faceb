@@ -6,20 +6,28 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.FamilyRepository
 import com.example.data.OfflineToggleAction
+import com.example.model.AppThemeMode
 import com.example.model.DatabaseDiagnosticReport
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
+import com.example.model.FeedContentFilter
 import com.example.model.GroupOrganizationMode
+import com.example.model.MediaType
 import com.example.model.NasConfig
+import com.example.model.OfflineStorageStats
 import com.example.model.Post
 import com.example.model.ReactionType
 import com.example.model.ScannedFolder
+import com.example.model.SearchSuggestion
 import com.example.model.UploadStage
 import com.example.model.VideoUploadProgress
+import com.example.model.VideoWatchProgress
 import com.example.util.FeedStreamEntry
 import com.example.util.FeedStreamHelper
 import com.example.util.QueuedPostDownload
+import com.example.util.SearchHelper
+import com.example.util.SeriesEpisodeHelper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,6 +71,19 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val followedUserIds = repository.followedUserIds
     val followedGroupIds = repository.followedGroupIds
     val downloadStates: StateFlow<Map<Int, QueuedPostDownload>> = repository.downloadStates
+    val watchProgressMap: StateFlow<Map<Int, VideoWatchProgress>> = repository.watchProgressMap
+    val themeMode: StateFlow<AppThemeMode> = repository.themeMode
+    val isAdminPinLockEnabled: StateFlow<Boolean> = repository.isAdminPinLockEnabled
+    val searchHistory: StateFlow<List<String>> = repository.searchHistory
+
+    private val _offlineStorageStats = MutableStateFlow(OfflineStorageStats())
+    val offlineStorageStats: StateFlow<OfflineStorageStats> = _offlineStorageStats.asStateFlow()
+
+    private val _isSyncingGroup = MutableStateFlow(false)
+    val isSyncingGroup: StateFlow<Boolean> = _isSyncingGroup.asStateFlow()
+
+    private val _editingPost = MutableStateFlow<Post?>(null)
+    val editingPost: StateFlow<Post?> = _editingPost.asStateFlow()
 
     // Snapshot de vistos y semilla de sesión: se actualizan al abrir o refrescar para no mover el scroll en vivo
     private val _seenCommentsSnapshot = MutableStateFlow(repository.getSeenCommentsSnapshot())
@@ -82,8 +103,27 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val isSearchingGlobal: StateFlow<Boolean> = _isSearchingGlobal.asStateFlow()
     private var globalSearchJob: Job? = null
 
+    val searchSuggestions: StateFlow<List<SearchSuggestion>> = combine(
+        _searchQuery,
+        repository.searchHistory,
+        repository.familyMembers,
+        repository.groups,
+        repository.posts
+    ) { query, history, members, allGroups, cachedPosts ->
+        SearchHelper.buildSuggestions(
+            query = query,
+            history = history,
+            members = members,
+            groups = allGroups,
+            cachedPosts = cachedPosts
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _selectedMemberFilter = MutableStateFlow<FamilyMember?>(null)
     val selectedMemberFilter: StateFlow<FamilyMember?> = _selectedMemberFilter.asStateFlow()
+
+    private val _feedContentFilter = MutableStateFlow(FeedContentFilter.ALL)
+    val feedContentFilter: StateFlow<FeedContentFilter> = _feedContentFilter.asStateFlow()
 
     private val _savedOfflineOnlyFilter = MutableStateFlow(false)
     val savedOfflineOnlyFilter: StateFlow<Boolean> = _savedOfflineOnlyFilter.asStateFlow()
@@ -149,13 +189,25 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     val groupPosts: StateFlow<List<Post>> = combine(
         repository.groupPosts,
         _groupSearchQuery,
-        _groupSearchResults
-    ) { pagedPosts, query, searchResults ->
-        if (query.isNotBlank()) searchResults else pagedPosts
+        _groupSearchResults,
+        _selectedGroupForViewing
+    ) { pagedPosts, query, searchResults, activeGroup ->
+        val raw = if (query.isNotBlank()) searchResults else pagedPosts
+        if (activeGroup?.organizationMode == GroupOrganizationMode.SERIES) {
+            raw.sortedWith(SeriesEpisodeHelper.seriesComparator())
+        } else {
+            raw
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _isScanFoldersDialogOpen = MutableStateFlow(false)
     val isScanFoldersDialogOpen: StateFlow<Boolean> = _isScanFoldersDialogOpen.asStateFlow()
+
+    private val _currentScanPath = MutableStateFlow("/volume3/photo")
+    val currentScanPath: StateFlow<String> = _currentScanPath.asStateFlow()
+
+    private val _parentScanPath = MutableStateFlow<String?>(null)
+    val parentScanPath: StateFlow<String?> = _parentScanPath.asStateFlow()
 
     private val _scannedFolders = MutableStateFlow<List<ScannedFolder>>(emptyList())
     val scannedFolders: StateFlow<List<ScannedFolder>> = _scannedFolders.asStateFlow()
@@ -209,6 +261,16 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
             repository.refreshFeed()
             repository.refreshShorts()
             repository.refreshGroups()
+            refreshOfflineStorageStats()
+        }
+        // Sondeo silencioso periódico cada 90 segundos para notificaciones de actividad familiar
+        viewModelScope.launch {
+            while (true) {
+                delay(90_000L)
+                try {
+                    repository.pollActivityInBackground()
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -401,20 +463,25 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     fun closeScanFoldersDialog() {
         _isScanFoldersDialogOpen.value = false
         _scannedFolders.value = emptyList()
+        _parentScanPath.value = null
     }
 
     fun scanFolders(basePath: String) {
+        val cleanTarget = basePath.trim().ifBlank { "/volume3/photo" }
+        _currentScanPath.value = cleanTarget
         viewModelScope.launch {
             _isScanningFolders.value = true
-            val res = repository.scanNasFolders(basePath)
+            val res = repository.scanNasFolders(cleanTarget)
             _isScanningFolders.value = false
             res.fold(
-                onSuccess = { list ->
-                    _scannedFolders.value = list
-                    if (list.isEmpty()) {
-                        showStatus("No se encontraron subcarpetas en $basePath")
+                onSuccess = { scanRes ->
+                    _currentScanPath.value = scanRes.basePath
+                    _parentScanPath.value = scanRes.parentPath
+                    _scannedFolders.value = scanRes.folders
+                    if (scanRes.folders.isEmpty()) {
+                        showStatus("No se encontraron subcarpetas en ${scanRes.basePath}")
                     } else {
-                        showStatus("Se encontraron ${list.size} carpetas")
+                        showStatus("Se encontraron ${scanRes.folders.size} carpetas en ${scanRes.basePath}")
                     }
                 },
                 onFailure = { err ->
@@ -439,7 +506,10 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun importSelectedFolders() {
+    fun importSelectedFolders(
+        allowUploads: Boolean = true,
+        organizationMode: GroupOrganizationMode = GroupOrganizationMode.NORMAL
+    ) {
         val selected = _scannedFolders.value.filter { it.isSelected }.map { it.folderPath }
         if (selected.isEmpty()) {
             showStatus("Selecciona al menos una carpeta para importar")
@@ -453,7 +523,11 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 totalFiles = 0,
                 statusMessage = "Iniciando escaneo y publicación de subcarpetas en segundo plano..."
             )
-            val res = repository.importNasFolders(selected) { processed, total ->
+            val res = repository.importNasFolders(
+                folderPaths = selected,
+                allowUploads = allowUploads,
+                organizationMode = organizationMode
+            ) { processed, total ->
                 _importProgress.value = com.example.model.NasImportProgress(
                     processedFiles = processed,
                     totalFiles = total,
@@ -464,7 +538,8 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
             _importProgress.value = null
             res.fold(
                 onSuccess = { count ->
-                    showStatus("¡Se importaron $count grupos familiares con todo su contenido y subcarpetas!")
+                    val modeLabel = if (organizationMode == GroupOrganizationMode.SERIES) "en modo Series" else "en modo Normal"
+                    showStatus("¡Se importaron $count grupos familiares $modeLabel!")
                     closeScanFoldersDialog()
                     refreshGroups()
                     refreshFeed()
@@ -526,6 +601,7 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _searchQuery,
         _selectedMemberFilter,
         _savedOfflineOnlyFilter,
+        _feedContentFilter,
         repository.currentMember,
         repository.followedUserIds,
         repository.followedGroupIds
@@ -537,22 +613,18 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         val query = values[2] as String
         val memberFilter = values[3] as FamilyMember?
         val offlineOnly = values[4] as Boolean
-        val curMember = values[5] as FamilyMember
+        val contentFilter = values[5] as FeedContentFilter
+        val curMember = values[6] as FamilyMember
         @Suppress("UNCHECKED_CAST")
-        val followedUsers = values[6] as Set<Int>
+        val followedUsers = values[7] as Set<Int>
         @Suppress("UNCHECKED_CAST")
-        val followedGroups = values[7] as Set<Int>
+        val followedGroups = values[8] as Set<Int>
 
         val source = if (query.isNotBlank()) {
-            val localMatches = posts.filter { post ->
-                post.contentText.contains(query, ignoreCase = true) ||
-                    post.author.name.contains(query, ignoreCase = true) ||
-                    (post.groupName?.contains(query, ignoreCase = true) == true) ||
-                    (post.feeling?.contains(query, ignoreCase = true) == true) ||
-                    (post.location?.contains(query, ignoreCase = true) == true)
-            }
+            val localMatches = SearchHelper.filterAndRankPosts(posts, query)
             if (dbSearchResults.isNotEmpty()) {
-                (dbSearchResults + localMatches).distinctBy { it.id }
+                SearchHelper.filterAndRankPosts((dbSearchResults + localMatches).distinctBy { it.id }, query)
+                    .ifEmpty { (dbSearchResults + localMatches).distinctBy { it.id } }
             } else {
                 localMatches
             }
@@ -565,14 +637,40 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
 
+        val effectiveFilter = if (offlineOnly && contentFilter == FeedContentFilter.ALL) {
+            FeedContentFilter.OFFLINE
+        } else {
+            contentFilter
+        }
+
         source.filter { post ->
             val matchesMember = memberFilter == null || post.author.id == memberFilter.id
-            val matchesOffline = !offlineOnly || post.isSavedOffline
-            matchesMember && matchesOffline
+            val matchesType = when (effectiveFilter) {
+                FeedContentFilter.ALL -> true
+                FeedContentFilter.VIDEOS -> post.mediaItems.any { it.type == MediaType.VIDEO }
+                FeedContentFilter.PHOTOS -> post.mediaItems.any { it.type == MediaType.IMAGE }
+                FeedContentFilter.OFFLINE -> post.isSavedOffline
+            }
+            matchesMember && matchesType
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Flujo inteligente del muro al estilo Facebook: relevancia + afinidad + modo series + anti-monotonía + rotación al refrescar
+    private data class FeedAnchorKey(
+        val feedGeneration: Int,
+        val seed: Long,
+        val query: String,
+        val memberId: Int?,
+        val offlineOnly: Boolean,
+        val contentFilter: FeedContentFilter,
+        val currentMemberId: Int
+    )
+
+    private val feedAnchorLock = Any()
+    private var lastAnchorKey: FeedAnchorKey? = null
+    private var anchoredSmartEntries: List<FeedStreamEntry> = emptyList()
+
+    // Flujo inteligente del muro al estilo Facebook: ancla las páginas ya cargadas para evitar saltos al principio
+    // y anexa al final cada lote adicional de 10 publicaciones al hacer scroll.
     val feedEntries: StateFlow<List<FeedStreamEntry>> = combine(
         filteredPosts,
         repository.shorts,
@@ -583,8 +681,10 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         _searchQuery,
         _selectedMemberFilter,
         _savedOfflineOnlyFilter,
+        _feedContentFilter,
         repository.nasConfig,
-        repository.currentMember
+        repository.currentMember,
+        repository.feedGeneration
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         val posts = values[0] as List<Post>
@@ -600,11 +700,24 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         val query = values[6] as String
         val memberFilter = values[7] as FamilyMember?
         val offlineOnly = values[8] as Boolean
-        val nas = values[9] as NasConfig
-        val curMember = values[10] as FamilyMember
+        val contentFilter = values[9] as FeedContentFilter
+        val nas = values[10] as NasConfig
+        val curMember = values[11] as FamilyMember
+        val feedGen = values[12] as Int
+        val watchedIds = repository.watchProgressMap.value.values.filter { it.isWatched }.map { it.postId }.toSet()
 
-        if (query.isNotBlank() || memberFilter != null || offlineOnly) {
+        if (query.isNotBlank() || memberFilter != null || offlineOnly || contentFilter != FeedContentFilter.ALL) {
+            synchronized(feedAnchorLock) {
+                lastAnchorKey = null
+                anchoredSmartEntries = emptyList()
+            }
             posts.map { FeedStreamEntry.PostEntry(it) }
+        } else if (posts.isEmpty()) {
+            synchronized(feedAnchorLock) {
+                lastAnchorKey = null
+                anchoredSmartEntries = emptyList()
+            }
+            emptyList()
         } else {
             val preferredAuthors = posts
                 .filter { p -> p.userReaction != null || p.isSavedOffline || p.comments.any { it.author.id == curMember.id } }
@@ -615,21 +728,98 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
                 .mapNotNull { it.groupId }
                 .toSet()
             val cachedIds = posts.filter { it.isSavedOffline }.map { it.id }.toSet()
-
-            FeedStreamHelper.buildSmartFeedEntries(
-                posts = posts,
-                shorts = shortsList,
-                groups = allGroups,
-                followedGroupIds = followedGroups,
-                seenCommentsSnapshot = seenSnap,
-                preferredAuthorIds = preferredAuthors,
-                preferredGroupIds = preferredGroups,
-                isOfflineOrSlow = !nas.isConnected,
-                cachedPostIds = cachedIds,
-                sessionSeed = seed,
-                interval = 4,
-                groupSize = 6
+            val anchorKey = FeedAnchorKey(
+                feedGeneration = feedGen,
+                seed = seed,
+                query = query,
+                memberId = memberFilter?.id,
+                offlineOnly = offlineOnly,
+                contentFilter = contentFilter,
+                currentMemberId = curMember.id
             )
+
+            synchronized(feedAnchorLock) {
+                if (lastAnchorKey != anchorKey || anchoredSmartEntries.isEmpty()) {
+                    val fresh = FeedStreamHelper.buildSmartFeedEntries(
+                        posts = posts,
+                        shorts = shortsList,
+                        groups = allGroups,
+                        followedGroupIds = followedGroups,
+                        seenCommentsSnapshot = seenSnap,
+                        preferredAuthorIds = preferredAuthors,
+                        preferredGroupIds = preferredGroups,
+                        isOfflineOrSlow = !nas.isConnected,
+                        cachedPostIds = cachedIds,
+                        watchedPostIds = watchedIds,
+                        sessionSeed = seed,
+                        interval = 4,
+                        groupSize = 6
+                    )
+                    lastAnchorKey = anchorKey
+                    anchoredSmartEntries = fresh
+                    fresh
+                } else {
+                    val latestById = posts.associateBy { it.id }
+                    val knownPostIds = LinkedHashSet<Int>()
+
+                    // Refrescar en sitio reacciones, comentarios o estado offline sin mover la posición de tarjetas ya visibles
+                    val hydratedExisting = anchoredSmartEntries.mapNotNull { entry ->
+                        when (entry) {
+                            is FeedStreamEntry.PostEntry -> {
+                                val updated = latestById[entry.post.id] ?: return@mapNotNull null
+                                knownPostIds.add(updated.id)
+                                entry.copy(post = updated)
+                            }
+                            is FeedStreamEntry.ActiveConversationEntry -> {
+                                val updated = latestById[entry.post.id] ?: return@mapNotNull null
+                                knownPostIds.add(updated.id)
+                                entry.copy(post = updated)
+                            }
+                            is FeedStreamEntry.MemoriesCardEntry -> {
+                                val updatedMemories = entry.memoryPosts.mapNotNull { latestById[it.id] }
+                                if (updatedMemories.isEmpty()) null else entry.copy(memoryPosts = updatedMemories)
+                            }
+                            is FeedStreamEntry.ContinueSeriesEntry -> {
+                                val updatedNext = latestById[entry.nextPost.id] ?: entry.nextPost
+                                entry.copy(nextPost = updatedNext)
+                            }
+                            else -> entry
+                        }
+                    }
+
+                    val newlyAppendedPosts = posts.filter { it.id !in knownPostIds }
+                    val combined = if (newlyAppendedPosts.isNotEmpty()) {
+                        val existingShortsCount = hydratedExisting.count { it is FeedStreamEntry.ShortsGroupEntry }
+                        val tailPosts = hydratedExisting
+                            .filterIsInstance<FeedStreamEntry.PostEntry>()
+                            .takeLast(2)
+                            .map { it.post }
+
+                        val appendedEntries = FeedStreamHelper.buildAppendedFeedEntries(
+                            newPosts = newlyAppendedPosts,
+                            shorts = shortsList,
+                            groups = allGroups,
+                            seenCommentsSnapshot = seenSnap,
+                            preferredAuthorIds = preferredAuthors,
+                            preferredGroupIds = preferredGroups,
+                            isOfflineOrSlow = !nas.isConnected,
+                            cachedPostIds = cachedIds,
+                            watchedPostIds = watchedIds,
+                            previousTailPosts = tailPosts,
+                            existingShortsGroupCount = existingShortsCount,
+                            sessionSeed = seed,
+                            interval = 4,
+                            groupSize = 6
+                        )
+                        hydratedExisting + appendedEntries
+                    } else {
+                        hydratedExisting
+                    }
+
+                    anchoredSmartEntries = combined
+                    combined
+                }
+            }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -666,12 +856,34 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun submitSearchQuery(query: String) {
+        val clean = query.trim()
+        if (clean.isNotBlank()) {
+            repository.addSearchHistory(clean)
+        }
+        setSearchQuery(query)
+    }
+
+    fun removeSearchHistoryItem(query: String) {
+        repository.removeSearchHistoryItem(query)
+    }
+
+    fun clearSearchHistory() {
+        repository.clearSearchHistory()
+    }
+
     fun setMemberFilter(member: FamilyMember?) {
         _selectedMemberFilter.value = member
     }
 
+    fun setFeedContentFilter(filter: FeedContentFilter) {
+        _feedContentFilter.value = filter
+        _savedOfflineOnlyFilter.value = (filter == FeedContentFilter.OFFLINE)
+    }
+
     fun setSavedOfflineFilter(enabled: Boolean) {
         _savedOfflineOnlyFilter.value = enabled
+        _feedContentFilter.value = if (enabled) FeedContentFilter.OFFLINE else FeedContentFilter.ALL
     }
 
     fun openCreatePostDialog(isShortMode: Boolean = false, targetGroup: FamilyGroup? = null) {
@@ -1093,6 +1305,164 @@ class FamilyFeedViewModel(application: Application) : AndroidViewModel(applicati
     fun cancelOfflineDownload(postId: Int) {
         repository.cancelOfflineDownload(postId)
         showStatus("Descarga cancelada")
+    }
+
+    fun refreshOfflineStorageStats() {
+        viewModelScope.launch {
+            _offlineStorageStats.value = repository.getOfflineStorageStats()
+        }
+    }
+
+    fun clearTransientCache() {
+        viewModelScope.launch {
+            val deleted = repository.clearTransientCache()
+            refreshOfflineStorageStats()
+            showStatus("Se liberó la caché temporal ($deleted archivos). Tus publicaciones offline siguen intactas.")
+        }
+    }
+
+    fun setThemeMode(mode: AppThemeMode) {
+        repository.setThemeMode(mode)
+        showStatus("Tema cambiado a ${mode.label}")
+    }
+
+    fun setAdminPinLockEnabled(enabled: Boolean) {
+        repository.setAdminPinLockEnabled(enabled)
+        showStatus(if (enabled) "Bloqueo PIN de administración activado" else "Bloqueo PIN desactivado")
+    }
+
+    fun hasCustomSecurityPin(): Boolean = repository.hasCustomSecurityPin()
+
+    fun updateSecurityPin(newPin: String) {
+        repository.updateSecurityPin(newPin)
+        showStatus("PIN de seguridad actualizado")
+    }
+
+    fun verifySecurityPin(input: String): Boolean = repository.verifySecurityPin(input)
+
+    fun openEditPostDialog(post: Post) {
+        _editingPost.value = post
+    }
+
+    fun closeEditPostDialog() {
+        _editingPost.value = null
+    }
+
+    fun saveEditedPost(
+        postId: Int,
+        contentText: String,
+        feeling: String?,
+        location: String?,
+        groupId: Int?
+    ) {
+        viewModelScope.launch {
+            val res = repository.editPost(postId, contentText, feeling, location, groupId)
+            _editingPost.value = null
+            res.fold(
+                onSuccess = {
+                    showStatus("Publicación actualizada correctamente")
+                },
+                onFailure = { err ->
+                    showStatus("No se pudo editar: ${err.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun syncGroupFolder(groupId: Int, removeMissing: Boolean = false) {
+        viewModelScope.launch {
+            _isSyncingGroup.value = true
+            showStatus("Sincronizando carpeta del Synology NAS...")
+            val res = repository.syncGroupFromNas(groupId, removeMissing)
+            _isSyncingGroup.value = false
+            res.fold(
+                onSuccess = { stats ->
+                    val addedMsg = if (stats.addedPosts > 0) "${stats.addedPosts} publicaciones nuevas (${stats.addedFiles} archivos)" else "Sin archivos nuevos"
+                    val removedMsg = if (stats.removedMissing > 0) ", ${stats.removedMissing} ausentes limpiados" else ""
+                    showStatus("Sincronización lista: $addedMsg$removedMsg")
+                },
+                onFailure = { err ->
+                    showStatus("Error al sincronizar carpeta: ${err.localizedMessage}")
+                }
+            )
+        }
+    }
+
+    fun saveVideoWatchProgress(
+        postId: Int,
+        chunkIndex: Int,
+        localPositionMs: Long,
+        globalPositionMs: Long,
+        totalDurationMs: Long,
+        markEnded: Boolean = false
+    ) {
+        repository.saveVideoProgress(
+            postId = postId,
+            chunkIndex = chunkIndex,
+            localPositionMs = localPositionMs,
+            globalPositionMs = globalPositionMs,
+            totalDurationMs = totalDurationMs,
+            markEnded = markEnded
+        )
+    }
+
+    fun toggleVideoWatched(postId: Int) {
+        val currentWatched = repository.watchProgressMap.value[postId]?.isWatched == true
+        repository.setVideoWatched(postId, !currentWatched)
+        showStatus(if (!currentWatched) "Marcado como visto" else "Marcado como no visto")
+    }
+
+    fun getNextEpisodeForPost(currentPost: Post): Post? {
+        val gId = currentPost.groupId
+        if (gId != null) {
+            val grp = repository.groups.value.find { it.id == gId }
+            val candidates = (repository.groupPosts.value + repository.posts.value)
+                .distinctBy { it.id }
+                .filter { it.groupId == gId && it.mediaItems.any { m -> m.type == MediaType.VIDEO } }
+            val ordered = if (grp?.organizationMode == GroupOrganizationMode.SERIES) {
+                candidates.sortedWith(SeriesEpisodeHelper.seriesComparator())
+            } else {
+                candidates.sortedBy { it.createdAt }
+            }
+            val curIdx = ordered.indexOfFirst { it.id == currentPost.id }
+            if (curIdx >= 0 && curIdx + 1 < ordered.size) {
+                return ordered[curIdx + 1]
+            }
+        }
+        val feedVideos = (repository.groupPosts.value.takeIf { _selectedGroupForViewing.value != null } ?: filteredPosts.value)
+            .filter { it.mediaItems.any { m -> m.type == MediaType.VIDEO } }
+        val idx = feedVideos.indexOfFirst { it.id == currentPost.id }
+        return if (idx >= 0 && idx + 1 < feedVideos.size) feedVideos[idx + 1] else null
+    }
+
+    fun navigateToPostFromNotification(
+        targetPostId: Int?,
+        openComments: Boolean,
+        onPostReadyForShort: ((Post) -> Unit)? = null
+    ) {
+        if (targetPostId == null || targetPostId <= 0) return
+        viewModelScope.launch {
+            val found = repository.findPostById(targetPostId) ?: return@launch
+            if (found.isShort) {
+                openShortInShortsTab(found.id)
+                if (openComments) {
+                    openCommentsSheet(found)
+                }
+                onPostReadyForShort?.invoke(found)
+                return@launch
+            }
+            val targetGroup = found.groupId?.let { gid -> repository.groups.value.find { it.id == gid } }
+            if (targetGroup != null) {
+                setSelectedTab(FeedTab.GROUPS)
+                openGroup(targetGroup)
+            } else {
+                setSelectedTab(FeedTab.FEED)
+                setSearchQuery(found.contentText.take(32).ifBlank { found.author.name })
+            }
+            if (openComments) {
+                openCommentsSheet(found)
+            }
+        }
     }
 
     fun updateNasSettings(config: NasConfig) {

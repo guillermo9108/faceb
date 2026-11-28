@@ -77,10 +77,12 @@ import coil.size.Precision
 import com.example.model.FamilyGroup
 import com.example.model.FamilyMember
 import com.example.model.FamilyStory
+import com.example.model.FeedContentFilter
 import com.example.model.MediaType
 import com.example.model.NasConfig
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.VideoWatchProgress
 import com.example.ui.components.CreatePostCard
 import com.example.ui.components.PostCard
 import com.example.ui.components.StoriesSection
@@ -138,6 +140,12 @@ fun FeedScreen(
     onCancelDownload: (Int) -> Unit = {},
     onPostsSeen: (List<Post>) -> Unit = {},
     onOpenGroup: (FamilyGroup) -> Unit = {},
+    feedContentFilter: FeedContentFilter = FeedContentFilter.ALL,
+    onFeedContentFilterChange: (FeedContentFilter) -> Unit = {},
+    onOpenDownloadManager: () -> Unit = {},
+    watchProgressMap: Map<Int, VideoWatchProgress> = emptyMap(),
+    onEditPost: (Post) -> Unit = {},
+    onToggleWatched: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -298,6 +306,7 @@ fun FeedScreen(
                 ActiveDownloadQueueBanner(
                     activeItem = activeDownloadItem,
                     queuedCount = queuedDownloadCount,
+                    onClickBanner = onOpenDownloadManager,
                     onCancel = { onCancelDownload(activeDownloadItem.postId) }
                 )
             }
@@ -321,49 +330,78 @@ fun FeedScreen(
             )
         }
 
-        // 4. Family Member Filter Chips Row
+        // 4. Family Member & Content Type Filter Chips Rows
         item {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    item {
-                        FilterChip(
-                            selected = selectedMemberFilter == null,
-                            onClick = { onFilterMember(null) },
-                            label = { Text("Toda la familia") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = FacebookBlue,
-                                selectedLabelColor = Color.White
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = selectedMemberFilter == null,
+                                onClick = { onFilterMember(null) },
+                                label = { Text("Toda la familia") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = FacebookBlue,
+                                    selectedLabelColor = Color.White
+                                )
                             )
-                        )
+                        }
+
+                        items(familyMembers, key = { it.id }) { member ->
+                            val isSelected = selectedMemberFilter?.id == member.id
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = {
+                                    if (isSelected) onFilterMember(null) else onFilterMember(member)
+                                },
+                                label = { Text("${member.avatarEmoji} ${member.role}") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = FacebookBlue,
+                                    selectedLabelColor = Color.White
+                                )
+                            )
+                        }
                     }
 
-                    items(familyMembers, key = { it.id }) { member ->
-                        val isSelected = selectedMemberFilter?.id == member.id
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = {
-                                if (isSelected) onFilterMember(null) else onFilterMember(member)
-                            },
-                            label = { Text("${member.avatarEmoji} ${member.role}") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = FacebookBlue,
-                                selectedLabelColor = Color.White
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f),
+                        thickness = 0.5.dp
+                    )
+
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("content_type_filter_row")
+                    ) {
+                        items(FeedContentFilter.values(), key = { it.name }) { filterOption ->
+                            val isSelected = feedContentFilter == filterOption
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { onFeedContentFilterChange(filterOption) },
+                                label = { Text(filterOption.label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = FacebookBlue,
+                                    selectedLabelColor = Color.White
+                                ),
+                                modifier = Modifier.testTag("filter_chip_${filterOption.name}")
                             )
-                        )
+                        }
                     }
                 }
             }
         }
 
         // Active search / filter badge (búsqueda ligera en toda la BD o filtros activos)
-        if (selectedMemberFilter != null || searchQuery.isNotBlank() || savedOfflineOnly) {
+        if (selectedMemberFilter != null || searchQuery.isNotBlank() || savedOfflineOnly || feedContentFilter != FeedContentFilter.ALL) {
             item(key = "active_filter_banner") {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -409,7 +447,8 @@ fun FeedScreen(
                                         }
                                     } else {
                                         append("Filtro activo: ")
-                                        if (savedOfflineOnly) append("Guardados offline ")
+                                        if (feedContentFilter != FeedContentFilter.ALL) append("${feedContentFilter.label} ")
+                                        else if (savedOfflineOnly) append("Guardados offline ")
                                         if (selectedMemberFilter != null) append("Solo ${selectedMemberFilter.name}")
                                     }
                                 },
@@ -418,11 +457,12 @@ fun FeedScreen(
                             )
                         }
 
-                        if (selectedMemberFilter != null || savedOfflineOnly) {
+                        if (selectedMemberFilter != null || savedOfflineOnly || feedContentFilter != FeedContentFilter.ALL) {
                             IconButton(
                                 onClick = {
                                     onFilterMember(null)
                                     onClearOfflineFilter()
+                                    onFeedContentFilterChange(FeedContentFilter.ALL)
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
@@ -549,7 +589,11 @@ fun FeedScreen(
                             onToggleSaveOffline = { onToggleSaveOffline(post) },
                             fallbackFolderImageUrl = groupCoverMap[post.groupId],
                             onVideoStarted = onVideoStarted,
-                            downloadState = downloadStates[post.id]
+                            downloadState = downloadStates[post.id],
+                            watchProgress = watchProgressMap[post.id],
+                            highlightQuery = searchQuery,
+                            onEditPost = { onEditPost(post) },
+                            onToggleWatched = { onToggleWatched(post.id) }
                         )
                     }
                     is FeedStreamEntry.ShortsGroupEntry -> {
@@ -577,6 +621,7 @@ fun FeedScreen(
                             onMemoryClick = { memPost ->
                                 val vid = memPost.mediaItems.firstOrNull { it.type == MediaType.VIDEO }
                                 if (vid != null) {
+                                    val prog = watchProgressMap[memPost.id]
                                     onPlayVideo(
                                         vid.url,
                                         memPost.contentText.take(40),
@@ -585,8 +630,8 @@ fun FeedScreen(
                                         vid.chunks,
                                         vid.chunkDurationsMs,
                                         vid.totalDurationMs,
-                                        0,
-                                        0L
+                                        if (prog != null && !prog.isWatched) prog.chunkIndex else 0,
+                                        if (prog != null && !prog.isWatched) prog.positionMs else 0L
                                     )
                                 } else {
                                     onCommentClick(memPost)
@@ -608,16 +653,22 @@ fun FeedScreen(
                             fallbackFolderImageUrl = groupCoverMap[post.groupId],
                             onVideoStarted = onVideoStarted,
                             downloadState = downloadStates[post.id],
-                            headerHighlightBadge = entry.badgeText
+                            headerHighlightBadge = entry.badgeText,
+                            watchProgress = watchProgressMap[post.id],
+                            highlightQuery = searchQuery,
+                            onEditPost = { onEditPost(post) },
+                            onToggleWatched = { onToggleWatched(post.id) }
                         )
                     }
                     is FeedStreamEntry.ContinueSeriesEntry -> {
                         ContinueSeriesSection(
                             entry = entry,
+                            watchProgress = watchProgressMap[entry.nextPost.id],
                             onOpenSeriesGroup = { onOpenGroup(entry.group) },
                             onPlayEpisode = { ep ->
                                 val vid = ep.mediaItems.firstOrNull { it.type == MediaType.VIDEO }
                                 if (vid != null) {
+                                    val prog = watchProgressMap[ep.id]
                                     onPlayVideo(
                                         vid.url,
                                         ep.contentText.take(40),
@@ -626,8 +677,8 @@ fun FeedScreen(
                                         vid.chunks,
                                         vid.chunkDurationsMs,
                                         vid.totalDurationMs,
-                                        0,
-                                        0L
+                                        if (prog != null && !prog.isWatched) prog.chunkIndex else 0,
+                                        if (prog != null && !prog.isWatched) prog.positionMs else 0L
                                     )
                                 } else {
                                     onOpenGroup(entry.group)
@@ -1035,6 +1086,7 @@ private fun ShortsCarouselSection(
 private fun ActiveDownloadQueueBanner(
     activeItem: QueuedPostDownload,
     queuedCount: Int,
+    onClickBanner: () -> Unit,
     onCancel: () -> Unit
 ) {
     Surface(
@@ -1044,6 +1096,8 @@ private fun ActiveDownloadQueueBanner(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onClickBanner() }
             .testTag("active_download_queue_banner")
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -1322,6 +1376,7 @@ private fun MemoriesCardSection(
 @Composable
 private fun ContinueSeriesSection(
     entry: FeedStreamEntry.ContinueSeriesEntry,
+    watchProgress: VideoWatchProgress? = null,
     onOpenSeriesGroup: () -> Unit,
     onPlayEpisode: (Post) -> Unit
 ) {
@@ -1375,6 +1430,19 @@ private fun ContinueSeriesSection(
                 )
             }
 
+            if (watchProgress != null && !watchProgress.isWatched && watchProgress.progressFraction > 0.02f) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { watchProgress.progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                    color = FacebookBlue,
+                    trackColor = FacebookBlue.copy(alpha = 0.18f)
+                )
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1389,7 +1457,11 @@ private fun ContinueSeriesSection(
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Ver episodio")
+                    Text(
+                        if (watchProgress != null && !watchProgress.isWatched && watchProgress.progressFraction > 0.02f)
+                            "Reanudar episodio"
+                        else "Ver episodio"
+                    )
                 }
                 OutlinedButton(
                     onClick = onOpenSeriesGroup,

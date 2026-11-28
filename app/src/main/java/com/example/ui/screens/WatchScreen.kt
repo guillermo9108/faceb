@@ -54,6 +54,7 @@ import coil.compose.AsyncImage
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.VideoWatchProgress
 import com.example.ui.components.PostCard
 import com.example.ui.theme.FacebookBlue
 import com.example.util.QueuedPostDownload
@@ -72,6 +73,9 @@ fun WatchScreen(
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
     onPostsSeen: (List<Post>) -> Unit = {},
+    watchProgressMap: Map<Int, VideoWatchProgress> = emptyMap(),
+    onEditPost: (Post) -> Unit = {},
+    onToggleWatched: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Filtrar publicaciones que contengan vídeos
@@ -221,7 +225,10 @@ fun WatchScreen(
                     onToggleSaveOffline = { onToggleSaveOffline(post) },
                     fallbackFolderImageUrl = groupCoverLookup(post.groupId),
                     onVideoStarted = onVideoStarted,
-                    downloadState = downloadStates[post.id]
+                    downloadState = downloadStates[post.id],
+                    watchProgress = watchProgressMap[post.id],
+                    onEditPost = { onEditPost(post) },
+                    onToggleWatched = { onToggleWatched(post.id) }
                 )
             }
         }

@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +20,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -42,6 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -54,13 +58,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.FamilyMember
 import com.example.model.NasConfig
+import com.example.model.SearchSuggestion
+import com.example.model.SearchSuggestionType
 import com.example.ui.theme.FacebookBadgeRed
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.LanOfflineAmber
@@ -78,9 +86,15 @@ fun HeaderBar(
     onOpenCreatePost: () -> Unit,
     onRefreshFeed: () -> Unit = {},
     unreadNotificationsCount: Int = 0,
+    searchSuggestions: List<SearchSuggestion> = emptyList(),
+    onSubmitSearch: (String) -> Unit = {},
+    onSuggestionClick: (SearchSuggestion) -> Unit = {},
+    onDeleteHistoryItem: (String) -> Unit = {},
+    onClearSearchHistory: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var isSearchExpanded by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -182,22 +196,31 @@ fun HeaderBar(
                 }
             }
 
-            // Inline Search Bar when expanded
+            // Inline Search Bar + Autocompletado inteligente e Historial
             AnimatedVisibility(visible = isSearchExpanded) {
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     TextField(
                         value = searchQuery,
                         onValueChange = onSearchQueryChange,
-                        placeholder = { Text("Buscar en el muro familiar...", fontSize = 14.sp) },
+                        placeholder = { Text("Buscar personas, series, palabras en cualquier orden...", fontSize = 13.5.sp) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(20.dp))
                             .testTag("feed_search_input"),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(
+                            onSearch = {
+                                onSubmitSearch(searchQuery)
+                                focusManager.clearFocus()
+                                isSearchExpanded = false
+                            }
+                        ),
                         colors = TextFieldDefaults.colors(
                             focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -216,6 +239,94 @@ fun HeaderBar(
                             }
                         }
                     )
+
+                    if (searchSuggestions.isNotEmpty()) {
+                        val hasHistory = searchSuggestions.any { it.type == SearchSuggestionType.HISTORY }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 2.dp,
+                            shadowElevation = 4.dp,
+                            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("search_suggestions_dropdown")
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                if (hasHistory) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = if (searchQuery.isBlank()) "Búsquedas recientes" else "Sugerencias inteligentes",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        TextButton(
+                                            onClick = onClearSearchHistory,
+                                            modifier = Modifier.testTag("clear_search_history_button")
+                                        ) {
+                                            Text("Borrar historial", fontSize = 11.sp, color = FacebookBlue)
+                                        }
+                                    }
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f))
+                                }
+
+                                searchSuggestions.forEach { suggestion ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                            .clickable {
+                                                onSuggestionClick(suggestion)
+                                                focusManager.clearFocus()
+                                                isSearchExpanded = false
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                            .testTag("search_suggestion_${suggestion.id}"),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(text = suggestion.emoji, fontSize = 18.sp)
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = suggestion.title,
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = suggestion.subtitle,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        if (suggestion.type == SearchSuggestionType.HISTORY) {
+                                            IconButton(
+                                                onClick = { onDeleteHistoryItem(suggestion.query) },
+                                                modifier = Modifier
+                                                    .size(48.dp)
+                                                    .testTag("delete_history_${suggestion.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Quitar del historial",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

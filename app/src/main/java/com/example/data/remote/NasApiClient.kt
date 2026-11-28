@@ -16,8 +16,10 @@ import com.example.model.MediaItem
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
-import com.example.model.ScannedFolder
+import com.example.model.NasScanResult
 import com.example.model.NasStorageVolume
+import com.example.model.NasSyncGroupResult
+import com.example.model.ScannedFolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -42,6 +44,12 @@ class NasApiClient(
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 ) {
+
+    // Cliente ágil para paginación del feed y evitar bloqueos largos en scroll
+    private val feedClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
 
     // Cliente especializado sin límites de tiempo de espera (timeout) para subida de vídeos pesados en LAN
     private val uploadClient: OkHttpClient = client.newBuilder()
@@ -548,7 +556,7 @@ class NasApiClient(
                 }
             }
             var url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
-            var response = client.newCall(Request.Builder().url(url).get().build()).execute()
+            var response = feedClient.newCall(Request.Builder().url(url).get().build()).execute()
             var body = response.body?.string() ?: ""
 
             if (response.code == 404 || response.code == 405) {
@@ -556,7 +564,7 @@ class NasApiClient(
                 if (detected != null && detected != currentPath) {
                     currentPath = detected
                     url = buildEndpointUrl(ip, port, currentPath, "feed", pageParams)
-                    response = client.newCall(Request.Builder().url(url).get().build()).execute()
+                    response = feedClient.newCall(Request.Builder().url(url).get().build()).execute()
                     body = response.body?.string() ?: ""
                 }
             }
@@ -1449,7 +1457,7 @@ class NasApiClient(
     /**
      * Escanea carpetas con contenido multimedia en el almacenamiento del NAS (solo Administrador).
      */
-    suspend fun scanNasFolders(ip: String, port: Int, path: String, basePath: String): Result<List<ScannedFolder>> = withContext(Dispatchers.IO) {
+    suspend fun scanNasFolders(ip: String, port: Int, path: String, basePath: String): Result<NasScanResult> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
             val encodedBase = java.net.URLEncoder.encode(basePath, "UTF-8")
@@ -1473,11 +1481,22 @@ class NasApiClient(
             }
 
             val jsonObject = parseJsonObjectSafely(body)
+            val resolvedBase = jsonObject.optString("base_path", basePath).trimEnd('/').ifBlank { "/" }
+            val rawParent = jsonObject.optString("parent_path", "").trim()
+            val computedParent = if (rawParent.isNotBlank()) {
+                rawParent
+            } else {
+                val trimmed = resolvedBase.trimEnd('/')
+                val slashIdx = trimmed.lastIndexOf('/')
+                if (slashIdx > 0) trimmed.substring(0, slashIdx) else null
+            }
+
             val foldersArray = jsonObject.optJSONArray("folders") ?: JSONArray()
             val foldersList = mutableListOf<ScannedFolder>()
 
             for (i in 0 until foldersArray.length()) {
                 val f = foldersArray.getJSONObject(i)
+                val subCount = f.optInt("subfolders_count", if (f.optBoolean("has_subfolders", true)) 1 else 0)
                 foldersList.add(
                     ScannedFolder(
                         folderName = f.optString("name", "Carpeta"),
@@ -1485,12 +1504,20 @@ class NasApiClient(
                         mediaCount = f.optInt("media_count", 0),
                         photosCount = f.optInt("photos_count", 0),
                         videosCount = f.optInt("videos_count", 0),
+                        subfoldersCount = subCount,
+                        hasSubfolders = f.optBoolean("has_subfolders", subCount > 0),
                         isAlreadyImported = f.optBoolean("already_imported", false),
                         isSelected = false
                     )
                 )
             }
-            Result.success(foldersList)
+            Result.success(
+                NasScanResult(
+                    basePath = resolvedBase,
+                    parentPath = computedParent,
+                    folders = foldersList
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -1513,7 +1540,9 @@ class NasApiClient(
         folderPaths: List<String>,
         adminUserId: Int,
         batchOffset: Int,
-        batchLimit: Int = 50
+        batchLimit: Int = 50,
+        allowUploads: Boolean = true,
+        organizationMode: GroupOrganizationMode = GroupOrganizationMode.NORMAL
     ): Result<NasBatchImportResponse> = withContext(Dispatchers.IO) {
         try {
             var currentPath = path
@@ -1524,6 +1553,8 @@ class NasApiClient(
                 put("batch_offset", batchOffset)
                 put("batch_limit", batchLimit)
                 put("is_batch", 1)
+                put("allow_member_uploads", if (allowUploads) 1 else 0)
+                put("organization_mode", organizationMode.value)
             }
 
             val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
@@ -1571,6 +1602,8 @@ class NasApiClient(
         path: String,
         folderPaths: List<String>,
         adminUserId: Int,
+        allowUploads: Boolean = true,
+        organizationMode: GroupOrganizationMode = GroupOrganizationMode.NORMAL,
         onProgress: ((processed: Int, total: Int) -> Unit)? = null
     ): Result<Int> = withContext(Dispatchers.IO) {
         var currentOffset = 0
@@ -1582,7 +1615,17 @@ class NasApiClient(
 
         while (keepGoing && batchCount < 200) { // Límite de seguridad de 200 lotes (10,000 archivos)
             batchCount++
-            val batchRes = importNasGroupsBatch(ip, port, path, folderPaths, adminUserId, currentOffset, 50)
+            val batchRes = importNasGroupsBatch(
+                ip = ip,
+                port = port,
+                path = path,
+                folderPaths = folderPaths,
+                adminUserId = adminUserId,
+                batchOffset = currentOffset,
+                batchLimit = 50,
+                allowUploads = allowUploads,
+                organizationMode = organizationMode
+            )
             if (batchRes.isFailure) {
                 return@withContext if (totalProcessed > 0) {
                     Result.success(totalGroups)
@@ -2188,6 +2231,118 @@ class NasApiClient(
                 return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
             }
             Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Edita el texto, sentimiento, ubicación o grupo de una publicación existente en MariaDB 10.
+     */
+    suspend fun updatePost(
+        ip: String,
+        port: Int,
+        path: String,
+        postId: Int,
+        userId: Int,
+        contentText: String,
+        feeling: String?,
+        location: String?,
+        groupId: Int?
+    ): Result<Post> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "posts/update")
+            val jsonBody = JSONObject().apply {
+                put("post_id", postId)
+                put("user_id", userId)
+                put("content_text", contentText.trim())
+                put("feeling", feeling?.trim() ?: "")
+                put("location", location?.trim() ?: "")
+                if (groupId != null && groupId > 0) {
+                    put("group_id", groupId)
+                } else {
+                    put("group_id", JSONObject.NULL)
+                }
+            }
+            val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            var response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "posts/update")
+                    response = client.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val jsonObject = parseJsonObjectSafely(body)
+            val postObj = jsonObject.optJSONObject("post")
+                ?: return@withContext Result.failure(Exception("Respuesta sin datos actualizados"))
+            val baseUrl = buildBaseUrl(ip, port, currentPath)
+            Result.success(parsePostFromJson(postObj, baseUrl))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Re-escanea incrementalmente la carpeta de un grupo importado en el NAS, añadiendo archivos nuevos
+     * y opcionalmente limpiando referencias huérfanas.
+     */
+    suspend fun syncNasGroup(
+        ip: String,
+        port: Int,
+        path: String,
+        groupId: Int,
+        userId: Int,
+        removeMissing: Boolean = false
+    ): Result<NasSyncGroupResult> = withContext(Dispatchers.IO) {
+        try {
+            var currentPath = path
+            var url = buildEndpointUrl(ip, port, currentPath, "admin/sync_group")
+            val jsonBody = JSONObject().apply {
+                put("group_id", groupId)
+                put("user_id", userId)
+                put("remove_missing", if (removeMissing) 1 else 0)
+            }
+            val reqBody = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            var response = uploadClient.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+            var body = response.body?.string() ?: ""
+
+            if (response.code == 404 || response.code == 405) {
+                val detected = probeNasServer(ip, port, currentPath).getOrNull()
+                if (detected != null && detected != currentPath) {
+                    currentPath = detected
+                    url = buildEndpointUrl(ip, port, currentPath, "admin/sync_group")
+                    response = uploadClient.newCall(Request.Builder().url(url).post(reqBody).build()).execute()
+                    body = response.body?.string() ?: ""
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val detail = if (body.isNotBlank()) extractHtmlOrPhpError(body, response.code, currentPath) else response.message
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $detail"))
+            }
+
+            val json = parseJsonObjectSafely(body)
+            Result.success(
+                NasSyncGroupResult(
+                    groupId = json.optInt("group_id", groupId),
+                    addedPosts = json.optInt("added_posts", 0),
+                    addedFiles = json.optInt("added_files", 0),
+                    totalFiles = json.optInt("total_files", 0),
+                    removedMissing = json.optInt("removed_missing", 0)
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }

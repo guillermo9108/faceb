@@ -93,10 +93,12 @@ import com.example.model.GroupOrganizationMode
 import com.example.model.MediaType
 import com.example.model.Post
 import com.example.model.ReactionType
+import com.example.model.VideoWatchProgress
 import com.example.ui.components.PostCard
 import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.LanOnlineGreen
 import com.example.util.QueuedPostDownload
+import com.example.util.SeriesEpisodeHelper
 import kotlinx.coroutines.delay
 
 @Composable
@@ -131,7 +133,12 @@ fun GroupsScreen(
     onCreatePostInGroup: (FamilyGroup) -> Unit = {},
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
-    onPostsSeen: (List<Post>) -> Unit = {}
+    onPostsSeen: (List<Post>) -> Unit = {},
+    isSyncingGroup: Boolean = false,
+    onSyncGroupFolder: (groupId: Int, removeMissing: Boolean) -> Unit = { _, _ -> },
+    watchProgressMap: Map<Int, VideoWatchProgress> = emptyMap(),
+    onEditPost: (Post) -> Unit = {},
+    onToggleWatched: (Int) -> Unit = {}
 ) {
     val isAdmin = currentMember.role.equals("Administrador", ignoreCase = true) ||
             currentMember.name.equals("Administrador", ignoreCase = true) ||
@@ -171,7 +178,12 @@ fun GroupsScreen(
             onToggleSaveOffline = onToggleSaveOffline,
             onVideoStarted = onVideoStarted,
             downloadStates = downloadStates,
-            onPostsSeen = onPostsSeen
+            onPostsSeen = onPostsSeen,
+            isSyncingGroup = isSyncingGroup,
+            onSyncGroupFolder = { removeMissing -> onSyncGroupFolder(selectedGroup.id, removeMissing) },
+            watchProgressMap = watchProgressMap,
+            onEditPost = onEditPost,
+            onToggleWatched = onToggleWatched
         )
     } else {
         GroupsListView(
@@ -665,7 +677,12 @@ private fun GroupDetailView(
     onToggleSaveOffline: (Post) -> Unit = {},
     onVideoStarted: ((postId: Int, videoUrl: String, fallbackChunkUrl: String?) -> Unit)? = null,
     downloadStates: Map<Int, QueuedPostDownload> = emptyMap(),
-    onPostsSeen: (List<Post>) -> Unit = {}
+    onPostsSeen: (List<Post>) -> Unit = {},
+    isSyncingGroup: Boolean = false,
+    onSyncGroupFolder: (Boolean) -> Unit = {},
+    watchProgressMap: Map<Int, VideoWatchProgress> = emptyMap(),
+    onEditPost: (Post) -> Unit = {},
+    onToggleWatched: (Int) -> Unit = {}
 ) {
     val canManageGroup = isAdmin || group.createdByUserId == currentMember.id
     val canUserPost = group.allowUploads || canManageGroup
@@ -905,6 +922,42 @@ private fun GroupDetailView(
                         }
                     }
 
+                    if (canManageGroup && group.folderPath.isNotBlank() && !group.folderPath.startsWith("manual://")) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { if (!isSyncingGroup) onSyncGroupFolder(false) },
+                                enabled = !isSyncingGroup,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("sync_group_folder_button")
+                            ) {
+                                if (isSyncingGroup) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = FacebookBlue
+                                    )
+                                } else {
+                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp), tint = FacebookBlue)
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isSyncingGroup) "Sincronizando..." else "Sincronizar carpeta NAS",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = FacebookBlue
+                                )
+                            }
+                        }
+                    }
+
                     if (group.organizationMode == GroupOrganizationMode.SERIES) {
                         Surface(
                             color = FacebookBlue.copy(alpha = 0.09f),
@@ -1031,29 +1084,77 @@ private fun GroupDetailView(
             }
         } else {
             itemsIndexed(posts, key = { _, p -> p.id }) { index, post ->
+                val epWatchProgress = watchProgressMap[post.id]
                 Column(modifier = Modifier.fillMaxWidth()) {
                     if (group.organizationMode == GroupOrganizationMode.SERIES) {
-                        Surface(
-                            color = FacebookBlue.copy(alpha = 0.1f),
-                            shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
-                            modifier = Modifier.padding(horizontal = 14.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                color = FacebookBlue.copy(alpha = 0.1f),
+                                shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlaylistPlay,
-                                    contentDescription = null,
-                                    tint = FacebookBlue,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Episodio ${index + 1}",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = FacebookBlue
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlaylistPlay,
+                                        contentDescription = null,
+                                        tint = FacebookBlue,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    val episodeBadge = remember(post.id, post.contentText, index) {
+                                        SeriesEpisodeHelper.formatEpisodeBadge(post, index)
+                                    }
+                                    Text(
+                                        text = episodeBadge,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = FacebookBlue
+                                    )
+                                }
+                            }
+
+                            if (epWatchProgress?.isWatched == true) {
+                                Surface(
+                                    color = LanOnlineGreen.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Episodio visto",
+                                            tint = LanOnlineGreen,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "Visto",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = LanOnlineGreen
+                                        )
+                                    }
+                                }
+                            } else if (epWatchProgress != null && epWatchProgress.progressFraction > 0.02f) {
+                                Surface(
+                                    color = FacebookBlue.copy(alpha = 0.1f),
+                                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+                                ) {
+                                    Text(
+                                        text = "${(epWatchProgress.progressFraction * 100).toInt()}% visto",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = FacebookBlue,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1069,7 +1170,11 @@ private fun GroupDetailView(
                         onToggleSaveOffline = { onToggleSaveOffline(post) },
                         fallbackFolderImageUrl = group.coverPhotoUrl,
                         onVideoStarted = onVideoStarted,
-                        downloadState = downloadStates[post.id]
+                        downloadState = downloadStates[post.id],
+                        watchProgress = epWatchProgress,
+                        highlightQuery = searchQuery,
+                        onEditPost = { onEditPost(post) },
+                        onToggleWatched = { onToggleWatched(post.id) }
                     )
                 }
             }

@@ -552,6 +552,10 @@ object SynologyScripts {
                 exit;
             }
 
+            if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+                @session_write_close();
+            }
+
             ${D}size = filesize(${D}filePath);
             ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
             ${D}mimes = [
@@ -627,22 +631,94 @@ object SynologyScripts {
             exit;
         }
 
+        function findEaDirVideoThumbFile(${D}videoFsPath) {
+            if (empty(${D}videoFsPath)) return '';
+            ${D}eaDirBase = dirname(${D}videoFsPath) . '/@eaDir/' . basename(${D}videoFsPath);
+            if (@is_dir(${D}eaDirBase)) {
+                ${D}eaCandidates = [
+                    'SYNOVIDEO_VIDEO_SCREENSHOT.jpg',
+                    'SYNOPHOTO_FILM_THUMB_M.jpg',
+                    'SYNOPHOTO_THUMB_M.jpg',
+                    'SYNOPHOTO_THUMB_B.jpg',
+                    'SYNOPHOTO_THUMB_SM.jpg',
+                    'SYNOPHOTO_THUMB_XL.jpg'
+                ];
+                foreach (${D}eaCandidates as ${D}cand) {
+                    ${D}eaFile = ${D}eaDirBase . '/' . ${D}cand;
+                    if (@is_file(${D}eaFile) && @is_readable(${D}eaFile) && (@filesize(${D}eaFile) ?: 0) > 0) {
+                        return ${D}eaFile;
+                    }
+                }
+            }
+            return '';
+        }
+
         function streamLightweightThumbOrFallback(${D}filePath, ${D}maxDim = 640) {
+            if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+                @session_write_close();
+            }
             if (!@file_exists(${D}filePath) || !@is_readable(${D}filePath)) {
-                streamMediaFile(${D}filePath);
+                http_response_code(404);
+                exit;
             }
             ${D}ext = strtolower(pathinfo(${D}filePath, PATHINFO_EXTENSION));
+            ${D}vidExts = ['mp4', 'mov', 'mkv', 'avi', '3gp', 'webm', 'm4v', 'ts', 'flv'];
+            if (in_array(${D}ext, ${D}vidExts)) {
+                ${D}eaVidThumb = findEaDirVideoThumbFile(${D}filePath);
+                if (!empty(${D}eaVidThumb)) {
+                    streamMediaFile(${D}eaVidThumb);
+                }
+                ${D}thumbDir = __DIR__ . '/uploads/thumbs_cache';
+                if (!is_dir(${D}thumbDir)) {
+                    @mkdir(${D}thumbDir, 0777, true);
+                }
+                ${D}mtime = @filemtime(${D}filePath) ?: 0;
+                ${D}vCacheFile = ${D}thumbDir . '/v_' . md5(${D}filePath . '_' . ${D}mtime . '_' . ${D}maxDim) . '.jpg';
+                if (@file_exists(${D}vCacheFile) && (@filesize(${D}vCacheFile) ?: 0) > 0) {
+                    streamMediaFile(${D}vCacheFile);
+                }
+                if (function_exists('exec')) {
+                    ${D}ffmpegBin = '';
+                    foreach (['/usr/bin/ffmpeg', '/bin/ffmpeg', '/usr/local/bin/ffmpeg'] as ${D}bin) {
+                        if (@is_executable(${D}bin)) { ${D}ffmpegBin = ${D}bin; break; }
+                    }
+                    if (!empty(${D}ffmpegBin)) {
+                        ${D}cmd = escapeshellcmd(${D}ffmpegBin) . ' -y -ss 00:00:02 -i ' . escapeshellarg(${D}filePath) . ' -vframes 1 -vf ' . escapeshellarg("scale=" . (int)${D}maxDim . ":-1") . ' -q:v 5 ' . escapeshellarg(${D}vCacheFile) . ' 2>/dev/null';
+                        @exec(${D}cmd);
+                        if (@file_exists(${D}vCacheFile) && (@filesize(${D}vCacheFile) ?: 0) > 0) {
+                            streamMediaFile(${D}vCacheFile);
+                        }
+                    }
+                }
+                http_response_code(404);
+                exit;
+            }
             if (!in_array(${D}ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'])) {
                 streamMediaFile(${D}filePath);
             }
-            if (!function_exists('imagecreatefromstring') || !function_exists('imagecreatetruecolor') || !function_exists('imagejpeg')) {
+
+            // 1. Priorizar miniaturas pre-generadas por Synology DSM (@eaDir) con 0% carga CPU/GD
+            ${D}eaDirBase = dirname(${D}filePath) . '/@eaDir/' . basename(${D}filePath);
+            if (@is_dir(${D}eaDirBase)) {
+                ${D}eaCandidates = (${D}maxDim <= 480)
+                    ? ['SYNOPHOTO_THUMB_SM.jpg', 'SYNOPHOTO_THUMB_M.jpg', 'SYNOPHOTO_THUMB_B.jpg']
+                    : ['SYNOPHOTO_THUMB_M.jpg', 'SYNOPHOTO_THUMB_B.jpg', 'SYNOPHOTO_THUMB_SM.jpg'];
+                foreach (${D}eaCandidates as ${D}cand) {
+                    ${D}eaFile = ${D}eaDirBase . '/' . ${D}cand;
+                    if (@is_file(${D}eaFile) && @is_readable(${D}eaFile) && (@filesize(${D}eaFile) ?: 0) > 0) {
+                        streamMediaFile(${D}eaFile);
+                    }
+                }
+            }
+
+            if (!function_exists('imagecreatetruecolor') || !function_exists('imagejpeg')) {
                 streamMediaFile(${D}filePath);
             }
             ${D}size = @filesize(${D}filePath);
             if (${D}size !== false && ${D}size <= 140 * 1024) {
                 streamMediaFile(${D}filePath);
             }
-            if (${D}size !== false && ${D}size > 25 * 1024 * 1024) {
+            if (${D}size !== false && ${D}size > 12 * 1024 * 1024) {
                 streamMediaFile(${D}filePath);
             }
 
@@ -657,10 +733,23 @@ object SynologyScripts {
             }
 
             try {
-                ${D}raw = @file_get_contents(${D}filePath);
-                if (${D}raw === false) streamMediaFile(${D}filePath);
-                ${D}src = @imagecreatefromstring(${D}raw);
-                unset(${D}raw);
+                ${D}src = false;
+                if (in_array(${D}ext, ['jpg', 'jpeg']) && function_exists('imagecreatefromjpeg')) {
+                    ${D}src = @imagecreatefromjpeg(${D}filePath);
+                } elseif (${D}ext === 'png' && function_exists('imagecreatefrompng')) {
+                    ${D}src = @imagecreatefrompng(${D}filePath);
+                } elseif (${D}ext === 'webp' && function_exists('imagecreatefromwebp')) {
+                    ${D}src = @imagecreatefromwebp(${D}filePath);
+                } elseif (${D}ext === 'gif' && function_exists('imagecreatefromgif')) {
+                    ${D}src = @imagecreatefromgif(${D}filePath);
+                }
+                if (!${D}src && function_exists('imagecreatefromstring')) {
+                    ${D}raw = @file_get_contents(${D}filePath);
+                    if (${D}raw !== false) {
+                        ${D}src = @imagecreatefromstring(${D}raw);
+                        unset(${D}raw);
+                    }
+                }
                 if (!${D}src) streamMediaFile(${D}filePath);
 
                 // Corregir orientación EXIF para fotos JPEG tomadas en móvil
@@ -703,6 +792,135 @@ object SynologyScripts {
                 // Fallback seguro al archivo original
             }
             streamMediaFile(${D}filePath);
+        }
+
+        function extractSeriesEpisodeKey(${D}text) {
+            ${D}src = trim((string)${D}text);
+            if (${D}src === '') {
+                return ['has_ep' => false, 'season' => 1, 'episode' => 2147483647, 'sub_part' => 0, 'norm' => ''];
+            }
+            if (preg_match('/^\s*0*(\d{1,6})\s*$/', ${D}src, ${D}pm)) {
+                return ['has_ep' => true, 'season' => 1, 'episode' => (int)${D}pm[1], 'sub_part' => 0, 'norm' => ${D}src];
+            }
+
+            ${D}sanitized = preg_replace('/\b(?:1920x1080|1280x720|3840x2160|720x480|640x480|16x9|4x3)\b/i', ' ', ${D}src);
+            ${D}extractSub = function(${D}t) {
+                if (preg_match('/\b(?:parte?|pt)\.?\s*0*(\d{1,2})\b/i', ${D}t, ${D}sm)) {
+                    return (int)${D}sm[1];
+                }
+                return 0;
+            };
+
+            // Nivel 1: Temporada + Episodio combinados (t1x05, S01E05, 1x05, Temporada 2 Cap 03)
+            ${D}matchedCombined = null;
+            if (preg_match('/(?<![a-zA-Z0-9])[tTsS]\s*0*(\d{1,3})\s*[xXeE.\-_ ]+\s*(?:[cCeE](?:ap(?:[ií]tulo)?|h(?:apter)?|p(?:isodio|isode)?)?[.\-_ ]*)?0*(\d{1,5})(?:\.(\d{1,2})(?![0-9]))?(?![a-zA-Z0-9])/u', ${D}sanitized, ${D}m, PREG_OFFSET_CAPTURE)) {
+                ${D}matchedCombined = ${D}m;
+            } elseif (preg_match('/(?<![a-zA-Z0-9])0*(\d{1,2})\s*[xX×]\s*0*(\d{1,5})(?:\.(\d{1,2})(?![0-9]))?(?![a-zA-Z0-9])/u', ${D}sanitized, ${D}m, PREG_OFFSET_CAPTURE)) {
+                ${D}matchedCombined = ${D}m;
+            } elseif (preg_match('/(?:temporada|temp\.?|season)\s*0*(\d{1,3})[\s\-–—_.,|\/]+(?:cap(?:[ií]tulo|s)?\.?|ep(?:isodio|isode|s)?\.?|ch(?:apter)?\.?|#)?\s*0*(\d{1,5})(?:\.(\d{1,2})(?![0-9]))?\b/iu', ${D}sanitized, ${D}m, PREG_OFFSET_CAPTURE)) {
+                ${D}matchedCombined = ${D}m;
+            }
+
+            if (${D}matchedCombined !== null) {
+                ${D}sNum = (int)${D}matchedCombined[1][0];
+                ${D}eNum = (int)${D}matchedCombined[2][0];
+                ${D}dotSub = isset(${D}matchedCombined[3][0]) && ${D}matchedCombined[3][0] !== '' ? (int)${D}matchedCombined[3][0] : 0;
+                ${D}cleanedSubStr = substr_replace(${D}sanitized, ' ', ${D}matchedCombined[0][1], strlen(${D}matchedCombined[0][0]));
+                ${D}subPart = ${D}dotSub > 0 ? ${D}dotSub : ${D}extractSub(${D}cleanedSubStr);
+                return ['has_ep' => true, 'season' => ${D}sNum, 'episode' => ${D}eNum, 'sub_part' => ${D}subPart, 'norm' => ${D}src];
+            }
+
+            // Temporada independiente (ej. "Cap 05 (Temporada 2)")
+            ${D}effSeason = 1;
+            ${D}withoutSeason = ${D}sanitized;
+            if (preg_match('/(?:temporada|temp\.?|season)\s*0*(\d{1,3})\b/iu', ${D}withoutSeason, ${D}ms, PREG_OFFSET_CAPTURE)) {
+                ${D}effSeason = (int)${D}ms[1][0];
+                ${D}withoutSeason = substr_replace(${D}withoutSeason, ' ', ${D}ms[0][1], strlen(${D}ms[0][0]));
+            } elseif (preg_match('/(?:^|[\s(\[\/_\-])(?:t|s)0*(\d{1,2})(?=[\s)\/\]_\-]|$)/i', ${D}withoutSeason, ${D}ms, PREG_OFFSET_CAPTURE)) {
+                ${D}effSeason = (int)${D}ms[1][0];
+                ${D}withoutSeason = substr_replace(${D}withoutSeason, ' ', ${D}ms[0][1], strlen(${D}ms[0][0]));
+            }
+
+            // Nivel 2: Palabra clave de capítulo / episodio ("cap 01", "Cap. 004", "Ep 05", "#12")
+            ${D}kwMatch = null;
+            if (preg_match('/(?<![a-zA-Z])(?:cap(?:[ií]tulo|itulos|s)?|ep(?:isodio|isode|s)?|ch(?:apter)?|epis|folge)\.?\s*[#:\-_]*\s*0*(\d{1,5})(?:\.(\d{1,2})(?![0-9]))?(?![a-zA-Z0-9])/iu', ${D}withoutSeason, ${D}mk, PREG_OFFSET_CAPTURE)) {
+                ${D}kwMatch = ${D}mk;
+            } elseif (preg_match('/(?:^|[\s._\-\(\[])[eE][pP]?0*(\d{1,5})(?:\.(\d{1,2}))?(?=[\s._\-\)\]]|$)/', ${D}withoutSeason, ${D}mk, PREG_OFFSET_CAPTURE)) {
+                ${D}kwMatch = ${D}mk;
+            } elseif (preg_match('/#\s*0*(\d{1,5})\b/', ${D}withoutSeason, ${D}mk, PREG_OFFSET_CAPTURE)) {
+                ${D}kwMatch = ${D}mk;
+            }
+
+            if (${D}kwMatch !== null) {
+                ${D}eNum = (int)${D}kwMatch[1][0];
+                ${D}dotSub = isset(${D}kwMatch[2][0]) && ${D}kwMatch[2][0] !== '' ? (int)${D}kwMatch[2][0] : 0;
+                ${D}rest = substr_replace(${D}withoutSeason, ' ', ${D}kwMatch[0][1], strlen(${D}kwMatch[0][0]));
+                ${D}subPart = ${D}dotSub > 0 ? ${D}dotSub : ${D}extractSub(${D}rest);
+                return ['has_ep' => true, 'season' => ${D}effSeason, 'episode' => ${D}eNum, 'sub_part' => ${D}subPart, 'norm' => ${D}src];
+            }
+
+            // Nivel 3: Números sueltos tras limpiar ruido técnico (1080p, x264, años)
+            ${D}partMatch = null;
+            if (preg_match('/\b(?:parte?|pt)\.?\s*0*(\d{1,2})\b/i', ${D}withoutSeason, ${D}mp, PREG_OFFSET_CAPTURE)) {
+                ${D}partMatch = ${D}mp;
+            }
+            ${D}cleaned = preg_replace('/\b(?:\d{3,4}[pPiI]|[xh]\.?26[45]|10bit|8bit|24fps|25fps|30fps|50fps|60fps|4k|8k|hd|fhd|uhd|hdr|sdr|aac|ac3|eac3|dts|hevc|av1|xvid|divx|dvdrip|bdrip|brrip|webrip|web[\-_ ]?dl|hdtv|mp4|mkv|avi|mov|latino|castellano|espa[nñ]ol|sub(?:titulado)?|5\.1|7\.1)\b/iu', ' ', ${D}withoutSeason);
+            ${D}cleaned = preg_replace_callback('/(?:^|[\s(\[_\-])(19[5-9]\d|20[0-3]\d)(?=[\s)\]._\-]|$)/', function(${D}ym) {
+                return substr(${D}ym[1], 0, 1) === '0' ? ${D}ym[0] : ' ';
+            }, ${D}cleaned);
+            ${D}cleaned = trim(${D}cleaned);
+
+            if (preg_match('/^\s*0*(\d{1,5})(?:\.(\d{1,2}))?(?=$|[\s._\-\(\[])/', ${D}cleaned, ${D}ml, PREG_OFFSET_CAPTURE)) {
+                ${D}eNum = (int)${D}ml[1][0];
+                ${D}dotSub = isset(${D}ml[2][0]) && ${D}ml[2][0] !== '' ? (int)${D}ml[2][0] : 0;
+                ${D}rest = substr_replace(${D}cleaned, ' ', ${D}ml[0][1], strlen(${D}ml[0][0]));
+                ${D}subPart = ${D}dotSub > 0 ? ${D}dotSub : ${D}extractSub(${D}rest);
+                return ['has_ep' => true, 'season' => ${D}effSeason, 'episode' => ${D}eNum, 'sub_part' => ${D}subPart, 'norm' => ${D}src];
+            }
+
+            if (preg_match_all('/(?<!\d)0*(\d{1,5})(?!\d)/', ${D}cleaned, ${D}allNums, PREG_OFFSET_CAPTURE) && !empty(${D}allNums[1])) {
+                ${D}idx = count(${D}allNums[1]) - 1;
+                if (${D}partMatch !== null && count(${D}allNums[1]) >= 2) {
+                    for (${D}k = count(${D}allNums[1]) - 1; ${D}k >= 0; ${D}k--) {
+                        if (${D}allNums[1][${D}k][1] < ${D}partMatch[0][1]) {
+                            ${D}idx = ${D}k;
+                            break;
+                        }
+                    }
+                }
+                ${D}chosen = ${D}allNums[1][${D}idx];
+                ${D}subPart = (${D}partMatch !== null && ${D}chosen[1] < ${D}partMatch[0][1]) ? (int)${D}partMatch[1][0] : 0;
+                return ['has_ep' => true, 'season' => ${D}effSeason, 'episode' => (int)${D}chosen[0], 'sub_part' => ${D}subPart, 'norm' => ${D}src];
+            }
+
+            return ['has_ep' => false, 'season' => ${D}effSeason, 'episode' => 2147483647, 'sub_part' => 0, 'norm' => ${D}src];
+        }
+
+        function compareSeriesMetaRows(${D}a, ${D}b) {
+            ${D}pinA = (int)(${D}a['is_pinned'] ?? 0);
+            ${D}pinB = (int)(${D}b['is_pinned'] ?? 0);
+            if (${D}pinA !== ${D}pinB) return (${D}pinB <=> ${D}pinA);
+
+            ${D}ka = extractSeriesEpisodeKey(${D}a['content_text'] ?? '');
+            ${D}kb = extractSeriesEpisodeKey(${D}b['content_text'] ?? '');
+
+            if (${D}ka['has_ep'] !== ${D}kb['has_ep']) {
+                return ${D}ka['has_ep'] ? -1 : 1;
+            }
+            if (${D}ka['season'] !== ${D}kb['season']) {
+                return (${D}ka['season'] <=> ${D}kb['season']);
+            }
+            if (${D}ka['episode'] !== ${D}kb['episode']) {
+                return (${D}ka['episode'] <=> ${D}kb['episode']);
+            }
+            if (${D}ka['sub_part'] !== ${D}kb['sub_part']) {
+                return (${D}ka['sub_part'] <=> ${D}kb['sub_part']);
+            }
+            ${D}nat = strnatcasecmp(${D}ka['norm'], ${D}kb['norm']);
+            if (${D}nat !== 0) return ${D}nat;
+            ${D}tCmp = strcmp((string)(${D}a['created_at'] ?? ''), (string)(${D}b['created_at'] ?? ''));
+            if (${D}tCmp !== 0) return ${D}tCmp;
+            return ((int)(${D}a['id'] ?? 0) <=> (int)(${D}b['id'] ?? 0));
         }
 
         function buildDiversifiedFeedIds(${D}metaRows, ${D}inventoryCapPerGroup = 3, ${D}inventoryWindow = 30) {
@@ -1515,7 +1733,7 @@ object SynologyScripts {
             exit;
         }
 
-        // 2.9.5 BÚSQUEDA LIGERA EN TODA LA BASE DE DATOS (Global o dentro de un grupo)
+        // 2.9.5 BÚSQUEDA INTELIGENTE TOKENIZADA EN TODA LA BASE DE DATOS (Global o dentro de un grupo)
         if (${D}method === 'GET' && (matchRoute(${D}action, ${D}uri, 'search') || str_ends_with(${D}uri, '/search'))) {
             ${D}q = trim(${D}_GET['q'] ?? '');
             ${D}groupId = (int)(${D}_GET['group_id'] ?? 0);
@@ -1525,16 +1743,52 @@ object SynologyScripts {
             }
             try {
                 ${D}db = getDB();
-                ${D}pattern = '%' . ${D}q . '%';
-                ${D}searchCond = "(COALESCE(p.content_text,'') LIKE ? OR COALESCE(p.feeling,'') LIKE ? OR COALESCE(p.location,'') LIKE ? OR COALESCE(u.display_name,'') LIKE ? OR COALESCE(g.name,'') LIKE ?)";
-                if (${D}groupId > 0) {
-                    ${D}where = "p.group_id = ? AND " . ${D}searchCond;
-                    ${D}params = [${D}groupId, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern];
-                } else {
-                    ${D}where = ${D}searchCond;
-                    ${D}params = [${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern, ${D}pattern];
+                ${D}rawTokens = preg_split('/[\s,.;:!?\/\\\\|_\-]+/u', ${D}q);
+                ${D}tokens = [];
+                ${D}stopWords = ['el','la','los','las','de','del','en','y','e','o','u','con','por','para','un','una','al','a'];
+                if (is_array(${D}rawTokens)) {
+                    foreach (${D}rawTokens as ${D}tk) {
+                        ${D}tk = trim(${D}tk);
+                        if (${D}tk === '') continue;
+                        ${D}low = function_exists('mb_strtolower') ? mb_strtolower(${D}tk, 'UTF-8') : strtolower(${D}tk);
+                        if (!in_array(${D}low, ${D}tokens, true)) {
+                            ${D}tokens[] = ${D}low;
+                        }
+                    }
                 }
-                ${D}stmt = ${D}db->prepare("
+                ${D}meaningfulTokens = [];
+                foreach (${D}tokens as ${D}tk) {
+                    if (preg_match('/\d/', ${D}tk) || (strlen(${D}tk) >= 2 && !in_array(${D}tk, ${D}stopWords, true))) {
+                        ${D}meaningfulTokens[] = ${D}tk;
+                    }
+                }
+                if (!empty(${D}meaningfulTokens)) {
+                    ${D}tokens = ${D}meaningfulTokens;
+                }
+                if (empty(${D}tokens)) {
+                    ${D}tokens = [${D}q];
+                }
+                ${D}tokens = array_slice(${D}tokens, 0, 8);
+
+                ${D}buildSearchSql = function(${D}tokenList, ${D}joinOp) use (${D}groupId) {
+                    ${D}clauses = [];
+                    ${D}params = [];
+                    foreach (${D}tokenList as ${D}tok) {
+                        ${D}pat = '%' . ${D}tok . '%';
+                        ${D}clauses[] = "(COALESCE(p.content_text,'') LIKE ? OR COALESCE(p.feeling,'') LIKE ? OR COALESCE(p.location,'') LIKE ? OR COALESCE(u.display_name,'') LIKE ? OR COALESCE(g.name,'') LIKE ? OR EXISTS (SELECT 1 FROM media m WHERE m.post_id = p.id AND m.file_path LIKE ?))";
+                        array_push(${D}params, ${D}pat, ${D}pat, ${D}pat, ${D}pat, ${D}pat, ${D}pat);
+                    }
+                    ${D}cond = '(' . implode(" ${D}joinOp ", ${D}clauses) . ')';
+                    if (${D}groupId > 0) {
+                        ${D}where = "p.group_id = ? AND " . ${D}cond;
+                        array_unshift(${D}params, ${D}groupId);
+                    } else {
+                        ${D}where = ${D}cond;
+                    }
+                    return [${D}where, ${D}params];
+                };
+
+                ${D}baseSelect = "
                     SELECT p.*,
                            COALESCE(u.display_name, 'Familiar') as display_name,
                            COALESCE(u.role, 'Familiar') as role,
@@ -1547,12 +1801,56 @@ object SynologyScripts {
                     FROM posts p
                     LEFT JOIN users u ON p.user_id = u.id
                     LEFT JOIN family_groups g ON g.id = p.group_id
-                    WHERE ${D}where
-                    ORDER BY p.is_pinned DESC, p.created_at DESC
-                    LIMIT 200
-                ");
-                ${D}stmt->execute(${D}params);
-                ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                ";
+
+                list(${D}whereAnd, ${D}paramsAnd) = ${D}buildSearchSql(${D}tokens, 'AND');
+                ${D}stmt = ${D}db->prepare("${D}baseSelect WHERE ${D}whereAnd ORDER BY p.is_pinned DESC, p.created_at DESC LIMIT 200");
+                ${D}stmt->execute(${D}paramsAnd);
+                ${D}fetchedRows = ${D}stmt->fetchAll();
+
+                // Si todas las palabras juntas no arrojaron nada, hacer respaldo OR ordenado por relevancia
+                if (empty(${D}fetchedRows) && count(${D}tokens) > 1) {
+                    list(${D}whereOr, ${D}paramsOr) = ${D}buildSearchSql(${D}tokens, 'OR');
+                    ${D}stmtOr = ${D}db->prepare("${D}baseSelect WHERE ${D}whereOr ORDER BY p.is_pinned DESC, p.created_at DESC LIMIT 200");
+                    ${D}stmtOr->execute(${D}paramsOr);
+                    ${D}fetchedRows = ${D}stmtOr->fetchAll();
+                }
+
+                ${D}isSeriesSearch = false;
+                if (${D}groupId > 0) {
+                    try {
+                        ${D}gmStmt = ${D}db->prepare("SELECT organization_mode FROM family_groups WHERE id = ? LIMIT 1");
+                        ${D}gmStmt->execute([${D}groupId]);
+                        if (strtoupper(trim((string)(${D}gmStmt->fetchColumn() ?: 'NORMAL'))) === 'SERIES') {
+                            ${D}isSeriesSearch = true;
+                        }
+                    } catch (Exception ${D}eGm) {}
+                }
+
+                if (${D}isSeriesSearch) {
+                    usort(${D}fetchedRows, 'compareSeriesMetaRows');
+                } elseif (count(${D}tokens) > 1 && !empty(${D}fetchedRows)) {
+                    ${D}fullLow = function_exists('mb_strtolower') ? mb_strtolower(${D}q, 'UTF-8') : strtolower(${D}q);
+                    usort(${D}fetchedRows, function(${D}a, ${D}b) use (${D}tokens, ${D}fullLow) {
+                        ${D}scoreFn = function(${D}r) use (${D}tokens, ${D}fullLow) {
+                            ${D}txt = ((string)(${D}r['content_text'] ?? '')) . ' ' . ((string)(${D}r['display_name'] ?? '')) . ' ' . ((string)(${D}r['group_name'] ?? '')) . ' ' . ((string)(${D}r['location'] ?? '')) . ' ' . ((string)(${D}r['feeling'] ?? ''));
+                            ${D}txtLow = function_exists('mb_strtolower') ? mb_strtolower(${D}txt, 'UTF-8') : strtolower(${D}txt);
+                            ${D}s = (strpos(${D}txtLow, ${D}fullLow) !== false) ? 100 : 0;
+                            ${D}hits = 0;
+                            foreach (${D}tokens as ${D}t) {
+                                if (strpos(${D}txtLow, ${D}t) !== false) { ${D}hits++; ${D}s += 20; }
+                            }
+                            if (${D}hits === count(${D}tokens)) ${D}s += 60;
+                            return ${D}s;
+                        };
+                        ${D}sa = ${D}scoreFn(${D}a);
+                        ${D}sb = ${D}scoreFn(${D}b);
+                        if (${D}sa !== ${D}sb) return (${D}sa > ${D}sb) ? -1 : 1;
+                        return strcmp((string)(${D}b['created_at'] ?? ''), (string)(${D}a['created_at'] ?? ''));
+                    });
+                }
+
+                ${D}rows = hydratePostsWithDetails(${D}db, ${D}fetchedRows);
                 echo json_encode([
                     "posts" => ${D}rows,
                     "total_count" => count(${D}rows),
@@ -2039,25 +2337,65 @@ object SynologyScripts {
                 ${D}cntStmt->execute([${D}groupId]);
                 ${D}totalCount = (int)${D}cntStmt->fetchColumn();
 
-                ${D}stmt = ${D}db->prepare("
-                    SELECT p.*, 
-                           COALESCE(u.display_name, 'Familiar') as display_name,
-                           COALESCE(u.role, 'Familiar') as role,
-                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
-                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
-                           g.name as group_name,
-                           g.cover_photo_url as group_cover_photo_url,
-                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
-                           (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
-                    FROM posts p
-                    LEFT JOIN users u ON p.user_id = u.id
-                    LEFT JOIN family_groups g ON g.id = p.group_id
-                    WHERE p.group_id = ?
-                    ORDER BY ${D}orderClause
-                    LIMIT ${D}limit OFFSET ${D}offset
-                ");
-                ${D}stmt->execute([${D}groupId]);
-                ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                if (${D}orgMode === 'SERIES') {
+                    ${D}metaStmt = ${D}db->prepare("SELECT id, is_pinned, content_text, created_at FROM posts WHERE group_id = ?");
+                    ${D}metaStmt->execute([${D}groupId]);
+                    ${D}allMeta = ${D}metaStmt->fetchAll();
+                    usort(${D}allMeta, 'compareSeriesMetaRows');
+                    ${D}sliceMeta = array_slice(${D}allMeta, ${D}offset, ${D}limit);
+                    ${D}pageIds = array_map(function(${D}m) { return (int)${D}m['id']; }, ${D}sliceMeta);
+
+                    ${D}rawRows = [];
+                    if (!empty(${D}pageIds)) {
+                        ${D}placeholders = implode(',', array_fill(0, count(${D}pageIds), '?'));
+                        ${D}stmt = ${D}db->prepare("
+                            SELECT p.*,
+                                   COALESCE(u.display_name, 'Familiar') as display_name,
+                                   COALESCE(u.role, 'Familiar') as role,
+                                   COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                                   COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                                   g.name as group_name,
+                                   g.cover_photo_url as group_cover_photo_url,
+                                   (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                                   (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                            FROM posts p
+                            LEFT JOIN users u ON p.user_id = u.id
+                            LEFT JOIN family_groups g ON g.id = p.group_id
+                            WHERE p.id IN (${D}placeholders)
+                        ");
+                        ${D}stmt->execute(${D}pageIds);
+                        ${D}byId = [];
+                        foreach (${D}stmt->fetchAll() as ${D}r) {
+                            ${D}byId[(int)${D}r['id']] = ${D}r;
+                        }
+                        foreach (${D}pageIds as ${D}pid) {
+                            if (isset(${D}byId[${D}pid])) {
+                                ${D}rawRows[] = ${D}byId[${D}pid];
+                            }
+                        }
+                    }
+                    ${D}rows = hydratePostsWithDetails(${D}db, ${D}rawRows);
+                } else {
+                    ${D}stmt = ${D}db->prepare("
+                        SELECT p.*, 
+                               COALESCE(u.display_name, 'Familiar') as display_name,
+                               COALESCE(u.role, 'Familiar') as role,
+                               COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                               COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                               g.name as group_name,
+                               g.cover_photo_url as group_cover_photo_url,
+                               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                               (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                        FROM posts p
+                        LEFT JOIN users u ON p.user_id = u.id
+                        LEFT JOIN family_groups g ON g.id = p.group_id
+                        WHERE p.group_id = ?
+                        ORDER BY p.is_pinned DESC, p.created_at DESC
+                        LIMIT ${D}limit OFFSET ${D}offset
+                    ");
+                    ${D}stmt->execute([${D}groupId]);
+                    ${D}rows = hydratePostsWithDetails(${D}db, ${D}stmt->fetchAll());
+                }
                 ${D}nextOffset = ${D}offset + count(${D}rows);
                 echo json_encode([
                     "posts" => ${D}rows,
@@ -2245,20 +2583,38 @@ object SynologyScripts {
                     ${D}existingPaths = ${D}stmtExisting->fetchAll(PDO::FETCH_COLUMN) ?: [];
                 } catch (Exception ${D}ex) {}
 
-                ${D}entries = @scandir(${D}basePath);
+                ${D}normalizedBase = rtrim(${D}basePath, '/');
+                if (${D}normalizedBase === '') ${D}normalizedBase = '/';
+                ${D}parentDir = dirname(${D}normalizedBase);
+                ${D}parentPath = (${D}parentDir !== '' && ${D}parentDir !== '.' && ${D}parentDir !== '/' && ${D}parentDir !== ${D}normalizedBase)
+                    ? ${D}parentDir
+                    : null;
+
+                ${D}entries = @scandir(${D}normalizedBase);
                 ${D}folders = [];
 
                 if (${D}entries !== false) {
                     foreach (${D}entries as ${D}entry) {
-                        if (${D}entry === '.' || ${D}entry === '..' || ${D}entry === '@eaDir' || ${D}entry === '#recycle') continue;
-                        ${D}fullPath = rtrim(${D}basePath, '/') . '/' . ${D}entry;
-                        if (is_dir(${D}fullPath)) {
+                        if (${D}entry === '.' || ${D}entry === '..' || ${D}entry === '@eaDir' || ${D}entry === '#recycle' || strpos(${D}entry, '.') === 0) continue;
+                        ${D}fullPath = rtrim(${D}normalizedBase, '/') . '/' . ${D}entry;
+                        if (@is_dir(${D}fullPath)) {
                             ${D}mediaList = collectFolderMediaRecursive(${D}fullPath);
                             ${D}photoCount = 0;
                             ${D}videoCount = 0;
                             foreach (${D}mediaList as ${D}mItem) {
                                 if (${D}mItem['type'] === 'IMAGE') ${D}photoCount++;
                                 else if (${D}mItem['type'] === 'VIDEO') ${D}videoCount++;
+                            }
+
+                            ${D}subfoldersCount = 0;
+                            ${D}subEntries = @scandir(${D}fullPath);
+                            if (${D}subEntries !== false) {
+                                foreach (${D}subEntries as ${D}se) {
+                                    if (${D}se === '.' || ${D}se === '..' || ${D}se === '@eaDir' || ${D}se === '#recycle' || strpos(${D}se, '.') === 0) continue;
+                                    if (@is_dir(${D}fullPath . '/' . ${D}se)) {
+                                        ${D}subfoldersCount++;
+                                    }
+                                }
                             }
 
                             ${D}isImported = in_array(${D}fullPath, ${D}existingPaths);
@@ -2268,14 +2624,23 @@ object SynologyScripts {
                                 "photos_count" => ${D}photoCount,
                                 "videos_count" => ${D}videoCount,
                                 "media_count" => (${D}photoCount + ${D}videoCount),
-                                "has_subfolders" => true,
+                                "subfolders_count" => ${D}subfoldersCount,
+                                "has_subfolders" => (${D}subfoldersCount > 0),
                                 "already_imported" => ${D}isImported
                             ];
                         }
                     }
+                    usort(${D}folders, function(${D}a, ${D}b) {
+                        return strnatcasecmp(${D}a['name'], ${D}b['name']);
+                    });
                 }
 
-                echo json_encode(["status" => "OK", "base_path" => ${D}basePath, "folders" => ${D}folders]);
+                echo json_encode([
+                    "status" => "OK",
+                    "base_path" => ${D}normalizedBase,
+                    "parent_path" => ${D}parentPath,
+                    "folders" => ${D}folders
+                ]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);
@@ -2283,7 +2648,7 @@ object SynologyScripts {
             exit;
         }
 
-        // 3.6. IMPORTAR CARPETAS COMO GRUPOS Y PUBLICAR CONTENIDO MULTIMEDIA (SOLO ADMIN, CON SUBCARPETAS Y LOTES)
+        // 3.6. IMPORTAR CARPETAS COMO GRUPOS Y PUBLICAR CONTENIDO MULTIMEDIA (SOLO ADMIN, CON SUBCARPETAS, CONFIGURACIÓN EN MASA Y ORDEN DE SERIES)
         if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'admin/import_groups') || str_ends_with(${D}uri, '/admin/import_groups'))) {
             ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
             ${D}folderPaths = ${D}input['folder_paths'] ?? [];
@@ -2294,6 +2659,14 @@ object SynologyScripts {
             ${D}batchOffset = (int)(${D}input['batch_offset'] ?? 0);
             ${D}batchLimit = (int)(${D}input['batch_limit'] ?? 50);
             ${D}isBatch = !empty(${D}input['is_batch']) || isset(${D}input['batch_offset']);
+
+            ${D}hasBulkAllow = isset(${D}input['allow_member_uploads']) || isset(${D}input['allow_uploads']) || isset(${D}_POST['allow_member_uploads']);
+            ${D}bulkAllowUploads = (int)(${D}input['allow_member_uploads'] ?? ${D}input['allow_uploads'] ?? ${D}_POST['allow_member_uploads'] ?? 1);
+            ${D}bulkAllowUploads = (${D}bulkAllowUploads === 1) ? 1 : 0;
+
+            ${D}hasBulkOrgMode = isset(${D}input['organization_mode']) || isset(${D}_POST['organization_mode']);
+            ${D}rawOrgMode = strtoupper(trim((string)(${D}input['organization_mode'] ?? ${D}_POST['organization_mode'] ?? 'NORMAL')));
+            ${D}bulkOrgMode = (${D}rawOrgMode === 'SERIES') ? 'SERIES' : 'NORMAL';
 
             if (empty(${D}folderPaths) || !is_array(${D}folderPaths)) {
                 http_response_code(400);
@@ -2316,20 +2689,47 @@ object SynologyScripts {
 
                     ${D}groupName = basename(${D}fPath);
 
-                    ${D}check = ${D}db->prepare("SELECT id FROM family_groups WHERE folder_path = ? LIMIT 1");
+                    ${D}check = ${D}db->prepare("SELECT id, organization_mode FROM family_groups WHERE folder_path = ? LIMIT 1");
                     ${D}check->execute([${D}fPath]);
-                    ${D}existingId = ${D}check->fetchColumn();
+                    ${D}existingRow = ${D}check->fetch();
+                    ${D}existingId = ${D}existingRow ? (int)${D}existingRow['id'] : 0;
 
-                    if (${D}existingId) {
-                        ${D}groupId = (int)${D}existingId;
+                    if (${D}existingId > 0) {
+                        ${D}groupId = ${D}existingId;
+                        if (${D}batchOffset === 0 && (${D}hasBulkAllow || ${D}hasBulkOrgMode)) {
+                            ${D}updFields = [];
+                            ${D}updParams = [];
+                            if (${D}hasBulkAllow) { ${D}updFields[] = "allow_member_uploads = ?"; ${D}updParams[] = ${D}bulkAllowUploads; }
+                            if (${D}hasBulkOrgMode) { ${D}updFields[] = "organization_mode = ?"; ${D}updParams[] = ${D}bulkOrgMode; }
+                            if (!empty(${D}updFields)) {
+                                ${D}updParams[] = ${D}groupId;
+                                ${D}db->prepare("UPDATE family_groups SET " . implode(", ", ${D}updFields) . " WHERE id = ?")->execute(${D}updParams);
+                            }
+                        }
+                        ${D}effectiveOrgMode = ${D}hasBulkOrgMode ? ${D}bulkOrgMode : strtoupper(trim((string)(${D}existingRow['organization_mode'] ?? 'NORMAL')));
                     } else {
-                        ${D}groupStmt = ${D}db->prepare("INSERT INTO family_groups (name, folder_path, description) VALUES (?, ?, ?)");
-                        ${D}groupStmt->execute([${D}groupName, ${D}fPath, "Grupo familiar sincronizado con subcarpetas desde {${D}fPath}"]);
+                        ${D}groupStmt = ${D}db->prepare("INSERT INTO family_groups (name, folder_path, description, created_by_user_id, allow_member_uploads, organization_mode) VALUES (?, ?, ?, ?, ?, ?)");
+                        ${D}groupStmt->execute([${D}groupName, ${D}fPath, "Grupo familiar sincronizado con subcarpetas desde {${D}fPath}", ${D}adminUserId, ${D}bulkAllowUploads, ${D}bulkOrgMode]);
                         ${D}groupId = (int)${D}db->lastInsertId();
+                        ${D}effectiveOrgMode = ${D}bulkOrgMode;
                     }
 
                     // Recolectar todos los archivos de fotos y vídeos de la carpeta y todas sus subcarpetas
                     ${D}allMedia = collectFolderMediaRecursive(${D}fPath);
+                    if (${D}effectiveOrgMode === 'SERIES') {
+                        usort(${D}allMedia, function(${D}ma, ${D}mb) {
+                            ${D}capA = ${D}ma['name'] . (!empty(${D}ma['rel_subfolder']) ? " (" . ${D}ma['rel_subfolder'] . ")" : '');
+                            ${D}capB = ${D}mb['name'] . (!empty(${D}mb['rel_subfolder']) ? " (" . ${D}mb['rel_subfolder'] . ")" : '');
+                            return compareSeriesMetaRows(
+                                ['id' => 0, 'is_pinned' => 0, 'content_text' => ${D}capA, 'created_at' => ''],
+                                ['id' => 0, 'is_pinned' => 0, 'content_text' => ${D}capB, 'created_at' => '']
+                            );
+                        });
+                    } else {
+                        usort(${D}allMedia, function(${D}ma, ${D}mb) {
+                            return strnatcasecmp(${D}ma['path'], ${D}mb['path']);
+                        });
+                    }
                     ${D}totalInFolder = count(${D}allMedia);
                     ${D}totalFiles += ${D}totalInFolder;
 
@@ -2433,8 +2833,13 @@ object SynologyScripts {
                         ${D}stmtPost->execute([${D}adminUserId, ${D}groupId, ${D}caption]);
                         ${D}newPostId = (int)${D}db->lastInsertId();
 
-                        // Para vídeos usar una imagen en su carpeta -> carpeta madre -> siguiente madre -> portada del grupo
-                        ${D}itemThumb = ${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg;
+                        // Para vídeos usar @eaDir de Synology si existe -> imagen en su carpeta -> carpeta madre -> portada del grupo
+                        ${D}eaThumbFs = findEaDirVideoThumbFile(${D}fullFile);
+                        if (!empty(${D}eaThumbFs)) {
+                            ${D}itemThumb = "index.php?action=media_proxy&path=" . urlencode(${D}eaThumbFs);
+                        } else {
+                            ${D}itemThumb = ${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg;
+                        }
 
                         ${D}stmtMedia = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, 'VIDEO', ?, ?)");
                         ${D}stmtMedia->execute([
@@ -2471,6 +2876,168 @@ object SynologyScripts {
                     "total_files" => ${D}totalFiles,
                     "has_more" => ${D}hasMore,
                     "next_offset" => ${D}nextOffset
+                ]);
+            } catch (Exception ${D}e) {
+                if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 3.6.B SINCRONIZACIÓN INCREMENTAL DE UN GRUPO CON SU CARPETA EN EL NAS (NUEVOS ARCHIVOS SIN DUPLICAR)
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'admin/sync_group') || str_ends_with(${D}uri, '/admin/sync_group'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}groupId = (int)(${D}input['group_id'] ?? ${D}_POST['group_id'] ?? 0);
+            ${D}userId = (int)(${D}input['user_id'] ?? ${D}_POST['user_id'] ?? 1);
+            ${D}removeMissing = !empty(${D}input['remove_missing']) || !empty(${D}_POST['remove_missing']);
+
+            if (${D}groupId <= 0) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta group_id"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                if (!isUserGroupAdminOrOwner(${D}db, ${D}userId, ${D}groupId)) {
+                    http_response_code(403);
+                    echo json_encode(["error" => "Solo administradores o dueños del grupo pueden sincronizar la carpeta"]);
+                    exit;
+                }
+                ${D}gStmt = ${D}db->prepare("SELECT * FROM family_groups WHERE id = ? LIMIT 1");
+                ${D}gStmt->execute([${D}groupId]);
+                ${D}gRow = ${D}gStmt->fetch();
+                if (!${D}gRow) {
+                    http_response_code(404);
+                    echo json_encode(["error" => "Grupo no encontrado"]);
+                    exit;
+                }
+                ${D}fPath = trim((string)(${D}gRow['folder_path'] ?? ''));
+                if (empty(${D}fPath) || !@is_dir(${D}fPath)) {
+                    http_response_code(400);
+                    echo json_encode(["error" => "Este grupo no tiene una carpeta válida en el NAS: {${D}fPath}"]);
+                    exit;
+                }
+
+                ${D}orgMode = strtoupper(trim((string)(${D}gRow['organization_mode'] ?? 'NORMAL')));
+                ${D}groupName = (string)${D}gRow['name'];
+                ${D}allMedia = collectFolderMediaRecursive(${D}fPath);
+                if (${D}orgMode === 'SERIES') {
+                    usort(${D}allMedia, function(${D}ma, ${D}mb) {
+                        ${D}capA = ${D}ma['name'] . (!empty(${D}ma['rel_subfolder']) ? " (" . ${D}ma['rel_subfolder'] . ")" : '');
+                        ${D}capB = ${D}mb['name'] . (!empty(${D}mb['rel_subfolder']) ? " (" . ${D}mb['rel_subfolder'] . ")" : '');
+                        return compareSeriesMetaRows(
+                            ['id' => 0, 'is_pinned' => 0, 'content_text' => ${D}capA, 'created_at' => ''],
+                            ['id' => 0, 'is_pinned' => 0, 'content_text' => ${D}capB, 'created_at' => '']
+                        );
+                    });
+                } else {
+                    usort(${D}allMedia, function(${D}ma, ${D}mb) {
+                        return strnatcasecmp(${D}ma['path'], ${D}mb['path']);
+                    });
+                }
+
+                ${D}existingStmt = ${D}db->prepare("SELECT m.id, m.post_id, m.file_path FROM media m INNER JOIN posts p ON p.id = m.post_id WHERE p.group_id = ?");
+                ${D}existingStmt->execute([${D}groupId]);
+                ${D}existingSet = [];
+                ${D}existingRows = ${D}existingStmt->fetchAll();
+                foreach (${D}existingRows as ${D}er) {
+                    ${D}existingSet[(string)${D}er['file_path']] = true;
+                }
+
+                ${D}diskProxySet = [];
+                ${D}folderImages = [];
+                ${D}rootFallbackImg = (string)(${D}gRow['cover_photo_url'] ?? '');
+                foreach (${D}allMedia as ${D}mScan) {
+                    ${D}pUrl = "index.php?action=media_proxy&path=" . urlencode(${D}mScan['path']);
+                    ${D}diskProxySet[${D}pUrl] = true;
+                    if (${D}mScan['type'] === 'IMAGE') {
+                        ${D}dirKey = dirname(${D}mScan['path']);
+                        if (!isset(${D}folderImages[${D}dirKey])) ${D}folderImages[${D}dirKey] = ${D}pUrl;
+                        if (empty(${D}rootFallbackImg)) ${D}rootFallbackImg = ${D}pUrl;
+                    }
+                }
+
+                ${D}removedMissing = 0;
+                ${D}db->beginTransaction();
+                if (${D}removeMissing) {
+                    foreach (${D}existingRows as ${D}er) {
+                        ${D}fp = (string)${D}er['file_path'];
+                        if (strpos(${D}fp, 'action=media_proxy') !== false && !isset(${D}diskProxySet[${D}fp])) {
+                            ${D}db->prepare("DELETE FROM media WHERE id = ?")->execute([(int)${D}er['id']]);
+                            ${D}removedMissing++;
+                        }
+                    }
+                    ${D}db->prepare("DELETE FROM posts WHERE group_id = ? AND (content_text IS NULL OR content_text = '' OR EXISTS (SELECT 1 FROM family_groups fg WHERE fg.id = posts.group_id)) AND id NOT IN (SELECT DISTINCT post_id FROM media) AND is_short = 0 AND created_at IS NOT NULL")->execute([${D}groupId]);
+                }
+
+                ${D}addedPosts = 0;
+                ${D}addedFiles = 0;
+                ${D}imageBatch = [];
+                ${D}batchSubfolder = null;
+
+                ${D}flushSyncImages = function() use (&${D}imageBatch, &${D}batchSubfolder, &${D}addedPosts, &${D}addedFiles, ${D}db, ${D}userId, ${D}groupId, ${D}groupName) {
+                    if (empty(${D}imageBatch)) return;
+                    ${D}cnt = count(${D}imageBatch);
+                    if (${D}cnt === 1) {
+                        ${D}only = ${D}imageBatch[0];
+                        ${D}cap = ${D}only['name'] . (!empty(${D}only['rel_subfolder']) ? " (" . ${D}only['rel_subfolder'] . ")" : '');
+                    } else {
+                        ${D}title = !empty(${D}batchSubfolder) ? ${D}batchSubfolder : ${D}groupName;
+                        ${D}cap = "Álbum: " . ${D}title . " (" . ${D}cnt . " fotos)";
+                    }
+                    ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)")->execute([${D}userId, ${D}groupId, ${D}cap]);
+                    ${D}npid = (int)${D}db->lastInsertId();
+                    ${D}sm = ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, 'IMAGE', ?, ?)");
+                    foreach (${D}imageBatch as ${D}it) {
+                        ${D}sm->execute([${D}npid, ${D}it['proxy_url'], ${D}it['proxy_url']]);
+                        ${D}addedFiles++;
+                    }
+                    ${D}addedPosts++;
+                    ${D}imageBatch = [];
+                    ${D}batchSubfolder = null;
+                };
+
+                foreach (${D}allMedia as ${D}mediaInfo) {
+                    ${D}fullFile = ${D}mediaInfo['path'];
+                    ${D}proxyUrl = "index.php?action=media_proxy&path=" . urlencode(${D}fullFile);
+                    if (isset(${D}existingSet[${D}proxyUrl])) continue;
+
+                    if (${D}mediaInfo['type'] === 'IMAGE') {
+                        ${D}curSub = (string)(${D}mediaInfo['rel_subfolder'] ?? '');
+                        if (!empty(${D}imageBatch) && (${D}batchSubfolder !== ${D}curSub || count(${D}imageBatch) >= 6)) {
+                            ${D}flushSyncImages();
+                        }
+                        ${D}batchSubfolder = ${D}curSub;
+                        ${D}mediaInfo['proxy_url'] = ${D}proxyUrl;
+                        ${D}imageBatch[] = ${D}mediaInfo;
+                        continue;
+                    }
+
+                    ${D}flushSyncImages();
+                    ${D}cap = ${D}mediaInfo['name'] . (!empty(${D}mediaInfo['rel_subfolder']) ? " (" . ${D}mediaInfo['rel_subfolder'] . ")" : '');
+                    ${D}db->prepare("INSERT INTO posts (user_id, group_id, content_text, is_short) VALUES (?, ?, ?, 0)")->execute([${D}userId, ${D}groupId, ${D}cap]);
+                    ${D}npid = (int)${D}db->lastInsertId();
+                    ${D}eaThumbFs = findEaDirVideoThumbFile(${D}fullFile);
+                    ${D}thumb = !empty(${D}eaThumbFs)
+                        ? ("index.php?action=media_proxy&path=" . urlencode(${D}eaThumbFs))
+                        : (${D}folderImages[dirname(${D}fullFile)] ?? findNearestFolderImage(${D}fullFile) ?: ${D}rootFallbackImg);
+                    ${D}db->prepare("INSERT INTO media (post_id, media_type, file_path, thumb_path) VALUES (?, 'VIDEO', ?, ?)")->execute([${D}npid, ${D}proxyUrl, ${D}thumb]);
+                    ${D}addedPosts++;
+                    ${D}addedFiles++;
+                }
+                ${D}flushSyncImages();
+
+                ${D}db->prepare("UPDATE family_groups SET posts_count = (SELECT COUNT(*) FROM posts WHERE group_id = ?) WHERE id = ?")->execute([${D}groupId, ${D}groupId]);
+                ${D}db->commit();
+
+                echo json_encode([
+                    "status" => "OK",
+                    "group_id" => ${D}groupId,
+                    "added_posts" => ${D}addedPosts,
+                    "added_files" => ${D}addedFiles,
+                    "total_files" => count(${D}allMedia),
+                    "removed_missing" => ${D}removedMissing
                 ]);
             } catch (Exception ${D}e) {
                 if (isset(${D}db) && ${D}db->inTransaction()) ${D}db->rollBack();
@@ -2843,6 +3410,87 @@ object SynologyScripts {
                 ${D}stmt = ${D}db->prepare("INSERT INTO comments (post_id, user_id, comment_text) VALUES (?, ?, ?)");
                 ${D}stmt->execute([${D}postId, ${D}userId, ${D}text]);
                 echo json_encode(["success" => true, "comment_id" => (int)${D}db->lastInsertId()]);
+            } catch (Exception ${D}e) {
+                http_response_code(500);
+                echo json_encode(["error" => ${D}e->getMessage()]);
+            }
+            exit;
+        }
+
+        // 6.5. EDITAR PUBLICACIÓN EXISTENTE (texto, sentimiento, ubicación, grupo)
+        if (${D}method === 'POST' && (matchRoute(${D}action, ${D}uri, 'posts/update') || matchRoute(${D}action, ${D}uri, 'post/update') || str_ends_with(${D}uri, '/posts/update'))) {
+            ${D}input = json_decode(file_get_contents('php://input'), true) ?? ${D}_POST;
+            ${D}postId = (int)(${D}input['post_id'] ?? ${D}_POST['post_id'] ?? 0);
+            ${D}userId = (int)(${D}input['user_id'] ?? ${D}_POST['user_id'] ?? 0);
+            ${D}contentText = trim((string)(${D}input['content_text'] ?? ${D}_POST['content_text'] ?? ''));
+            ${D}feelingRaw = ${D}input['feeling'] ?? ${D}_POST['feeling'] ?? null;
+            ${D}feeling = (${D}feelingRaw !== null && trim((string)${D}feelingRaw) !== '') ? trim((string)${D}feelingRaw) : null;
+            ${D}locationRaw = ${D}input['location'] ?? ${D}_POST['location'] ?? null;
+            ${D}location = (${D}locationRaw !== null && trim((string)${D}locationRaw) !== '') ? trim((string)${D}locationRaw) : null;
+            ${D}hasGroupKey = array_key_exists('group_id', ${D}input) || isset(${D}_POST['group_id']);
+            ${D}newGroupId = (!empty(${D}input['group_id'])) ? (int)${D}input['group_id'] : ((!empty(${D}_POST['group_id'])) ? (int)${D}_POST['group_id'] : null);
+
+            if (${D}postId <= 0) {
+                http_response_code(400);
+                echo json_encode(["error" => "Falta post_id"]);
+                exit;
+            }
+            try {
+                ${D}db = getDB();
+                ${D}pStmt = ${D}db->prepare("SELECT id, user_id, group_id FROM posts WHERE id = ? LIMIT 1");
+                ${D}pStmt->execute([${D}postId]);
+                ${D}pRow = ${D}pStmt->fetch();
+                if (!${D}pRow) {
+                    http_response_code(404);
+                    echo json_encode(["error" => "Publicación no encontrada"]);
+                    exit;
+                }
+                ${D}ownerId = (int)${D}pRow['user_id'];
+                ${D}oldGroupId = !empty(${D}pRow['group_id']) ? (int)${D}pRow['group_id'] : null;
+
+                ${D}isAdmin = (${D}userId === 1);
+                if (!${D}isAdmin && ${D}userId > 0) {
+                    ${D}uStmt = ${D}db->prepare("SELECT role FROM users WHERE id = ? LIMIT 1");
+                    ${D}uStmt->execute([${D}userId]);
+                    ${D}uRole = strtolower(trim((string)(${D}uStmt->fetchColumn() ?: '')));
+                    if (strpos(${D}uRole, 'admin') !== false) ${D}isAdmin = true;
+                }
+                if (${D}userId > 0 && ${D}ownerId !== ${D}userId && !${D}isAdmin) {
+                    http_response_code(403);
+                    echo json_encode(["error" => "Solo el autor o administrador puede editar esta publicación"]);
+                    exit;
+                }
+
+                if (${D}hasGroupKey) {
+                    ${D}upd = ${D}db->prepare("UPDATE posts SET content_text = ?, feeling = ?, location = ?, group_id = ? WHERE id = ?");
+                    ${D}upd->execute([${D}contentText, ${D}feeling, ${D}location, ${D}newGroupId, ${D}postId]);
+                    if (${D}oldGroupId !== ${D}newGroupId) {
+                        if (${D}oldGroupId) ${D}db->prepare("UPDATE family_groups SET posts_count = (SELECT COUNT(*) FROM posts WHERE group_id = ?) WHERE id = ?")->execute([${D}oldGroupId, ${D}oldGroupId]);
+                        if (${D}newGroupId) ${D}db->prepare("UPDATE family_groups SET posts_count = (SELECT COUNT(*) FROM posts WHERE group_id = ?) WHERE id = ?")->execute([${D}newGroupId, ${D}newGroupId]);
+                    }
+                } else {
+                    ${D}upd = ${D}db->prepare("UPDATE posts SET content_text = ?, feeling = ?, location = ? WHERE id = ?");
+                    ${D}upd->execute([${D}contentText, ${D}feeling, ${D}location, ${D}postId]);
+                }
+
+                ${D}getStmt = ${D}db->prepare("
+                    SELECT p.*,
+                           COALESCE(u.display_name, 'Familiar') as display_name,
+                           COALESCE(u.role, 'Familiar') as role,
+                           COALESCE(u.avatar_emoji, '👤') as avatar_emoji,
+                           COALESCE(u.avatar_color_hex, 4280391411) as avatar_color_hex,
+                           g.name as group_name,
+                           g.cover_photo_url as group_cover_photo_url,
+                           (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as likes_count,
+                           (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id) as comments_count
+                    FROM posts p
+                    LEFT JOIN users u ON p.user_id = u.id
+                    LEFT JOIN family_groups g ON g.id = p.group_id
+                    WHERE p.id = ? LIMIT 1
+                ");
+                ${D}getStmt->execute([${D}postId]);
+                ${D}hydrated = hydratePostsWithDetails(${D}db, ${D}getStmt->fetchAll());
+                echo json_encode(["success" => true, "post" => ${D}hydrated[0] ?? null]);
             } catch (Exception ${D}e) {
                 http_response_code(500);
                 echo json_encode(["error" => ${D}e->getMessage()]);

@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -44,8 +47,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.model.Comment
 import com.example.model.FamilyMember
 import com.example.model.Post
+import com.example.ui.theme.FacebookBlue
 import com.example.ui.theme.FamilyBluePrimary
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,6 +64,8 @@ fun CommentsSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var commentText by remember { mutableStateOf("") }
+    var likedCommentIds by remember(post.id) { mutableStateOf<Set<Int>>(emptySet()) }
+    var replyingToComment by remember(post.id) { mutableStateOf<Comment?>(null) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -178,10 +185,11 @@ fun CommentsSheet(
                                 }
 
                                 // Facebook action row below comment bubble
+                                val isCommentLiked = likedCommentIds.contains(comment.id)
                                 Row(
-                                    modifier = Modifier.padding(start = 12.dp, top = 3.dp),
+                                    modifier = Modifier.padding(start = 8.dp, top = 2.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
                                         text = "Ahora",
@@ -189,15 +197,27 @@ fun CommentsSheet(
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Medium
                                         ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
                                     )
                                     Text(
-                                        text = "Me gusta",
+                                        text = if (isCommentLiked) "Me gusta (1)" else "Me gusta",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold
+                                            fontWeight = if (isCommentLiked) FontWeight.Bold else FontWeight.SemiBold
                                         ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isCommentLiked) FacebookBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                likedCommentIds = if (isCommentLiked) {
+                                                    likedCommentIds - comment.id
+                                                } else {
+                                                    likedCommentIds + comment.id
+                                                }
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                                            .testTag("like_comment_${comment.id}")
                                     )
                                     Text(
                                         text = "Responder",
@@ -205,7 +225,18 @@ fun CommentsSheet(
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold
                                         ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                replyingToComment = comment
+                                                val prefix = "@${comment.author.name} "
+                                                if (!commentText.startsWith(prefix)) {
+                                                    commentText = prefix + commentText.trimStart()
+                                                }
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                                            .testTag("reply_comment_${comment.id}")
                                     )
                                 }
                             }
@@ -215,6 +246,44 @@ fun CommentsSheet(
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+            replyingToComment?.let { target ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(FacebookBlue.copy(alpha = 0.08f))
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .testTag("replying_banner"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = Icons.Default.Reply,
+                            contentDescription = null,
+                            tint = FacebookBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Respondiendo a ${target.author.name}",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = FacebookBlue
+                        )
+                    }
+                    IconButton(
+                        onClick = { replyingToComment = null },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cancelar respuesta",
+                            tint = FacebookBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
 
             // Input Bar
             Row(
@@ -260,10 +329,11 @@ fun CommentsSheet(
                         if (commentText.isNotBlank()) {
                             onSendComment(commentText)
                             commentText = ""
+                            replyingToComment = null
                         }
                     },
                     modifier = Modifier
-                        .size(42.dp)
+                        .size(48.dp)
                         .clip(CircleShape)
                         .background(if (commentText.isNotBlank()) FamilyBluePrimary else MaterialTheme.colorScheme.surfaceVariant)
                         .testTag("send_comment_button"),

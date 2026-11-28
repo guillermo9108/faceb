@@ -1,9 +1,13 @@
 package com.example
 
 import android.Manifest
+import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,6 +21,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,16 +65,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.model.ReactionType
+import com.example.model.AppThemeMode
+import com.example.model.MediaType
 import com.example.model.NotificationType
+import com.example.model.Post
+import com.example.model.ReactionType
+import com.example.model.SearchSuggestionType
 import com.example.ui.components.AdminFolderScanDialog
 import com.example.ui.components.CommentsSheet
 import com.example.ui.components.CreatePostDialog
 import com.example.ui.components.CreateStoryDialog
+import com.example.ui.components.DownloadManagerDialog
+import com.example.ui.components.EditPostDialog
 import com.example.ui.components.ErrorLogsDialog
 import com.example.ui.components.FacebookBottomNavBar
 import com.example.ui.components.HeaderBar
 import com.example.ui.components.NasIpConfirmationDialog
+import com.example.ui.components.PinSetupDialog
+import com.example.ui.components.PinVerifyDialog
 import com.example.ui.components.ProfileSettingsDialog
 import com.example.ui.components.StoryViewerDialog
 import com.example.ui.components.VideoPlayerDialog
@@ -84,24 +97,83 @@ import com.example.ui.screens.PhotosScreen
 import com.example.ui.screens.ShortsScreen
 import com.example.ui.screens.WatchScreen
 import com.example.ui.theme.MyApplicationTheme
+import com.example.util.FamilyActivityNotifier
 import com.example.viewmodel.FamilyFeedViewModel
 import com.example.viewmodel.FeedTab
 import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
+
+    private var isInPiPMode by mutableStateOf(false)
+    private var pendingNotificationTarget by mutableStateOf<Pair<Int, Boolean>?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleNotificationIntent(intent)
         setContent {
-            MyApplicationTheme {
-                FamilyWallApp()
+            val viewModel: FamilyFeedViewModel = viewModel()
+            val themeMode by viewModel.themeMode.collectAsState()
+            val darkTheme = when (themeMode) {
+                AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+                AppThemeMode.LIGHT -> false
+                AppThemeMode.DARK -> true
+            }
+            MyApplicationTheme(darkTheme = darkTheme) {
+                FamilyWallApp(
+                    viewModel = viewModel,
+                    isInPiPMode = isInPiPMode,
+                    pendingNotificationTarget = pendingNotificationTarget,
+                    onConsumeNotificationTarget = { pendingNotificationTarget = null },
+                    onEnterPiP = { enterPiPMode() }
+                )
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPiPMode = isInPictureInPictureMode
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        val targetPostId = intent?.getIntExtra(FamilyActivityNotifier.EXTRA_TARGET_POST_ID, -1) ?: -1
+        if (targetPostId > 0) {
+            val openComments = intent?.getBooleanExtra(FamilyActivityNotifier.EXTRA_OPEN_COMMENTS, false) ?: false
+            pendingNotificationTarget = targetPostId to openComments
+        }
+    }
+
+    private fun enterPiPMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build()
+                enterPictureInPictureMode(params)
+            } catch (_: Exception) {
             }
         }
     }
 }
 
 @Composable
-fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
+fun FamilyWallApp(
+    viewModel: FamilyFeedViewModel = viewModel(),
+    isInPiPMode: Boolean = false,
+    pendingNotificationTarget: Pair<Int, Boolean>? = null,
+    onConsumeNotificationTarget: () -> Unit = {},
+    onEnterPiP: () -> Unit = {}
+) {
     val currentMember by viewModel.currentMember.collectAsState()
     val nasConfig by viewModel.nasConfig.collectAsState()
     val groupedStories by viewModel.groupedStories.collectAsState()
@@ -135,6 +207,12 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     )
 
     var activeVideoToPlay by remember { mutableStateOf<ActiveVideoPlayInfo?>(null) }
+    var showDownloadManagerDialog by remember { mutableStateOf(false) }
+    var showPinSetupDialog by remember { mutableStateOf(false) }
+    var enableLockAfterPinSetup by remember { mutableStateOf(false) }
+    var pendingPinProtectedAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pinVerifyTitle by remember { mutableStateOf("Bloqueo PIN de administración") }
+    var pinVerifySubtitle by remember { mutableStateOf("Introduce tu PIN para acceder a esta sección protegida.") }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -159,6 +237,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val isLoadingGroupPosts by viewModel.isLoadingGroupPosts.collectAsState()
     val isLoadingMoreGroupPosts by viewModel.isLoadingMoreGroupPosts.collectAsState()
     val isScanFoldersDialogOpen by viewModel.isScanFoldersDialogOpen.collectAsState()
+    val currentScanPath by viewModel.currentScanPath.collectAsState()
+    val parentScanPath by viewModel.parentScanPath.collectAsState()
     val scannedFolders by viewModel.scannedFolders.collectAsState()
     val isScanningFolders by viewModel.isScanningFolders.collectAsState()
     val isImportingFolders by viewModel.isImportingFolders.collectAsState()
@@ -173,6 +253,14 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     val savedOfflineOnly by viewModel.savedOfflineOnlyFilter.collectAsState()
     val savedOfflineCount by viewModel.savedOfflineCount.collectAsState()
     val downloadStates by viewModel.downloadStates.collectAsState()
+    val watchProgressMap by viewModel.watchProgressMap.collectAsState()
+    val themeMode by viewModel.themeMode.collectAsState()
+    val isAdminPinLockEnabled by viewModel.isAdminPinLockEnabled.collectAsState()
+    val searchSuggestions by viewModel.searchSuggestions.collectAsState()
+    val feedContentFilter by viewModel.feedContentFilter.collectAsState()
+    val offlineStorageStats by viewModel.offlineStorageStats.collectAsState()
+    val isSyncingGroup by viewModel.isSyncingGroup.collectAsState()
+    val editingPost by viewModel.editingPost.collectAsState()
 
     val appContext = LocalContext.current
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -199,11 +287,41 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         { gid -> if (gid != null) groups.find { it.id == gid }?.coverPhotoUrl else null }
     }
 
+    val findPostForVideoUrl: (String) -> Post? = remember(posts, groupPosts, shorts) {
+        { videoUrl ->
+            posts.find { p -> p.mediaItems.any { it.url == videoUrl } }
+                ?: groupPosts.find { p -> p.mediaItems.any { it.url == videoUrl } }
+                ?: shorts.find { p -> p.mediaItems.any { it.url == videoUrl } }
+        }
+    }
+
+    val runWithAdminPinCheck: (title: String, action: () -> Unit) -> Unit = { title, action ->
+        if (isAdminPinLockEnabled) {
+            pinVerifyTitle = title
+            pinVerifySubtitle = "Introduce tu PIN de seguridad para acceder a esta acción."
+            pendingPinProtectedAction = action
+        } else {
+            action()
+        }
+    }
+
     // Mostrar snackbar cuando haya un mensaje de estado
     LaunchedEffect(statusMessage) {
         statusMessage?.let { msg ->
             snackbarHostState.showSnackbar(msg)
             viewModel.clearStatus()
+        }
+    }
+
+    // Consumir deep-link de notificación Android cuando el usuario ha iniciado sesión
+    LaunchedEffect(isUserLoggedIn, pendingNotificationTarget) {
+        val target = pendingNotificationTarget
+        if (isUserLoggedIn && target != null) {
+            viewModel.navigateToPostFromNotification(
+                targetPostId = target.first,
+                openComments = target.second
+            )
+            onConsumeNotificationTarget()
         }
     }
 
@@ -293,7 +411,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
 
     // Manejo de retroceso: subrutas vuelven al Menú, otras pestañas vuelven al Inicio
     val isSecondaryScreen = selectedTab !in primaryTabs
-    BackHandler(enabled = selectedTab != FeedTab.FEED) {
+    BackHandler(enabled = selectedTab != FeedTab.FEED && activeVideoToPlay == null) {
         if (isSecondaryScreen) {
             viewModel.setSelectedTab(FeedTab.MENU)
         } else {
@@ -301,7 +419,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         }
     }
 
-    val showBottomBar = isBottomBarVisible && selectedTab != FeedTab.SHORTS && selectedTab in primaryTabs
+    val showBottomBar = isBottomBarVisible &&
+        selectedTab != FeedTab.SHORTS &&
+        selectedTab in primaryTabs &&
+        !(isInPiPMode && activeVideoToPlay != null)
 
     Box(
         modifier = Modifier
@@ -311,7 +432,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         Scaffold(
             topBar = {
                 AnimatedVisibility(
-                    visible = selectedTab != FeedTab.SHORTS,
+                    visible = selectedTab != FeedTab.SHORTS && !(isInPiPMode && activeVideoToPlay != null),
                     enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
                     exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
                 ) {
@@ -324,7 +445,39 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                         onSearchQueryChange = { viewModel.setSearchQuery(it) },
                         onOpenCreatePost = { viewModel.openCreatePostDialog() },
                         onRefreshFeed = { viewModel.refreshFeed() },
-                        unreadNotificationsCount = unreadNotificationsCount
+                        unreadNotificationsCount = unreadNotificationsCount,
+                        searchSuggestions = searchSuggestions,
+                        onSubmitSearch = { viewModel.submitSearchQuery(it) },
+                        onSuggestionClick = { suggestion ->
+                            when (suggestion.type) {
+                                SearchSuggestionType.MEMBER -> {
+                                    val member = familyMembers.find { it.id == suggestion.targetMemberId }
+                                    if (member != null) {
+                                        viewModel.setMemberFilter(member)
+                                        viewModel.setSearchQuery("")
+                                        viewModel.setSelectedTab(FeedTab.FEED)
+                                    } else {
+                                        viewModel.submitSearchQuery(suggestion.query)
+                                    }
+                                }
+                                SearchSuggestionType.GROUP -> {
+                                    val group = groups.find { it.id == suggestion.targetGroupId }
+                                    if (group != null) {
+                                        viewModel.setSearchQuery("")
+                                        viewModel.openGroup(group)
+                                        viewModel.setSelectedTab(FeedTab.GROUPS)
+                                    } else {
+                                        viewModel.submitSearchQuery(suggestion.query)
+                                    }
+                                }
+                                SearchSuggestionType.HISTORY,
+                                SearchSuggestionType.POST -> {
+                                    viewModel.submitSearchQuery(suggestion.query)
+                                }
+                            }
+                        },
+                        onDeleteHistoryItem = { viewModel.removeSearchHistoryItem(it) },
+                        onClearSearchHistory = { viewModel.clearSearchHistory() }
                     )
                 }
             },
@@ -367,9 +520,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onTogglePin = { postId -> viewModel.togglePinPost(postId) },
                                 onDeletePost = { postId -> viewModel.deletePost(postId) },
                                 onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
-                                    val matchingPostId = posts.find { p ->
-                                        p.mediaItems.any { it.url == url }
-                                    }?.id
+                                    val matchingPostId = findPostForVideoUrl(url)?.id
                                     activeVideoToPlay = ActiveVideoPlayInfo(
                                         url = url,
                                         title = title,
@@ -383,7 +534,11 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                         startPositionMs = startPosMs
                                     )
                                 },
-                                onOpenNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
+                                onOpenNasConfig = {
+                                    runWithAdminPinCheck("Ajustes Synology NAS") {
+                                        viewModel.setSelectedTab(FeedTab.NAS_SETTINGS)
+                                    }
+                                },
                                 onOpenErrorLogs = { viewModel.openErrorLogsDialog() },
                                 onSendComment = { postId, text -> viewModel.addCommentToPost(postId, text) },
                                 hasMorePosts = hasMoreFeedPosts,
@@ -410,7 +565,16 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onOpenGroup = { group ->
                                     viewModel.openGroup(group)
                                     viewModel.setSelectedTab(FeedTab.GROUPS)
-                                }
+                                },
+                                feedContentFilter = feedContentFilter,
+                                onFeedContentFilterChange = { viewModel.setFeedContentFilter(it) },
+                                onOpenDownloadManager = {
+                                    viewModel.refreshOfflineStorageStats()
+                                    showDownloadManagerDialog = true
+                                },
+                                watchProgressMap = watchProgressMap,
+                                onEditPost = { post -> viewModel.openEditPostDialog(post) },
+                                onToggleWatched = { postId -> viewModel.toggleVideoWatched(postId) }
                             )
                         }
                         FeedTab.WATCH -> {
@@ -422,9 +586,7 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onDeletePost = { postId -> viewModel.deletePost(postId) },
                                 onOpenCreatePost = { viewModel.openCreatePostDialog() },
                                 onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
-                                    val matchingPostId = posts.find { p ->
-                                        p.mediaItems.any { it.url == url }
-                                    }?.id
+                                    val matchingPostId = findPostForVideoUrl(url)?.id
                                     activeVideoToPlay = ActiveVideoPlayInfo(
                                         url = url,
                                         title = title,
@@ -444,7 +606,10 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
                                 },
                                 downloadStates = downloadStates,
-                                onPostsSeen = { viewModel.markPostsSeen(it) }
+                                onPostsSeen = { viewModel.markPostsSeen(it) },
+                                watchProgressMap = watchProgressMap,
+                                onEditPost = { post -> viewModel.openEditPostDialog(post) },
+                                onToggleWatched = { postId -> viewModel.toggleVideoWatched(postId) }
                             )
                         }
                         FeedTab.SHORTS -> {
@@ -474,14 +639,16 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 baseUrl = nasConfig.baseUrl,
                                 onSelectGroup = { group -> viewModel.openGroup(group) },
                                 onCloseGroupDetail = { viewModel.closeGroup() },
-                                onOpenScanDialog = { viewModel.openScanFoldersDialog() },
+                                onOpenScanDialog = {
+                                    runWithAdminPinCheck("Escanear carpetas del NAS") {
+                                        viewModel.openScanFoldersDialog()
+                                    }
+                                },
                                 onRefreshGroups = { viewModel.refreshGroups() },
                                 onReactionClick = { postId, rx -> viewModel.reactToPost(postId, rx) },
                                 onCommentClick = { post -> viewModel.openCommentsSheet(post) },
                                 onPlayVideo = { url, title, author, dur, chunks, chunkDurations, totalDur, startChunk, startPosMs ->
-                                    val matchingPostId = groupPosts.find { p ->
-                                        p.mediaItems.any { it.url == url }
-                                    }?.id
+                                    val matchingPostId = findPostForVideoUrl(url)?.id
                                     activeVideoToPlay = ActiveVideoPlayInfo(
                                         url = url,
                                         title = title,
@@ -523,7 +690,14 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                     viewModel.onVideoPlayed(vUrl, chunkUrl, postId)
                                 },
                                 downloadStates = downloadStates,
-                                onPostsSeen = { viewModel.markPostsSeen(it) }
+                                onPostsSeen = { viewModel.markPostsSeen(it) },
+                                isSyncingGroup = isSyncingGroup,
+                                onSyncGroupFolder = { groupId, removeMissing ->
+                                    viewModel.syncGroupFolder(groupId, removeMissing)
+                                },
+                                watchProgressMap = watchProgressMap,
+                                onEditPost = { post -> viewModel.openEditPostDialog(post) },
+                                onToggleWatched = { postId -> viewModel.toggleVideoWatched(postId) }
                             )
                         }
                         FeedTab.NOTIFICATIONS -> {
@@ -533,7 +707,12 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onMarkAllAsRead = { viewModel.markAllNotificationsAsRead() },
                                 onNotificationClick = { notif ->
                                     viewModel.markNotificationAsRead(notif.id)
-                                    if (notif.type == NotificationType.SHORT) {
+                                    if (notif.targetPostId != null) {
+                                        viewModel.navigateToPostFromNotification(
+                                            targetPostId = notif.targetPostId,
+                                            openComments = (notif.type == NotificationType.COMMENT)
+                                        )
+                                    } else if (notif.type == NotificationType.SHORT) {
                                         viewModel.setSelectedTab(FeedTab.SHORTS)
                                     } else {
                                         viewModel.setSelectedTab(FeedTab.FEED)
@@ -564,18 +743,67 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                                 onOpenCreatePost = { viewModel.openCreatePostDialog() },
                                 onNavigateToNotifications = { viewModel.setSelectedTab(FeedTab.NOTIFICATIONS) },
                                 onNavigateToPhotos = { viewModel.setSelectedTab(FeedTab.PHOTOS) },
-                                onNavigateToNasConfig = { viewModel.setSelectedTab(FeedTab.NAS_SETTINGS) },
+                                onNavigateToNasConfig = {
+                                    runWithAdminPinCheck("Ajustes Synology NAS") {
+                                        viewModel.setSelectedTab(FeedTab.NAS_SETTINGS)
+                                    }
+                                },
                                 onNavigateToMembers = { viewModel.setSelectedTab(FeedTab.MEMBERS) },
                                 onNavigateToWatch = { viewModel.setSelectedTab(FeedTab.WATCH) },
                                 onNavigateToShorts = { viewModel.setSelectedTab(FeedTab.SHORTS) },
                                 onNavigateToGroups = { viewModel.setSelectedTab(FeedTab.GROUPS) },
                                 onNavigateToErrorLogs = { viewModel.openErrorLogsDialog() },
-                                onOpenScanFolders = { viewModel.openScanFoldersDialog() },
-                                onRunDiagnostics = { viewModel.runDatabaseDiagnostics() },
-                                onRepairDatabase = { viewModel.repairNasDatabase() },
+                                onOpenScanFolders = {
+                                    runWithAdminPinCheck("Escanear carpetas del NAS") {
+                                        viewModel.openScanFoldersDialog()
+                                    }
+                                },
+                                onRunDiagnostics = {
+                                    runWithAdminPinCheck("Diagnóstico de MariaDB 10") {
+                                        viewModel.runDatabaseDiagnostics()
+                                    }
+                                },
+                                onRepairDatabase = {
+                                    runWithAdminPinCheck("Reparar tablas NAS") {
+                                        viewModel.repairNasDatabase()
+                                    }
+                                },
                                 errorCount = errorLogs.size,
                                 onOpenProfileSettings = { viewModel.openProfileDialog() },
-                                onLogout = { viewModel.logout() }
+                                onLogout = { viewModel.logout() },
+                                offlineStorageStats = offlineStorageStats,
+                                onOpenDownloadManager = {
+                                    viewModel.refreshOfflineStorageStats()
+                                    showDownloadManagerDialog = true
+                                },
+                                themeMode = themeMode,
+                                onThemeModeChange = { viewModel.setThemeMode(it) },
+                                isAdminPinLockEnabled = isAdminPinLockEnabled,
+                                onToggleAdminPinLock = { enabled ->
+                                    if (enabled) {
+                                        if (viewModel.hasCustomSecurityPin()) {
+                                            viewModel.setAdminPinLockEnabled(true)
+                                        } else {
+                                            enableLockAfterPinSetup = true
+                                            showPinSetupDialog = true
+                                        }
+                                    } else {
+                                        runWithAdminPinCheck("Desactivar bloqueo PIN") {
+                                            viewModel.setAdminPinLockEnabled(false)
+                                        }
+                                    }
+                                },
+                                onConfigureAdminPin = {
+                                    if (viewModel.hasCustomSecurityPin()) {
+                                        runWithAdminPinCheck("Cambiar PIN de seguridad") {
+                                            enableLockAfterPinSetup = false
+                                            showPinSetupDialog = true
+                                        }
+                                    } else {
+                                        enableLockAfterPinSetup = false
+                                        showPinSetupDialog = true
+                                    }
+                                }
                             )
                         }
                         else -> Unit
@@ -675,6 +903,75 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
                 }
             )
         }
+
+        // Reproductor de Vídeo a pantalla completa dentro de la Activity (soporta PiP, progreso, velocidad y auto-avance)
+        activeVideoToPlay?.let { info ->
+            val currentPlayingPost = remember(info.postId, posts, groupPosts) {
+                info.postId?.let { pid ->
+                    posts.find { it.id == pid } ?: groupPosts.find { it.id == pid }
+                }
+            }
+            val nextEpisode = remember(currentPlayingPost?.id, posts, groupPosts) {
+                currentPlayingPost?.let { viewModel.getNextEpisodeForPost(it) }
+            }
+            val nextVideoItem = remember(nextEpisode) {
+                nextEpisode?.mediaItems?.firstOrNull { it.type == MediaType.VIDEO }
+            }
+
+            VideoPlayerDialog(
+                videoUrl = info.url,
+                title = info.title,
+                authorName = info.author,
+                durationLabel = info.duration,
+                chunks = info.chunks,
+                chunkDurationsMs = info.chunkDurationsMs,
+                totalDurationMsHint = info.totalDurationMs,
+                initialChunkIndex = info.startChunkIndex,
+                initialPositionMs = info.startPositionMs,
+                isInPictureInPictureMode = isInPiPMode,
+                nextEpisodeTitle = nextEpisode?.contentText?.take(56)?.ifBlank { "Siguiente episodio" },
+                onPlayNextEpisode = if (nextEpisode != null && nextVideoItem != null) {
+                    {
+                        val nextSaved = watchProgressMap[nextEpisode.id]
+                        val nextResumeChunk = if (nextSaved != null && !nextSaved.isWatched) nextSaved.chunkIndex else 0
+                        val nextResumePos = if (nextSaved != null && !nextSaved.isWatched) nextSaved.positionMs else 0L
+                        activeVideoToPlay = ActiveVideoPlayInfo(
+                            url = nextVideoItem.url,
+                            title = nextEpisode.contentText.ifBlank { "Vídeo de ${nextEpisode.author.name}" },
+                            author = nextEpisode.author.name,
+                            duration = nextVideoItem.durationLabel,
+                            chunks = nextVideoItem.chunks,
+                            chunkDurationsMs = nextVideoItem.chunkDurationsMs,
+                            totalDurationMs = nextVideoItem.totalDurationMs,
+                            postId = nextEpisode.id,
+                            startChunkIndex = nextResumeChunk,
+                            startPositionMs = nextResumePos
+                        )
+                    }
+                } else null,
+                onProgressUpdate = { chunkIdx, localPosMs, globalPosMs, totalDurMs, isEnded ->
+                    info.postId?.let { pid ->
+                        viewModel.saveVideoWatchProgress(
+                            postId = pid,
+                            chunkIndex = chunkIdx,
+                            localPositionMs = localPosMs,
+                            globalPositionMs = globalPosMs,
+                            totalDurationMs = totalDurMs,
+                            markEnded = isEnded
+                        )
+                    }
+                },
+                onEnterPiP = onEnterPiP,
+                onVideoStarted = {
+                    viewModel.onVideoPlayed(
+                        videoUrl = info.url,
+                        fallbackChunkUrl = info.chunks.firstOrNull(),
+                        postId = info.postId
+                    )
+                },
+                onDismiss = { activeVideoToPlay = null }
+            )
+        }
     }
 
     // Modal Crear Publicación Real
@@ -700,6 +997,24 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         )
     }
 
+    // Modal Editar Publicación Existente
+    editingPost?.let { postToEdit ->
+        EditPostDialog(
+            post = postToEdit,
+            groups = groups,
+            onDismiss = { viewModel.closeEditPostDialog() },
+            onSave = { contentText, feeling, location, groupId ->
+                viewModel.saveEditedPost(
+                    postId = postToEdit.id,
+                    contentText = contentText,
+                    feeling = feeling,
+                    location = location,
+                    groupId = groupId
+                )
+            }
+        )
+    }
+
     // Modal Crear Historia Independiente Real
     if (isCreateStoryDialogOpen) {
         CreateStoryDialog(
@@ -719,29 +1034,6 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
         )
     }
 
-    // Modal Reproductor de Vídeo optimizado con reproducción continua de fragmentos
-    activeVideoToPlay?.let { info ->
-        VideoPlayerDialog(
-            videoUrl = info.url,
-            title = info.title,
-            authorName = info.author,
-            durationLabel = info.duration,
-            chunks = info.chunks,
-            chunkDurationsMs = info.chunkDurationsMs,
-            totalDurationMsHint = info.totalDurationMs,
-            initialChunkIndex = info.startChunkIndex,
-            initialPositionMs = info.startPositionMs,
-            onVideoStarted = {
-                viewModel.onVideoPlayed(
-                    videoUrl = info.url,
-                    fallbackChunkUrl = info.chunks.firstOrNull(),
-                    postId = info.postId
-                )
-            },
-            onDismiss = { activeVideoToPlay = null }
-        )
-    }
-
     // Modal / Bottom Sheet de Comentarios Reactivo
     selectedPostForComments?.let { post ->
         CommentsSheet(
@@ -750,6 +1042,52 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             onDismiss = { viewModel.closeCommentsSheet() },
             onSendComment = { text -> viewModel.addCommentToPost(post.id, text) },
             onRefreshComments = { viewModel.reloadComments(post.id) }
+        )
+    }
+
+    // Modal Gestor Visual de Cola de Descargas y Almacenamiento Offline
+    if (showDownloadManagerDialog) {
+        DownloadManagerDialog(
+            stats = offlineStorageStats,
+            downloadStates = downloadStates,
+            onCancelDownload = { viewModel.cancelOfflineDownload(it) },
+            onClearTransientCache = { viewModel.clearTransientCache() },
+            onRefreshStats = { viewModel.refreshOfflineStorageStats() },
+            onDismiss = { showDownloadManagerDialog = false }
+        )
+    }
+
+    // Modal Verificación de PIN de Administración
+    pendingPinProtectedAction?.let { protectedAction ->
+        PinVerifyDialog(
+            title = pinVerifyTitle,
+            subtitle = pinVerifySubtitle,
+            onVerify = { input -> viewModel.verifySecurityPin(input) },
+            onSuccess = {
+                val actionToRun = protectedAction
+                pendingPinProtectedAction = null
+                actionToRun()
+            },
+            onDismiss = { pendingPinProtectedAction = null }
+        )
+    }
+
+    // Modal Configuración / Cambio de PIN de Seguridad
+    if (showPinSetupDialog) {
+        PinSetupDialog(
+            hasExistingPin = viewModel.hasCustomSecurityPin(),
+            onSavePin = { newPin ->
+                viewModel.updateSecurityPin(newPin)
+                if (enableLockAfterPinSetup) {
+                    viewModel.setAdminPinLockEnabled(true)
+                    enableLockAfterPinSetup = false
+                }
+                showPinSetupDialog = false
+            },
+            onDismiss = {
+                enableLockAfterPinSetup = false
+                showPinSetupDialog = false
+            }
         )
     }
 
@@ -786,6 +1124,8 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
     if (isScanFoldersDialogOpen) {
         AdminFolderScanDialog(
             scannedFolders = scannedFolders,
+            currentScanPath = currentScanPath,
+            parentScanPath = parentScanPath,
             isScanning = isScanningFolders,
             isImporting = isImportingFolders,
             importProgress = importProgress,
@@ -794,7 +1134,12 @@ fun FamilyWallApp(viewModel: FamilyFeedViewModel = viewModel()) {
             onScanPath = { path -> viewModel.scanFolders(path) },
             onToggleFolder = { path -> viewModel.toggleFolderSelection(path) },
             onSelectAll = { select -> viewModel.selectAllFolders(select) },
-            onImportSelected = { viewModel.importSelectedFolders() },
+            onImportSelected = { allowUploads, orgMode ->
+                viewModel.importSelectedFolders(
+                    allowUploads = allowUploads,
+                    organizationMode = orgMode
+                )
+            },
             onDismiss = { viewModel.closeScanFoldersDialog() }
         )
     }

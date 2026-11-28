@@ -96,8 +96,16 @@ data class ScannedFolder(
     val mediaCount: Int = 0,
     val photosCount: Int = 0,
     val videosCount: Int = 0,
+    val subfoldersCount: Int = 0,
+    val hasSubfolders: Boolean = false,
     val isAlreadyImported: Boolean = false,
     val isSelected: Boolean = false
+)
+
+data class NasScanResult(
+    val basePath: String,
+    val parentPath: String? = null,
+    val folders: List<ScannedFolder> = emptyList()
 )
 
 enum class StoryType {
@@ -211,3 +219,78 @@ data class NasStorageVolume(
     val isCurrentServerVolume: Boolean = false,
     val mediaFolders: List<String> = emptyList()
 )
+
+enum class AppThemeMode(val value: String, val label: String) {
+    SYSTEM("SYSTEM", "Automático (Sistema)"),
+    LIGHT("LIGHT", "Claro"),
+    DARK("DARK", "Oscuro");
+
+    companion object {
+        fun fromValue(raw: String?): AppThemeMode {
+            return entries.firstOrNull { it.value.equals(raw, ignoreCase = true) } ?: SYSTEM
+        }
+    }
+}
+
+enum class FeedContentFilter(val label: String) {
+    ALL("Todos"),
+    VIDEOS("Vídeos"),
+    PHOTOS("Fotos"),
+    OFFLINE("Offline")
+}
+
+data class VideoWatchProgress(
+    val postId: Int,
+    val chunkIndex: Int = 0,
+    val positionMs: Long = 0L,
+    val globalPositionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val isWatched: Boolean = false,
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    val progressFraction: Float
+        get() = when {
+            isWatched -> 1f
+            durationMs > 0L -> (globalPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+            else -> 0f
+        }
+}
+
+data class NasSyncGroupResult(
+    val groupId: Int,
+    val addedPosts: Int = 0,
+    val addedFiles: Int = 0,
+    val totalFiles: Int = 0,
+    val removedMissing: Int = 0,
+    val message: String = ""
+)
+
+data class OfflineStorageStats(
+    val totalFilesCount: Int = 0,
+    val savedOfflinePostsCount: Int = 0,
+    val totalBytes: Long = 0L,
+    val protectedBytes: Long = 0L,
+    val cacheBytes: Long = 0L,
+    val formattedTotalSize: String = "0 KB",
+    val formattedProtectedSize: String = "0 KB",
+    val formattedCacheSize: String = "0 KB"
+)
+
+enum class SearchSuggestionType {
+    HISTORY,
+    MEMBER,
+    GROUP,
+    POST
+}
+
+data class SearchSuggestion(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val query: String,
+    val type: SearchSuggestionType,
+    val emoji: String = "🔍",
+    val targetMemberId: Int? = null,
+    val targetGroupId: Int? = null
+)
+
